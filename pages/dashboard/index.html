@@ -11,8 +11,10 @@
       <header class="topbar">
         <div class="brand">
           <span class="brand-dot"></span>
-          <span class="brand-name">Engram</span>
-          <span class="brand-sub">类海马体长期记忆</span>
+          <span>
+            <span class="brand-name">Engram</span>
+            <span class="brand-sub">　类海马体长期记忆</span>
+          </span>
         </div>
         <div class="status" id="health">连接中…</div>
       </header>
@@ -24,25 +26,24 @@
         <button class="tab" data-tab="backups">备份</button>
       </nav>
 
-      <main class="content">
+      <main>
         <!-- 概览 -->
         <section class="panel active" data-panel="overview">
+          <div class="toolbar">
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-stats">刷新统计</button>
+          </div>
           <div class="cards" id="stat-cards"></div>
-          <button class="btn" id="btn-refresh-stats">刷新统计</button>
         </section>
 
         <!-- 记忆列表 -->
         <section class="panel" data-panel="memories">
           <div class="toolbar">
-            <input id="mem-actor" class="input" placeholder="按 actor_id 过滤（可空）" />
-            <input id="mem-k" class="input input-sm" type="number" value="50" min="1" max="500" />
+            <input id="mem-actor" class="input input-grow" placeholder="按 actor_id 过滤（留空=全部）" />
+            <input id="mem-k" class="input input-sm" type="number" value="50" min="1" max="500" title="数量" />
             <button class="btn" id="btn-load-mem">加载</button>
           </div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th>ID</th><th>摘要</th><th>actor</th></tr></thead>
-              <tbody id="mem-rows"></tbody>
-            </table>
+          <div class="mem-grid" id="mem-rows">
+            <div class="empty">点击「加载」查看记忆</div>
           </div>
           <div id="mem-detail" class="detail"></div>
         </section>
@@ -56,21 +57,21 @@
               <option value="vector">vector</option>
               <option value="fts">fts</option>
             </select>
-            <input id="rc-k" class="input input-sm" type="number" value="5" min="1" max="50" />
+            <input id="rc-k" class="input input-sm" type="number" value="5" min="1" max="50" title="返回条数" />
             <button class="btn" id="btn-recall">召回</button>
           </div>
-          <pre id="rc-out" class="out"></pre>
+          <div id="rc-out"><div class="empty">输入查询并点击「召回」</div></div>
         </section>
 
         <!-- 备份 -->
         <section class="panel" data-panel="backups">
           <div class="toolbar">
-            <button class="btn" id="btn-load-backups">加载备份列表</button>
+            <button class="btn btn-ghost btn-sm" id="btn-load-backups">加载备份列表</button>
           </div>
           <div class="table-wrap">
             <table class="table">
               <thead><tr><th>备份 ID</th><th>时间</th><th>大小</th><th></th></tr></thead>
-              <tbody id="bk-rows"></tbody>
+              <tbody id="bk-rows"><tr><td colspan="4" style="text-align:center;color:var(--text-2)">未加载</td></tr></tbody>
             </table>
           </div>
         </section>
