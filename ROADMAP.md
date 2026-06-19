@@ -150,7 +150,7 @@
 - [x] **B9** AstrBot Dashboard WebUI：PluginPageApi + 8 个 page endpoints (shipped 2026-06-19)
 
   - 新建 `astrbot-plugin-hippocampus/page_api.py` (~88 行): `PluginPageApi` facade + `register_routes()` 探测 `hasattr(context, "register_web_api")` 静默降级
-  - 新建 `astrbot-plugin-hippocampus/page_api_modules/` (5 文件): `utils.py` / `stats.py` / `memory.py` / `recall.py` / `graph.py` (no backup.py, 留 B10)
+  - 新建 `astrbot-plugin-hippocampus/page_api_modules/` (5 文件): `utils.py` / `stats.py` / `memory.py` / `recall.py` / `graph.py` (B10 后续加了 backup endpoint,见 B10 注释)
   - 8 个 endpoint 挂前缀 `/astrbot-plugin-hippocampus/page/`:
     - `health` GET / `stats` GET / `memories` GET / `memories/detail` GET / `memories/delete` POST / `recall/test` POST / `graph/overview` GET / `graph/query` POST
   - 全部 handler 返回 `{status: ok|error, data|message}` 一致 shape; 业务失败 graceful（`{status: error, message}` 不抛 500）
@@ -160,14 +160,14 @@
   - B8 + B9 衔接: `PluginInitializer.initialize()` 在 `_init_service` 之前调 `i18n_init(cfg.get("bot_language", "zh"))`; Q3 缺口收
   - smoke v25 (5 测试) 全过: 8 endpoints 路径 / ok-error shape / 真实服务 3-engram 跑全 8 端点 / conf_schema 15 字段 + LABELS.en / PluginInitializer 4 种 cfg (zh/en/missing/unknown) 都正确 fallback
   - 全量回归 v08-v25 = 16/16 业务通过 (v11 已修 14187ec;v12 真实 bug 为 `MemoryService` 缺 `stop()` 同步别名,见 B7 注释;v12 已修,见 B7 注释,与 B9 无关)
-  - 未做: backup endpoint (B10) / 前端 JS 资源 (Q2=A 决策, AstrBot auto-discovery 不强求 static/)
+  - 当时未做,后续在 B10 已 ship: backup endpoint (smoke v25 验证 10 endpoints = 8 B9 + 2 B10 backup) / 前端 JS 资源 (Q2=A 决策, AstrBot auto-discovery 不强求 static/)
 ### P2：备份与迁移
 
-- [ ] **B10** BackupManager（自动定期导出 + 旧版本兼容迁移）
-  - `hippocampus/managers/backup_manager.py`
-  - `hippocampus/storage/db_migration.py`：v1.2 → v1.3 → v1.4 schema 迁移
-  - smoke v25 验证
-
+- [x] **B10** BackupManager + db_migration (已 ship, ROADMAP 历史状态漂移修复)
+  - hippocampus/db_migration.py (88 行):v1.0+v1.1+v1.2 column-append 迁移,幂等,锁定 lock 保护;v1.3/v1.4 不需要迁移(它们是新增表,走 CREATE-TABLE-IF-NOT-EXISTS,逻辑在 atom_store.py / graph_store.py)
+  - hippocampus/managers/backup_manager.py (256 行):raw .db 拷贝 + .json sidecar(含 __version__ / EXPORT_FORMAT_VERSION / schema hash / engram count);retention keep_last + keep_weekly + keep_monthly 三档
+  - 自动定期导出:handlers/init.py 启动 _start_backup_scheduler() 后台 daemon 线程,interval 走 MemoryConfig.backup_interval_hours(0 关闭);smoke v25 验证 10 endpoints / 20 schema 字段(B9 +2 backup endpoint,B10 +5 schema 字段)
+  - 与 ROADMAP 历史的差异:实际文件路径是 hippocampus/db_migration.py 而非 hippocampus/storage/db_migration.py;storage/ 子目录计划未落地,但 db_migration 在 hippocampus 根工作良好,不需移动
 ### P2：性能
 
 - [ ] **B11** graph route O(n) → O(1)：把 entity_refs 索引进 SQL，graph route 改 SQL JOIN
