@@ -258,3 +258,23 @@
   - 全量 v08-v22 业务 12/15 ALL OK. v11 spread_activation 真因为 facade 缺 kwarg 转发, 已修于 commit `14187ec`; v12 真实 bug 是 `MemoryService` 无 `stop()` 同步方法(smoke 调了不存在的 API),已修(smoke 改 `stop_background_tasks` + 加 `close/del/gc` 防 Windows 文件锁),与 B5 无关;v13 已通过(本轮重跑 ALL OK,9 测试)
 
 ---
+
+
+## v1.4.x smoke 状态基线 (2026-06-19)
+
+最后一次完整回归:python astrbot-plugin-hippocampus/_smoke_v08.py ... _smoke_v26.py,**19/19 ALL OK,零失败**。
+
+最近两个修复:
+
+- **v11** (commit 14187ec):facade MemoryService.spread_activation 漏转 decay / floor kwarg,2 行 facade 转发修复
+- **v12** (commit bb3b9bc):smoke 调了不存在的 MemoryService.stop(),改用 stop_background_tasks + 加 close/del/gc 防 Windows 文件锁,15 行
+
+修复模式总结(给后续 v1.4.x 维护参考):
+
+- 都是 **smoke 与 service 重构不同步**造成的 latent bug,不是业务逻辑错
+- v11 是 facade **签名丢 kwarg**(底层有,facade 没透)
+- v12 是 facade **方法名整体丢失**(被 B4 的 async 命名替换)
+- 两者都是 v1.3 → v1.4 演进期 facade 重命名/重签名时 smoke 漏改,藏在测试金字塔底层
+- 教训:facade 改名/改签名时,**优先 grep 仓库所有调用点**,而不是只改实现;或在新 facade 加 @deprecated 兼容层跑过过渡期
+
+历史 v11/v12 注释(分散在上方 B5 / B7 / B8 / B9 段落)已统一指向 14187ec / bb3b9bc。如果将来 v1.4.x smoke 又出现 1/N 失败,先来这里对比上次绿点。
