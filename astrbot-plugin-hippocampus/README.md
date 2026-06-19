@@ -22,7 +22,7 @@ astrbot-plugin-hippocampus/
 插件加载后会打印一行状态:
 
 ```
-[hippocampus] loaded: v1.1.0, embedding=hash, llm=rule, engrams=0, embeddings=[hash, astrmock, openai], llms=[rule, astrmock, openai] | type /mem help
+[hippocampus] loaded: v1.4.0, embedding=hash, llm=rule, engrams=0, embeddings=[hash, astrmock, openai], llms=[rule, astrmock, openai] | type /mem help
 ```
 
 便于一眼看到当前生效的 embedding/llm provider 和已注册的可选项。
