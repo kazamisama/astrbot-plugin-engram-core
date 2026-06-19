@@ -3,7 +3,7 @@
 Scope:
 - page_api.py + 5 page_api_modules/ (utils + stats + memory + recall + graph)
 - PluginPageApi.register_routes() registers 8 endpoints with prefix
-  /astrbot-plugin-hippocampus/page/{health,stats,memories,memories/detail,
+  /astrbot-plugin-engram/page/{health,stats,memories,memories/detail,
    memories/delete,recall/test,graph/overview,graph/query}
 - _conf_schema.json: 15 fields (was 14), bot_language at top;
   descriptions sourced from ConfigManager.LABELS.en (B7+B9 link)
@@ -102,16 +102,16 @@ def test_register_routes_8_endpoints():
     assert len(calls) == 10, "expected 10 endpoints, got " + str(len(calls))  # B10: +2 backup
     paths = [c[0] for c in calls]
     expected_paths = [
-        "/astrbot-plugin-hippocampus/page/health",
-        "/astrbot-plugin-hippocampus/page/stats",
-        "/astrbot-plugin-hippocampus/page/memories",
-        "/astrbot-plugin-hippocampus/page/memories/detail",
-        "/astrbot-plugin-hippocampus/page/memories/delete",
-        "/astrbot-plugin-hippocampus/page/recall/test",
-        "/astrbot-plugin-hippocampus/page/graph/overview",
-        "/astrbot-plugin-hippocampus/page/graph/query",
-        "/astrbot-plugin-hippocampus/page/backups",
-        "/astrbot-plugin-hippocampus/page/backups/restore",
+        "/astrbot-plugin-engram/page/health",
+        "/astrbot-plugin-engram/page/stats",
+        "/astrbot-plugin-engram/page/memories",
+        "/astrbot-plugin-engram/page/memories/detail",
+        "/astrbot-plugin-engram/page/memories/delete",
+        "/astrbot-plugin-engram/page/recall/test",
+        "/astrbot-plugin-engram/page/graph/overview",
+        "/astrbot-plugin-engram/page/graph/query",
+        "/astrbot-plugin-engram/page/backups",
+        "/astrbot-plugin-engram/page/backups/restore",
     ]
     assert paths == expected_paths, "paths: " + str(paths)
     print("  10 endpoints registered with correct paths (8 B9 + 2 B10 backup): OK")

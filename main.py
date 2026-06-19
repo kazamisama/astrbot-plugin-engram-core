@@ -1,4 +1,4 @@
-"""astrbot-plugin-hippocampus entry.
+"""astrbot-plugin-engram entry.
 
 AstrBot loads via: from main import <registered class> so this file
 must be importable when astrbot.api is on path.

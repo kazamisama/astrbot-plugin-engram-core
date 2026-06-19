@@ -154,7 +154,7 @@ def main():
     # Rewrite main.py: header + Star class only
     Q3 = Q + Q + Q
     header_lines = [
-        Q3 + "astrbot-plugin-hippocampus entry.",
+        Q3 + "astrbot-plugin-engram entry.",
         "",
         "AstrBot loads via: from main import <registered class>",
         "so this file must be importable when astrbot.api is on path.",

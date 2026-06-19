@@ -5,7 +5,7 @@ hippocampus's sync sqlite3 stack. The plugin main calls
 `_register_official_page_api_if_available()` once at startup; this
 class wires 8 GET/POST endpoints to the 4 handler modules.
 
-API prefix: /astrbot-plugin-hippocampus/page
+API prefix: /astrbot-plugin-engram/page
 Endpoints (10 total after B10):
   GET  /stats           -> {engrams, fts, entities, atoms, ...}
   GET  /memories        -> list_memories(actor_id, k, offset)
@@ -33,7 +33,7 @@ from page_api_modules import (
     BackupHandler,
 )
 
-PLUGIN_NAME = "astrbot-plugin-hippocampus"
+PLUGIN_NAME = "astrbot-plugin-engram"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 

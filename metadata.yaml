@@ -1,4 +1,4 @@
-﻿name: astrbot-plugin-hippocampus
+name: astrbot-plugin-engram
 author: shirley
 version: 1.4.0
 description: 类海马体长期记忆框架 (SWR replay + DG 模式分离 + two-stream + valence + FTS5 hybrid + 联想激活 + 用户自我模型 + 心境一致性 + 聚类摘要 + 用户可切换模型) + metamemory + episodic-to-semantic consolidation + forgetting-curve viz (v1.3)
