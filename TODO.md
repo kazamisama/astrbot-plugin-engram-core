@@ -130,3 +130,39 @@
 4. **BM25 检索（TODO#4）** — 中文检索质量。
 5. **自动注入（TODO#1）** — 让记忆真正进对话。
 6. **管理命令（6.4）／ GC 判据（TODO#2）／ 其余** — 按需补。
+
+
+## 7. 借鉴自 memori（HakoHana/memori）的增量点
+
+> 来源：用户提供的 https://github.com/HakoHana/memori 源码（atom.txt 架构的真实实现，~15k 行、225 测试、MIT）。逐项与 engram 现状比对去重后，真正有增量且不与已做项重复的为以下几项。BM25(已有)/WAL(v1.7)/会话聚合(v1.6)/persona(v1.8) 不重复。
+
+### 7.1 persona 标签化（小、零依赖、纯增强 v1.8）— 优先
+**对照**：memori `features/persona_engine.py` 的画像 = 一句话摘要 + 3~5 个标签（tags），更省 token、更结构化。engram v1.8 的 persona 只有自然语言 summary。
+**目标**：给 `PersonaStore`/`Persona` 加 `tags`（字符串列表），`build_persona` 让 LLM 同时产出 summary + tags；注入与 `/mem persona` 展示带上标签。
+**要点**：表加一列、向后兼容（旧行无 tags）；prompt 要求输出 JSON `{summary, tags}`，解析失败回退纯 summary。
+
+### 7.2 质量校验：泛化词检测（小）
+**对照**：memori `pipeline/quality_validator.py` 检测「用户」「对方」等泛化词与空摘要，**告警不拒写**。engram 会话聚合质量门只看长度/重复。
+**目标**：新增轻量校验：summary/persona 含泛化词或为空时打 warn 日志（不拒写），便于发现 LLM 没用真实昵称。
+**要点**：纯函数 + 调用点埋点；不改变写入决策。
+
+### 7.3 可配置分词器 char|bigram|jieba（中，解决中文检索质量）
+**对照**：memori 用 jieba 词级分词 + 短文本字符二元组降级（`retrieval/bm25_retriever.py`、`storage/atom_store.py`、`lifecycle/dedup.py`）。engram FTS 现为 unicode61 **字符级**（单字 token），中文 IDF 区分度低。
+**目标**：把 FTS 分词做成可配置 `tokenizer_mode = char(默认,现状) | bigram | jieba`。索引侧与查询侧分词保持一致；`jieba` 缺失自动降级 `bigram`，守住「零硬依赖」。切换非 char 时触发 FTS 重建（复用现有 rebuild 通路）。
+**要点**：默认 char 不动存量库；bigram=纯 Python 字符二元组，jieba=可选依赖；需迁移/重建 FTS 索引；补烟测验证三模式分词一致性。
+
+### 7.4 写入去重：词级 Jaccard（中，评估后定）
+**对照**：memori `lifecycle/dedup.py` 三层去重：写入前 jieba/bigram 词级 Jaccard、写入语义去重（FTS 粗召回→Jaccard→余弦精排）、定时低阈值兜底。engram 现仅靠向量相似度 merge。
+**目标**：入库前增加文本层 Jaccard 去重作为向量 merge 的补充，减少近似重复记忆。
+**要点**：与现有 separator merge/link 协调，避免双重合并；阈值可配置；与 7.3 的分词器共用 tokenize。属结构性改动，先评估再做。
+
+### 7.5 其他（候选，未排期）
+- **合并 LLM 调用**：memori 一次调用同时产出日记+原子，省 ~50% 调用。engram encode 与 persona/consolidation 分散调用，可考虑合并热点路径。
+- **JSON 自动修复**：memori 修复未闭合引号/括号/尾逗号。engram 若有 LLM JSON 解析点可借鉴（需先确认解析点）。
+- **统一 LifecycleManager**：memori 把去重→强化→衰减→遗忘→归档→清理统一调度。engram 这些分散在 decay/gc/soft_forget，可考虑统一（大改动，低优先）。
+
+### 落地顺序（本批）
+1. 7.1 persona 标签化（零依赖增强）
+2. 7.2 泛化词质量校验（小）
+3. 7.3 可配置分词器（中文检索质量，本批重点）
+4. 7.4 写入去重（评估后决定是否纳入本批）
