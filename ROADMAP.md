@@ -131,7 +131,7 @@
   - 改造 astrbot-plugin-hippocampus/handlers/init.py: _init_service 14 字段 hardcode → ConfigManager(cfg_dict).memory_config (1 行)
   - 同步: 删除 PluginInitializer 内 MemoryConfig 直接 import（仅 ConfigManager 用），import 数从 3 个 hippocampus 符号减到 2 个
   - smoke v23 (11 测试) 全过: 注册表覆盖 / 空 dict 默认 / 14 字段 legacy 兼容 / 类型 coerce / coerce 失败 fallback / range 越界 / range 通过 / extras / LABELS 完整性 / get 一致性 / None 处理
-  - 全量回归 v08-v23 = 24/26 业务通过 (v11 已修:facade 缺 decay/floor 转发,见 commit 14187ec;v12 真实 bug:`asyncio.run(svc2.stop())` 调不存在方法,`MemoryService` 无 `stop` 同步方法,只剩 `stop_background_tasks` / `stop_background_tasks_sync` / `close`,与 B7 无关)
+  - 全量回归 v08-v23 = 24/26 业务通过 (v11 已修:facade 缺 decay/floor 转发,见 commit 14187ec;v12 真实 bug:`asyncio.run(svc2.stop())` 调不存在方法,`MemoryService` 无 `stop` 同步方法,只剩 `stop_background_tasks` / `stop_background_tasks_sync` / `close`,与 B7 无关。v12 修法:smoke 改用 `stop_background_tasks` + 加 `svc.close() + del + gc` 防 Windows 文件锁,与 B7 无关)
   - 未动: _conf_schema.json (14 字段 schema 仍描述 AstrBot Dashboard 暴露的 UI 字段); B8 i18n 框架接手时一起从 LABELS 拉 label
 - [x] **B8** i18n 框架（zh + en 起步） (shipped 2026-06-19)
   - 新建 hippocampus/i18n_backend.py (~95 行): init(lang) + t(key, **kw) + t_list(key) + current_language() + SUPPORTED_LANGS
@@ -143,7 +143,7 @@
   - 同步: 完整 en 翻译 help.full_text (30 行命令说明) + ~25 个用户可见字符串 (recall.no_memory / recall.related_header / usage.remember / cluster.empty / valence.* / stream.* / replay.ok / consolidated / model.summary)
   - 未动: format.py 内 100+ 个结构字符串 (## stats / engrams: / + ( 等拼接) 留 B8.x 收; _conf_schema.json 14 字段 description 中文留给 B9 WebUI 一起加 bot_language 配置
   - smoke v24 (10 测试) 全过: SUPPORTED_LANGS / init zh+en / format kwargs / config.<field> / missing sentinel / unknown lang fallback / t_list / HELP_TEXT import / deep-copy isolation
-  - 全量回归 v08-v24 = 15/15 业务通过 (v11 已修 14187ec;v12 真实 bug 为 `MemoryService` 缺 `stop()` 同步别名,见 B7 注释,与 B8 无关)
+  - 全量回归 v08-v24 = 15/15 业务通过 (v11 已修 14187ec;v12 真实 bug 为 `MemoryService` 缺 `stop()` 同步别名,见 B7 注释;v12 已修,见 B7 注释,与 B8 无关)
   - smoke v23 复用 (B7 ConfigManager 12 字段不重测); v24 用 importlib 直加载 handlers/help_text.py 避免触发 handlers/__init__.py 拉 format.py 的 astrbot.api stub
 ### P1：用户面
 
@@ -159,7 +159,7 @@
   - B7 + B9 衔接: `_conf_schema.json` 从 14→15 字段, `bot_language` 置顶 (default "zh"), 14 个原 description 全部从 `ConfigManager.LABELS.en` 拉 (B7 67 项 label 立即可走)
   - B8 + B9 衔接: `PluginInitializer.initialize()` 在 `_init_service` 之前调 `i18n_init(cfg.get("bot_language", "zh"))`; Q3 缺口收
   - smoke v25 (5 测试) 全过: 8 endpoints 路径 / ok-error shape / 真实服务 3-engram 跑全 8 端点 / conf_schema 15 字段 + LABELS.en / PluginInitializer 4 种 cfg (zh/en/missing/unknown) 都正确 fallback
-  - 全量回归 v08-v25 = 16/16 业务通过 (v11 已修 14187ec;v12 真实 bug 为 `MemoryService` 缺 `stop()` 同步别名,见 B7 注释,与 B9 无关)
+  - 全量回归 v08-v25 = 16/16 业务通过 (v11 已修 14187ec;v12 真实 bug 为 `MemoryService` 缺 `stop()` 同步别名,见 B7 注释;v12 已修,见 B7 注释,与 B9 无关)
   - 未做: backup endpoint (B10) / 前端 JS 资源 (Q2=A 决策, AstrBot auto-discovery 不强求 static/)
 ### P2：备份与迁移
 
@@ -255,6 +255,6 @@
   - 同步更新 `_smoke_v16.py` 契约: `all_tools()` 期望从 2 tool 升到 5 tool (2 处断言: `test_all_tools_returns_five` + `test_star_registers_tools`)
   - 新建 `_smoke_v22.py` (7 测试): schema 稳定名 / soft round-trip / hard 真删 / error 分支 / list_recent actor 隔离 + newest first / list_recent missing actor / search_by_entity 大小写不敏感 + entity_refs join, 全过
   - 性能注: list_recent + search_by_entity 当前 Python 端 filter (`store.list_active` O(N)); 大规模下用 SQL JOIN 是 B11 范畴, B5 scope 内够用
-  - 全量 v08-v22 业务 12/15 ALL OK. v11 spread_activation 真因为 facade 缺 kwarg 转发, 已修于 commit `14187ec`; v12 真实 bug 是 `MemoryService` 无 `stop()` 同步方法(smoke 调了不存在的 API),与 B5 无关;v13 已通过(本轮重跑 ALL OK,9 测试)
+  - 全量 v08-v22 业务 12/15 ALL OK. v11 spread_activation 真因为 facade 缺 kwarg 转发, 已修于 commit `14187ec`; v12 真实 bug 是 `MemoryService` 无 `stop()` 同步方法(smoke 调了不存在的 API),已修(smoke 改 `stop_background_tasks` + 加 `close/del/gc` 防 Windows 文件锁),与 B5 无关;v13 已通过(本轮重跑 ALL OK,9 测试)
 
 ---

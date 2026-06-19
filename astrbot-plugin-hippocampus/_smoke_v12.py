@@ -108,7 +108,10 @@ def test_import_roundtrip_and_warn():
         msg = import_engrams(svc2, out)
         assert "imported" in msg, msg
         assert "warn" not in msg, ("current version should not warn", msg)
-        asyncio.run(svc2.stop())
+        asyncio.run(svc2.stop_background_tasks())
+        svc2.close()
+        del svc2
+        import gc as _gc2; _gc2.collect()
 
         # stale-version import: should warn but still import
         payload = json.load(open(out, encoding="utf-8"))
@@ -119,7 +122,10 @@ def test_import_roundtrip_and_warn():
         msg2 = import_engrams(svc3, stale)
         assert "imported" in msg2, msg2
         assert "warn" in msg2 and "0.7" in msg2, ("stale import should warn", msg2)
-        asyncio.run(svc3.stop())
+        asyncio.run(svc3.stop_background_tasks())
+        svc3.close()
+        del svc3
+        import gc as _gc3; _gc3.collect()
 
         # missing version field: no warn (back-compat with very old dumps)
         payload.pop("version", None)
@@ -128,7 +134,10 @@ def test_import_roundtrip_and_warn():
         svc4 = _new_service(td)
         msg3 = import_engrams(svc4, nov)
         assert "imported" in msg3 and "warn" not in msg3, msg3
-        asyncio.run(svc4.stop())
+        asyncio.run(svc4.stop_background_tasks())
+        svc4.close()
+        del svc4
+        import gc as _gc4; _gc4.collect()
         print("  import round-trip + warn: OK")
 
 
