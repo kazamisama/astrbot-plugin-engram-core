@@ -151,14 +151,13 @@
   // ---------- overview ----------
   var STAT_META = {
     engrams: { label: "记忆条目", icon: "🧠" },
-    fts: { label: "全文索引", icon: "🔎" },
+    fts_count: { label: "全文索引", icon: "🔎" },
     entities: { label: "语义实体", icon: "🕸" },
     atoms: { label: "记忆原子", icon: "⚛" },
-    prospective_pending: { label: "待触发", icon: "⏳" },
-    prospective_fired: { label: "已触发", icon: "✅" },
-    valence: { label: "情感记忆", icon: "💗" },
-    clusters: { label: "聚类摘要", icon: "📚" }
+    pending_triggers: { label: "待触发提醒", icon: "⏳" },
+    fired_triggers: { label: "已触发提醒", icon: "✅" }
   };
+  var STAT_ORDER = ["engrams", "fts_count", "entities", "atoms", "pending_triggers", "fired_triggers"];
   function fmtNum(v) { return v < 0 ? "—" : String(v); }
 
   async function loadStats() {
@@ -166,7 +165,9 @@
     box.innerHTML = emptyBox("加载中…");
     try {
       var d = unwrap(await apiGet("page/stats"));
-      var keys = Object.keys(d).filter(function (k) { return typeof d[k] === "number"; });
+      var present = Object.keys(d).filter(function (k) { return typeof d[k] === "number"; });
+      var keys = STAT_ORDER.filter(function (k) { return present.indexOf(k) >= 0; });
+      present.forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); });
       if (!keys.length) { box.innerHTML = emptyBox("暂无数据"); return; }
       box.innerHTML = "";
       keys.forEach(function (k) {
@@ -322,11 +323,230 @@
     }
   }
 
+  // ---------- 关系图谱（原生 SVG 力导向） ----------
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var NODE_COLORS = {
+    person: "#2f9e8b", place: "#4c6ef5", object: "#c99a16",
+    concept: "#7c6fca", unknown: "#8b949e"
+  };
+  var NODE_TYPE_LABEL = { person: "人物", place: "地点", object: "事物", concept: "概念", unknown: "其它" };
+  var graphSim = null;
+
+  function colorOf(type) { return NODE_COLORS[type] || NODE_COLORS.unknown; }
+
+  async function loadGraph() {
+    var stage = document.getElementById("graph-stage");
+    var tip = document.getElementById("graph-tip");
+    var legend = document.getElementById("graph-legend");
+    document.getElementById("graph-detail").innerHTML = "";
+    stage.innerHTML = emptyBox("加载中…");
+    try {
+      var d = unwrap(await apiGet("page/graph/data", { limit: 300 }));
+      var nodes = (d && d.nodes) || [];
+      var edges = (d && d.edges) || [];
+      if (!nodes.length) { stage.innerHTML = emptyBox("暂无实体，先让 Bot 多聊一些再回来看"); legend.innerHTML = ""; tip.textContent = ""; return; }
+      // legend
+      var types = {};
+      nodes.forEach(function (n) { types[n.type || "unknown"] = true; });
+      legend.innerHTML = Object.keys(types).map(function (ty) {
+        return '<span class="lg"><span class="dot" style="background:' + colorOf(ty) + '"></span>' +
+          escapeHtml(NODE_TYPE_LABEL[ty] || ty) + "</span>";
+      }).join("");
+      tip.textContent = "实体 " + nodes.length + " · 关系 " + edges.length +
+        (d.truncated ? "（已截断）" : "") + " · 拖动节点 / 点击查看关系";
+      renderGraph(stage, nodes, edges);
+    } catch (e) {
+      stage.innerHTML = errBox(e.message);
+    }
+  }
+
+  function renderGraph(stage, nodes, edges) {
+    if (graphSim) { clearInterval(graphSim); graphSim = null; }
+    stage.innerHTML = "";
+    var W = stage.clientWidth || 900, H = stage.clientHeight || 460;
+    var svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    stage.appendChild(svg);
+
+    var byId = {};
+    nodes.forEach(function (n, idx) {
+      n.x = W / 2 + (Math.random() - 0.5) * W * 0.6;
+      n.y = H / 2 + (Math.random() - 0.5) * H * 0.6;
+      n.vx = 0; n.vy = 0;
+      n.r = Math.max(6, Math.min(16, 6 + Math.sqrt(n.mentions || 0) * 2));
+      byId[n.id] = n;
+    });
+    edges = edges.filter(function (e) { return byId[e.src] && byId[e.dst]; });
+
+    // adjacency for highlight
+    var adj = {};
+    edges.forEach(function (e) {
+      (adj[e.src] = adj[e.src] || {})[e.dst] = true;
+      (adj[e.dst] = adj[e.dst] || {})[e.src] = true;
+    });
+
+    var edgeEls = edges.map(function (e) {
+      var ln = document.createElementNS(SVGNS, "line");
+      ln.setAttribute("class", "g-edge");
+      svg.appendChild(ln);
+      var lbl = null;
+      if (e.predicate) {
+        lbl = document.createElementNS(SVGNS, "text");
+        lbl.setAttribute("class", "g-edgelabel");
+        lbl.setAttribute("text-anchor", "middle");
+        lbl.textContent = e.predicate;
+        svg.appendChild(lbl);
+      }
+      return { e: e, ln: ln, lbl: lbl };
+    });
+
+    var nodeEls = nodes.map(function (n) {
+      var g = document.createElementNS(SVGNS, "g");
+      g.setAttribute("class", "g-node");
+      var c = document.createElementNS(SVGNS, "circle");
+      c.setAttribute("r", n.r);
+      c.setAttribute("fill", colorOf(n.type));
+      var tx = document.createElementNS(SVGNS, "text");
+      tx.setAttribute("text-anchor", "middle");
+      tx.setAttribute("dy", -(n.r + 4));
+      tx.textContent = (n.name || n.id).slice(0, 12);
+      g.appendChild(c); g.appendChild(tx);
+      svg.appendChild(g);
+      enableDrag(g, n, svg, W, H);
+      c.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        highlight(n.id, byId, adj, nodeEls, edgeEls);
+        showEntityDetail(n.name || n.id);
+      });
+      return { n: n, g: g };
+    });
+
+    svg.addEventListener("click", function () { clearHighlight(nodeEls, edgeEls); });
+
+    // simple force simulation
+    var iter = 0;
+    graphSim = setInterval(function () {
+      step(nodes, edges, byId, W, H);
+      edgeEls.forEach(function (o) {
+        var a = byId[o.e.src], b = byId[o.e.dst];
+        o.ln.setAttribute("x1", a.x); o.ln.setAttribute("y1", a.y);
+        o.ln.setAttribute("x2", b.x); o.ln.setAttribute("y2", b.y);
+        if (o.lbl) { o.lbl.setAttribute("x", (a.x + b.x) / 2); o.lbl.setAttribute("y", (a.y + b.y) / 2); }
+      });
+      nodeEls.forEach(function (o) { o.g.setAttribute("transform", "translate(" + o.n.x + "," + o.n.y + ")"); });
+      iter++;
+      if (iter > 320) { clearInterval(graphSim); graphSim = null; }
+    }, 16);
+  }
+
+  function step(nodes, edges, byId, W, H) {
+    var k = 0.9, rep = 1600, spring = 0.02, len = 70;
+    for (var i = 0; i < nodes.length; i++) {
+      var a = nodes[i];
+      for (var j = i + 1; j < nodes.length; j++) {
+        var b = nodes[j];
+        var dx = a.x - b.x, dy = a.y - b.y;
+        var dist2 = dx * dx + dy * dy + 0.01;
+        var f = rep / dist2;
+        var dist = Math.sqrt(dist2);
+        var fx = (dx / dist) * f, fy = (dy / dist) * f;
+        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+      }
+    }
+    edges.forEach(function (e) {
+      var a = byId[e.src], b = byId[e.dst];
+      var dx = b.x - a.x, dy = b.y - a.y;
+      var dist = Math.sqrt(dx * dx + dy * dy) + 0.01;
+      var f = (dist - len) * spring;
+      var fx = (dx / dist) * f, fy = (dy / dist) * f;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    });
+    var cx = W / 2, cy = H / 2;
+    nodes.forEach(function (n) {
+      if (n.fixed) return;
+      n.vx += (cx - n.x) * 0.002; n.vy += (cy - n.y) * 0.002;
+      n.vx *= k; n.vy *= k;
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.max(n.r + 2, Math.min(W - n.r - 2, n.x));
+      n.y = Math.max(n.r + 14, Math.min(H - n.r - 2, n.y));
+    });
+  }
+
+  function enableDrag(g, n, svg, W, H) {
+    var dragging = false;
+    g.addEventListener("mousedown", function (ev) {
+      dragging = true; n.fixed = true; ev.preventDefault();
+    });
+    window.addEventListener("mousemove", function (ev) {
+      if (!dragging) return;
+      var pt = svgPoint(svg, ev.clientX, ev.clientY, W, H);
+      n.x = pt.x; n.y = pt.y; n.vx = 0; n.vy = 0;
+    });
+    window.addEventListener("mouseup", function () {
+      if (dragging) { dragging = false; n.fixed = false; }
+    });
+  }
+
+  function svgPoint(svg, clientX, clientY, W, H) {
+    var rect = svg.getBoundingClientRect();
+    return { x: (clientX - rect.left) / rect.width * W, y: (clientY - rect.top) / rect.height * H };
+  }
+
+  function highlight(id, byId, adj, nodeEls, edgeEls) {
+    var nb = adj[id] || {};
+    nodeEls.forEach(function (o) {
+      var on = (o.n.id === id) || nb[o.n.id];
+      o.g.classList.toggle("dim", !on);
+    });
+    edgeEls.forEach(function (o) {
+      var on = (o.e.src === id || o.e.dst === id);
+      o.ln.classList.toggle("hl", on);
+    });
+  }
+  function clearHighlight(nodeEls, edgeEls) {
+    nodeEls.forEach(function (o) { o.g.classList.remove("dim"); });
+    edgeEls.forEach(function (o) { o.ln.classList.remove("hl"); });
+  }
+
+  async function showEntityDetail(name) {
+    var el = document.getElementById("graph-detail");
+    el.innerHTML = '<div class="section-title">实体关系 · ' + escapeHtml(name) + "</div>" + emptyBox("加载中…");
+    try {
+      var d = unwrap(await apiPost("page/graph/query", { name: name }));
+      var ent = (d && d.entity) || {};
+      var rels = (d && d.relations) || [];
+      var refs = (d && d.engram_refs) || [];
+      var html = '<div class="section-title">实体关系 · ' + escapeHtml(ent.name || name) + "</div>";
+      html += kvRows({ name: ent.name, type: ent.type });
+      if (rels.length) {
+        html += '<div class="section-title">关系（' + rels.length + "）</div>";
+        rels.forEach(function (r) {
+          html += '<div class="result"><div class="result-text">' +
+            escapeHtml(r.src) + ' <span class="chip">' + escapeHtml(r.predicate || "关联") + "</span> " +
+            escapeHtml(r.dst) + "</div></div>";
+        });
+      } else {
+        html += emptyBox("该实体暂无关系记录");
+      }
+      if (refs.length) {
+        html += '<div class="section-title">关联记忆（' + refs.length + "）</div>";
+        refs.forEach(function (m) {
+          html += '<div class="mem-item"><div class="mem-head"><span class="chip">#' +
+            escapeHtml(m.id) + '</span></div><div class="mem-summary">' +
+            escapeHtml(m.summary || "（无摘要）") + "</div></div>";
+        });
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      el.innerHTML = errBox(e.message);
+    }
+  }
   // ---------- wire ----------
   document.getElementById("btn-refresh-stats").addEventListener("click", loadStats);
   document.getElementById("btn-load-mem").addEventListener("click", loadMemories);
   document.getElementById("btn-recall").addEventListener("click", runRecall);
   document.getElementById("btn-load-backups").addEventListener("click", loadBackups);
+  document.getElementById("btn-load-graph").addEventListener("click", loadGraph);
   document.getElementById("rc-query").addEventListener("keydown", function (e) {
     if (e.key === "Enter") runRecall();
   });

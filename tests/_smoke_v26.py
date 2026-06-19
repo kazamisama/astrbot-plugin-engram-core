@@ -298,8 +298,8 @@ def test_backup_handler_list_backups():
     print("  list / err / restore paths: OK")
 
 
-def test_page_api_registers_10_endpoints():
-    banner("page_api registers 10 endpoints (8 B9 + 2 backup)")
+def test_page_api_registers_11_endpoints():
+    banner("page_api registers 11 endpoints (8 B9 + 2 backup + 1 graph/data)")
     sys.path.insert(0, os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
@@ -312,9 +312,10 @@ def test_page_api_registers_10_endpoints():
             service=None, backup_manager=None))
     api = page_api.PluginPageApi(plugin)
     api.register_routes()
-    assert len(calls) == 10, "expected 10 endpoints, got " + str(len(calls))
+    assert len(calls) == 11, "expected 11 endpoints, got " + str(len(calls))
     paths = [c[0] for c in calls]
-    for needed in ["/astrbot_plugin_engram/page/backups",
+    for needed in ["/astrbot_plugin_engram/page/graph/data",
+                   "/astrbot_plugin_engram/page/backups",
                    "/astrbot_plugin_engram/page/backups/restore"]:
         assert needed in paths, needed
     print("  10 endpoints incl. /backups + /backups/restore: OK")
@@ -370,7 +371,7 @@ def main():
     test_memory_config_has_5_backup_fields()
     test_conf_schema_has_5_backup_fields()
     test_backup_handler_list_backups()
-    test_page_api_registers_10_endpoints()
+    test_page_api_registers_11_endpoints()
     test_plugin_initializer_backup_manager_attr()
     print(chr(10) + "ALL OK")
 

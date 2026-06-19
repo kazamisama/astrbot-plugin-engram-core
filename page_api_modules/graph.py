@@ -47,6 +47,77 @@ class GraphHandler:
             "sample": sample,
         })
 
+    def graph_data(self, service, limit: int = 300) -> dict[str, Any]:
+        """Build a node-link graph for visualization.
+
+        Walks every entity and its relations_of() once, de-duplicating
+        edges (relations_of returns both incoming + outgoing, so the
+        same relation surfaces from both endpoints). Returns:
+          {nodes: [{id, name, type, mentions}],
+           edges: [{src, dst, predicate}],
+           truncated: bool}
+        Nodes are capped at `limit` to keep the payload renderable.
+        """
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        sem = service.semantic
+        if sem is None:
+            return self.utils.ok({"nodes": [], "edges": [], "truncated": False})
+        try:
+            cap = max(1, min(int(limit), 2000))
+        except Exception:
+            cap = 300
+        try:
+            ents = sem.all_entities(limit=10_000_000) or []
+        except Exception as e:
+            return self.utils.error(f"all_entities failed: {e!r}")
+        truncated = len(ents) > cap
+        ents = ents[:cap]
+        node_ids = set()
+        nodes = []
+        for e in ents:
+            eid = getattr(e, "id", None)
+            if eid is None:
+                continue
+            node_ids.add(eid)
+            nodes.append({
+                "id": eid,
+                "name": getattr(e, "name", None) or eid,
+                "type": getattr(e, "type", None) or "unknown",
+                "mentions": getattr(e, "mention_count", 0) or 0,
+            })
+        seen = set()
+        edges = []
+        for e in ents:
+            eid = getattr(e, "id", None)
+            if eid is None:
+                continue
+            try:
+                rels = sem.relations_of(eid) or []
+            except Exception:
+                continue
+            for r in rels:
+                src = getattr(r, "subject_id", None)
+                dst = getattr(r, "object_id", None)
+                if not src or not dst:
+                    continue
+                # keep edges only between nodes we actually return
+                if src not in node_ids or dst not in node_ids:
+                    continue
+                key = (src, dst, getattr(r, "predicate", "") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append({
+                    "src": src,
+                    "dst": dst,
+                    "predicate": getattr(r, "predicate", None) or "",
+                })
+        return self.utils.ok({
+            "nodes": nodes,
+            "edges": edges,
+            "truncated": truncated,
+        })
     def graph_query(self, service, name: str = "") -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")

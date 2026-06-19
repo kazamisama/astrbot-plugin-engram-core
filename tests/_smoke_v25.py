@@ -100,7 +100,7 @@ def test_register_routes_8_endpoints():
         _initializer=None)
     api = page_api.PluginPageApi(plugin)
     api.register_routes()
-    assert len(calls) == 10, "expected 10 endpoints, got " + str(len(calls))  # B10: +2 backup
+    assert len(calls) == 11, "expected 11 endpoints, got " + str(len(calls))  # B10: +2 backup; +1 graph/data
     paths = [c[0] for c in calls]
     expected_paths = [
         "/astrbot_plugin_engram/page/health",
@@ -110,12 +110,13 @@ def test_register_routes_8_endpoints():
         "/astrbot_plugin_engram/page/memories/delete",
         "/astrbot_plugin_engram/page/recall/test",
         "/astrbot_plugin_engram/page/graph/overview",
+        "/astrbot_plugin_engram/page/graph/data",
         "/astrbot_plugin_engram/page/graph/query",
         "/astrbot_plugin_engram/page/backups",
         "/astrbot_plugin_engram/page/backups/restore",
     ]
     assert paths == expected_paths, "paths: " + str(paths)
-    print("  10 endpoints registered with correct paths (8 B9 + 2 B10 backup): OK")
+    print("  11 endpoints registered with correct paths (8 B9 + 2 B10 backup + 1 graph/data): OK")
 
 
 def test_endpoint_response_shapes():

@@ -134,6 +134,8 @@ class PluginPageApi:
                  ["POST"], "Hippocampus recall test")
         register(f"{PAGE_API_PREFIX}/graph/overview", self._graph_overview,
                  ["GET"], "Hippocampus graph overview")
+        register(f"{PAGE_API_PREFIX}/graph/data", self._graph_data,
+                 ["GET"], "Hippocampus graph data (nodes+edges)")
         register(f"{PAGE_API_PREFIX}/graph/query", self._graph_query,
                  ["POST"], "Hippocampus graph query")
         register(f"{PAGE_API_PREFIX}/backups", self._list_backups,
@@ -187,6 +189,11 @@ class PluginPageApi:
 
     async def _graph_overview(self) -> dict[str, Any]:
         return self.graph_handler.graph_overview(self._service())
+
+    async def _graph_data(self) -> dict[str, Any]:
+        args = await _query_args()
+        return self.graph_handler.graph_data(
+            self._service(), limit=_as_int(args.get("limit"), 300))
 
     async def _graph_query(self) -> dict[str, Any]:
         body = await _json_body()

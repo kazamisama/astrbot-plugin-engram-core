@@ -22,6 +22,7 @@
       <nav class="tabs">
         <button class="tab active" data-tab="overview">概览</button>
         <button class="tab" data-tab="memories">记忆列表</button>
+        <button class="tab" data-tab="graph">关系图谱</button>
         <button class="tab" data-tab="recall">召回测试</button>
         <button class="tab" data-tab="backups">备份</button>
       </nav>
@@ -48,6 +49,18 @@
           <div id="mem-detail" class="detail"></div>
         </section>
 
+        <!-- 关系图谱 -->
+        <section class="panel" data-panel="graph">
+          <div class="toolbar">
+            <button class="btn" id="btn-load-graph">加载图谱</button>
+            <span class="graph-legend" id="graph-legend"></span>
+            <span class="graph-tip" id="graph-tip"></span>
+          </div>
+          <div class="graph-stage" id="graph-stage">
+            <div class="empty">点击「加载图谱」查看实体关系网</div>
+          </div>
+          <div id="graph-detail" class="detail"></div>
+        </section>
         <!-- 召回测试 -->
         <section class="panel" data-panel="recall">
           <div class="toolbar">
