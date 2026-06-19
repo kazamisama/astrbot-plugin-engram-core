@@ -5,6 +5,19 @@
 把整个 `hippocampus/` 核心包打包进来,**自包含**,不依赖任何外部 Python 包。
 仅依赖 AstrBot 本体(`astrbot.api`)。
 
+## 命名约定
+
+本项目里有四个名字,**指向不同层级,不需要也不应该统一成同一个词**:
+
+| 名字 | 指什么 | 出现位置 |
+| --- | --- | --- |
+| `astrbot-plugin-engram` | 对外的**仓库名** | GitHub 仓库、README 标题 |
+| `astrbot-plugin-hippocampus` | AstrBot 里的**插件 ID / 部署目录名** | `metadata.yaml` 的 `name`、`data/plugins/` 下的目录 |
+| `hippocampus`(海马体) | 内嵌的**核心包名** | `hippocampus/` 目录、`from hippocampus import ...` |
+| `engram`(记忆痕迹) | 框架里**单条记忆**的领域术语 | 命令文案、导出 JSON 字段、banner 统计 |
+
+简单说:`hippocampus` 是"系统/包",`engram` 是"系统里的一条记忆"——两者是**整体与单元**的关系,不是同义词。仓库名用 `engram` 是品牌选择,插件 ID / 包名沿用 `hippocampus` 以保持已部署目录与 import 路径稳定;改动后两者会破坏 AstrBot 加载路径和现有用户安装,故有意保留。
+
 ## 目录
 
 ```
@@ -279,13 +292,14 @@ PYTHONPATH=astrbot_plugin python astrbot_plugin/_smoke_v13.py
 
 ## 版本说明
 
-仓库名 strbot-plugin-engram 是为这个 AstrBot 插件起的发布名;内嵌的核心包仍叫 hippocampus/(神经科学隐喻:海马体是记忆的中央枢纽,engram 是记忆痕迹)。**改名不换内核**——目录结构、import 路径、API 都不动。
+命名关系见顶部「命名约定」一节。一句话:仓库发布名是 `astrbot-plugin-engram`,内嵌核心包仍叫 `hippocampus/`,**改名不换内核**——目录结构、import 路径、API 都不动。
 
 ## v1.3 已 ship
 
 - **A1** 双路召回(document + graph)+ RRF 融合(hippocampus/retrieval/)
 - **A2** /mem search --mode=dual 命令路由 + 渲染
-- **A3** LLM Agent Tool(ecall_long_term_memory / memorize_long_term_memory)
+- **A3** LLM Agent Tool(
+ecall_long_term_memory / memorize_long_term_memory)
 - **A4** RRF 融合用业务稳定 ID(item.id)去重,修 vec+fts 不合 engram 的潜在 bug
 - **A5** 版本 bump 1.2.0 → 1.3.0(metadata / __init__ / _registered_version 三方对齐)
 - **A6** smoke v14/v15/v16 覆盖双路召回
