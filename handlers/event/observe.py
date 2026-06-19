@@ -13,6 +13,38 @@ if TYPE_CHECKING:
     from hippocampus import MemoryService
 
 
+# Platforms whose events are bot-internal (synthetic cron / scheduler
+# replays), not real user messages. AstrBot CronMessageEvent sets
+# platform_meta.name = "cron".
+_SYNTHETIC_PLATFORMS = {"cron"}
+
+# Marker strings injected by other plugins (e.g. proactive-reply) into a
+# replayed wake event. These are prompts the bot sends to *itself*, never
+# user-authored content, so they must not enter episodic memory.
+_SYNTHETIC_MARKERS = (
+    "[主动消息唤醒]",
+    "[预约提醒唤醒]",
+)
+
+
+def _is_synthetic(meta: dict) -> bool:
+    """True when the observation is a bot-internal / injected event.
+
+    Engram listens on EventMessageType.ALL, so cron-replayed wake events
+    from sibling plugins also reach this hook. They carry no real
+    user/author, and recording them pollutes memory with the bot talking
+    to itself. Filter by platform tag and by known wake-prompt markers.
+    """
+    platform = str(meta.get("platform") or "").strip().lower()
+    if platform in _SYNTHETIC_PLATFORMS:
+        return True
+    content = meta.get("content") or ""
+    for marker in _SYNTHETIC_MARKERS:
+        if marker in content:
+            return True
+    return False
+
+
 class ObserveHandler:
     """Capture every inbound message and feed it to MemoryService.observe()."""
 
@@ -24,6 +56,9 @@ class ObserveHandler:
             return
         meta = _extract(event)
         if not meta["content"]:
+            return
+        if _is_synthetic(meta):
+            # Bot-internal cron/wake event from another plugin - skip.
             return
         try:
             self.service.observe(**meta)
