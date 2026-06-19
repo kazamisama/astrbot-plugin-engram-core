@@ -325,7 +325,7 @@ PYTHONPATH=astrbot_plugin python astrbot_plugin/_smoke_v13.py
 
 ## 已知遗留
 
-- v11 smoke 一致失败,根因 MemoryService 调了不存在的 self.activation.spread(...),正确方法名是 activate(v1.3 时期埋下的 latent bug)。**不在已 ship 的 scope 内**,留到下次大重构时顺手修。
+- ~~v11 smoke 一致失败,根因 MemoryService 调了不存在的 self.activation.spread(...),正确方法名是 activate(v1.3 时期埋下的 latent bug)。~~ **已修复**:当前 service.py 统一调用 self.activation.activate(...),v11 smoke 通过。
 - write_ops 表 + 不完整写修复(memory_engine._create_tracked_task / _repair_incomplete_write_ops)→ 下一个 milestone。
 - BM25 retriever(core/retrieval/bm25_retriever.py)→ 性能 milestone 一起做。
 - EventHandler 拆分模式(core/event_handler_modules/{group_capture, memory_recall, memory_reflection}.py)→ 下一个里程碑。
