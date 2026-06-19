@@ -11,6 +11,8 @@ class ProspectiveStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        from .sqlite_util import apply_pragmas
+        apply_pragmas(self._conn)
         self._init_schema()
 
     def _init_schema(self) -> None:

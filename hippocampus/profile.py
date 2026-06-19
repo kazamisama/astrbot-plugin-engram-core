@@ -71,6 +71,8 @@ class ProfileStore:
         if self._conn is None:
             self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
+            from .sqlite_util import apply_pragmas
+            apply_pragmas(self._conn)
         if not self._initialized:
             self._init_schema()
             self._initialized = True
