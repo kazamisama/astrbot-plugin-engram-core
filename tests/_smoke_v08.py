@@ -30,8 +30,8 @@ def _install_astrbot_stub():
     sys.modules["astrbot.api.event"] = event_mod
 
 _install_astrbot_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import main
 from hippocampus import MemoryService, MemoryConfig, Cue
 from main import (HippocampusStar, render_stats, find_and_forget,

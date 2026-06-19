@@ -41,8 +41,8 @@ def _install_stub():
 
 
 _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Stand-alone data layer; no MemoryService needed for B3.
 from hippocampus import (
     MemoryAtom, AtomStatus, AtomType, DecayType,

@@ -68,7 +68,7 @@ def _install_stub():
 _install_stub()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", ".."))
 
 
 def banner(t_):
@@ -247,7 +247,7 @@ def test_memory_config_has_5_backup_fields():
 def test_conf_schema_has_5_backup_fields():
     banner("_conf_schema.json: 20 fields incl. 5 backup")
     p = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "_conf_schema.json")
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_conf_schema.json")
     schema = json.load(open(p, encoding="utf-8"))
     assert len(schema) == 20, len(schema)
     for k in ["enable_backup", "backup_interval_hours", "backup_keep_last",
@@ -259,7 +259,7 @@ def test_conf_schema_has_5_backup_fields():
 def test_backup_handler_list_backups():
     banner("page_api BackupHandler.list_backups via PageApiUtils")
     sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from page_api_modules import BackupHandler
     from hippocampus.managers.backup_manager import BackupManager
     db = _new_db()
@@ -301,7 +301,7 @@ def test_backup_handler_list_backups():
 def test_page_api_registers_10_endpoints():
     banner("page_api registers 10 endpoints (8 B9 + 2 backup)")
     sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
     calls = []
     def reg(path, handler, methods, name):

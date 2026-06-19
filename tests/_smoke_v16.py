@@ -1,4 +1,4 @@
-﻿"""Smoke v1.3 Agent tools: recall_long_term_memory / memorize_long_term_memory.
+"""Smoke v1.3 Agent tools: recall_long_term_memory / memorize_long_term_memory.
 
 Tests the new Agent-callable tools that the LLM can invoke:
 - schema validity (name, description, parameters conform to JSON Schema)
@@ -36,8 +36,8 @@ def _install_stub():
 
 
 _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import main
 from hippocampus import MemoryService, MemoryConfig
 from hippocampus.tools import (
@@ -213,7 +213,7 @@ def test_version_alignment_v12_smoke_still_holds():
     banner("version alignment: metadata.yaml == __version__ == _registered_version")
     from hippocampus import __version__
     import re
-    meta = open(os.path.dirname(os.path.abspath(__file__)) + "/metadata.yaml",
+    meta = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/metadata.yaml",
                 encoding="utf8").read()
     m = re.search(r"^version:\s*(\S+)", meta, re.M)
     assert m, "version not in metadata"

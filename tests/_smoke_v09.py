@@ -1,4 +1,4 @@
-﻿"""Smoke v0.9: DG pattern-separation (merge / link / new) + cluster expansion at recall + /mem cluster command + bidirectional + cap + kill switch."""
+"""Smoke v0.9: DG pattern-separation (merge / link / new) + cluster expansion at recall + /mem cluster command + bidirectional + cap + kill switch."""
 import os, tempfile, sys, types, asyncio, json
 
 def _install_astrbot_stub():
@@ -30,8 +30,8 @@ def _install_astrbot_stub():
     sys.modules["astrbot.api.event"] = event_mod
 
 _install_astrbot_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import main
 from hippocampus import MemoryService, MemoryConfig, Cue
 from hippocampus.separation import PatternSeparator

@@ -35,8 +35,8 @@ def _install_stub():
 
 
 _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import main  # noqa: F401
 from hippocampus import MemoryService, MemoryConfig, Cue
 from handlers import parse_search_args, format_dual_route

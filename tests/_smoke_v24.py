@@ -118,7 +118,7 @@ def test_help_text_module_still_importable():
     import importlib.util as _ilu
     import os as _os
     _ht_path = _os.path.join(
-        _os.path.dirname(_os.path.abspath(__file__)),
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
         "handlers", "help_text.py")
     _spec = _ilu.spec_from_file_location("help_text_under_test", _ht_path)
     _mod = _ilu.module_from_spec(_spec)

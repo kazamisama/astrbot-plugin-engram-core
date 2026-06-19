@@ -38,8 +38,8 @@ def _install_stub():
 
 
 _captured = _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import main
 import hippocampus
 from hippocampus import MemoryService, MemoryConfig, EXPORT_FORMAT_VERSION
@@ -50,7 +50,7 @@ def banner(t): print(chr(10) + "=== " + t + " ===")
 
 
 def _read_metadata_version():
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     txt = open(os.path.join(here, "metadata.yaml"), encoding="utf-8").read()
     m = re.search(r"(?m)^version:\s*(.+?)\s*$", txt)
     return m.group(1).strip() if m else None

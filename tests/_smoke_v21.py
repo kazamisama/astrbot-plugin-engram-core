@@ -48,8 +48,8 @@ def _install_stub():
 
 
 _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from hippocampus import (
     MemoryService, MemoryConfig, Cue,
     AtomStore, AtomLifecycleManager, MemoryAtom,

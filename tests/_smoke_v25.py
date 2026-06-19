@@ -56,9 +56,9 @@ def _install_stub():
 
 
 _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", ".."))
 
 
 def banner(t_):
@@ -89,7 +89,7 @@ def _observe_3(svc):
 def test_register_routes_8_endpoints():
     banner("PluginPageApi.register_routes registers 8 endpoints")
     sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
     calls = []
     def reg(path, handler, methods, name):
@@ -120,7 +120,7 @@ def test_register_routes_8_endpoints():
 def test_endpoint_response_shapes():
     banner("Each handler returns {status, data|message} shape")
     sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
     api = page_api.PluginPageApi(
         types.SimpleNamespace(context=types.SimpleNamespace(), _initializer=None))
@@ -136,7 +136,7 @@ def test_endpoint_response_shapes():
 def test_real_service_roundtrip():
     banner("Real-service roundtrip: 3 engrams, 8 endpoint behaviors")
     sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
     svc, db = _new_service()
     try:
@@ -188,7 +188,7 @@ def test_real_service_roundtrip():
 def test_conf_schema_has_bot_language_and_en_descriptions():
     banner("_conf_schema.json: 15 fields, bot_language + EN descriptions")
     p = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "_conf_schema.json")
     schema = json.load(open(p, encoding="utf-8"))
     assert "bot_language" in schema, schema.keys()

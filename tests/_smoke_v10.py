@@ -1,4 +1,4 @@
-﻿"""Smoke v1.0: valence + intensity + stream + temporal_bucket + schema bias + interference
+"""Smoke v1.0: valence + intensity + stream + temporal_bucket + schema bias + interference
 + reconsolidation update window + SWR replay boost + soft forget + GC + narrative + cluster
 + DG roundtrip regression on v0.9 surface."""
 
@@ -28,8 +28,8 @@ def _install_stub():
     sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
 
 _install_stub()
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import main
 from hippocampus import MemoryService, MemoryConfig, Cue
 from hippocampus.valence import ValenceScorer
