@@ -1,0 +1,2 @@
+# 零外部依赖,仅用 Python stdlib。
+# AstrBot 本体提供 astrbot.api 抽象。

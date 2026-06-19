@@ -1,0 +1,43 @@
+from .format import (
+    _extract,
+    banner_text,
+    export_engrams,
+    find_and_forget,
+    format_activation,
+    format_cluster,
+    format_confidence,
+    format_decaycurve,
+    format_dual_route,
+    format_graph,
+    format_narrative,
+    format_profile,
+    format_session,
+    format_stats,
+    import_engrams,
+    parse_search_args,
+    render_stats,
+)
+from .recall import emb_bridge_for_context
+from .help_text import HELP_TEXT
+
+__all__ = [
+    "_extract",
+    "banner_text",
+    "export_engrams",
+    "find_and_forget",
+    "format_activation",
+    "format_cluster",
+    "format_confidence",
+    "format_decaycurve",
+    "format_dual_route",
+    "format_graph",
+    "format_narrative",
+    "format_profile",
+    "format_session",
+    "format_stats",
+    "import_engrams",
+    "parse_search_args",
+    "render_stats",
+    "emb_bridge_for_context",
+    "HELP_TEXT",
+]

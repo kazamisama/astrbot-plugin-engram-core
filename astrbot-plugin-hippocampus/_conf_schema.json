@@ -1,0 +1,102 @@
+{
+  "bot_language": {
+    "type": "string",
+    "default": "zh",
+    "description": "Bot reply language: zh (Chinese) or en (English). B8 i18n backend. Hot-reload not yet supported - restart plugin to take effect."
+  },
+  "sqlite_path": {
+    "type": "string",
+    "default": "data/hippocampus.db",
+    "description": "SQLite storage path"
+  },
+  "embedding_name": {
+    "type": "string",
+    "default": "hash",
+    "description": "Embedding provider"
+  },
+  "llm_name": {
+    "type": "string",
+    "default": "rule",
+    "description": "LLM provider"
+  },
+  "embedding_dim": {
+    "type": "int",
+    "default": 64,
+    "description": "Embedding dimension"
+  },
+  "openai_api_key": {
+    "type": "string",
+    "default": "",
+    "description": "OpenAI API key"
+  },
+  "openai_embedding_model": {
+    "type": "string",
+    "default": "text-embedding-3-small",
+    "description": "OpenAI embedding model"
+  },
+  "openai_llm_model": {
+    "type": "string",
+    "default": "gpt-4o-mini",
+    "description": "OpenAI LLM model"
+  },
+  "openai_base_url": {
+    "type": "string",
+    "default": "https://api.openai.com/v1",
+    "description": "OpenAI base URL"
+  },
+  "auto_rebuild_on_switch": {
+    "type": "bool",
+    "default": true,
+    "description": "Auto rebuild on switch"
+  },
+  "enable_semantic": {
+    "type": "bool",
+    "default": true,
+    "description": "Enable semantic"
+  },
+  "enable_prospective": {
+    "type": "bool",
+    "default": true,
+    "description": "Enable prospective"
+  },
+  "enable_promotion": {
+    "type": "bool",
+    "default": true,
+    "description": "Enable promotion"
+  },
+  "metamemory_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "Metamemory enabled"
+  },
+  "enable_episodic_semantic": {
+    "type": "bool",
+    "default": true,
+    "description": "Enable episodic semantic"
+  },
+  "enable_backup": {
+    "type": "bool",
+    "default": true,
+    "description": "Enable automatic periodic .db backup (B10)"
+  },
+  "backup_interval_hours": {
+    "type": "float",
+    "default": 24.0,
+    "description": "Backup interval in hours (0 = disabled)"
+  },
+  "backup_keep_last": {
+    "type": "int",
+    "default": 7,
+    "description": "Keep this many most recent backups"
+  },
+  "backup_keep_weekly": {
+    "type": "int",
+    "default": 1,
+    "description": "Keep one backup per ~7-day bucket beyond keep_last"
+  },
+  "backup_keep_monthly": {
+    "type": "int",
+    "default": 1,
+    "description": "Keep one backup per ~30-day bucket beyond weekly"
+  }
+}
