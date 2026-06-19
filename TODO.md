@@ -79,3 +79,54 @@
 **风险提示**
 - 1 与 3 都是结构性改动，动手前先各自给方案 + 确认 AstrBot 钩子能力，再写代码。
 - 任何一项都需：改完同步运行副本 + bump 版本（`metadata.yaml` + `hippocampus/__init__.py`）+ 跑烟测 + 推送。
+
+
+## 6. 借鉴自 atom.txt 架构解读的增量点
+
+> 来源：用户提供的 `atom.txt`（某 Agent 记忆系统架构文字解读，DDD/Clean 风格）。与 livingmemory 同范式，去重后对 engram 真正有增量的为以下几项。BM25 / Graph检索 / index_validator / Prompts分层已在前文 TODO，不重复。
+
+### 6.1 质量校验 + Warm 后台处理（并入 TODO#3 会话聚合）
+
+**对照**：atom.txt 落库前有 `quality_validator`（过滤低质量/噪声）+ `warm_processor`（后台异步加工）。engram `observe()`（`hippocampus/service.py:159`）逐条同步入库，仅过滤空内容与合成事件，无质量门、无后台加工。
+
+**目标**：在 TODO#3 会话缓冲层之上加「质量门」——聚合后、落库前判断是否值得记（长度/信息量/是否纯寒暄/是否重复），低质量丢弃；耗时的 LLM 总结放后台异步，避免阻塞消息处理。
+
+**价值**：与当前最痛点（逐条入库噪声多）同源，建议与 TODO#3 一起做。
+
+### 6.2 Persona 用户画像引擎（全新能力，engram 当前没有）
+
+**对照**：atom.txt 有 `persona_engine` + `persona_store`，按用户长期沉淀偏好/行为画像。engram 有 `actor_id` 维度但只用于检索过滤，未做画像沉淀。
+
+**目标**：新增按 `actor_id` 的画像表，定期（或攒够 N 条记忆后）用 LLM 总结该用户的稳定偏好/身份/行为，召回时作为稳定背景注入（配合 TODO#1 自动注入）。
+
+**要点**：
+- 新表 `personas(actor_id, platform, summary, updated_at, source_count)`。
+- 触发：定时 / 攒够 N 条新记忆 / 手动命令。
+- 与 episodic 记忆解耦：画像是「稳定背景」，不参与衰减 GC。
+- 这是 atom.txt 相对 engram 的最大增量能力。
+
+### 6.3 WAL + 崩溃恢复（低成本健壮性，建议优先）
+
+**对照**：atom.txt 存储层用 `SQLite + FTS5 + WAL` + `write_op_log`（崩溃恢复日志）。engram 已用 SQLite+FTS5，需确认是否已开 WAL。
+
+**目标**：
+- 先上 `PRAGMA journal_mode=WAL`（近零成本，提升并发读写 + 崩溃恢复）——动手前先 grep 确认 `hippocampus/storage.py` 是否已设置，避免重复。
+- `write_op_log`（写操作日志做崩溃恢复）成本高、收益边际，**暂不做**，仅记录。
+
+**价值**：WAL 改动极小、风险极低，可作为最先落地项。
+
+### 6.4 聊天内管理命令 /memory /forget /summary（易用性）
+
+**对照**：atom.txt 有 `command_handler` 暴露 `/memory` `/forget` `/summary`。engram 目前只能用 WebUI 管理记忆，无聊天内命令。
+
+**目标**：用 AstrBot 指令机制加少量命令：查询最近记忆 / 主动遗忘指定记忆 / 触发一次会话总结。改动自包含，不触碰检索与存储核心逻辑。
+
+**要点**：需确认 AstrBot 指令注册 API（`@filter.command` 等），命令仅做读/标记，不直接硬删（走现有 soft_forget）。
+
+### 落地优先级（综合 TODO#1–6）
+1. **WAL（6.3）** — 最便宜，先做。
+2. **会话聚合 + 质量门（TODO#3 + 6.1）** — 最痛点。
+3. **Persona 画像（6.2）** — 最大增量能力。
+4. **BM25 检索（TODO#4）** — 中文检索质量。
+5. **自动注入（TODO#1）** — 让记忆真正进对话。
+6. **管理命令（6.4）／ GC 判据（TODO#2）／ 其余** — 按需补。
