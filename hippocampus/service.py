@@ -16,6 +16,7 @@ from .working_memory import WorkingMemory
 from .recall import PatternCompleter, Reconsolidator
 from .consolidator import ReplayConsolidator
 from .profile import ProfileStore, ProfileFact
+from .persona import PersonaStore, Persona
 from .activation import SpreadingActivation
 
 
@@ -62,6 +63,7 @@ class MemoryService:
         self._prospective_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.profile = ProfileStore(self.cfg.sqlite_path) if self.cfg.enable_profile else None
+        self.persona_store = PersonaStore(self.cfg.sqlite_path) if getattr(self.cfg, "enable_persona", False) else None
         self.activation = SpreadingActivation(self.semantic, self.store, self.cfg) if (self.semantic is not None) else None
         self.consolidator._semantic = self.semantic
         self.consolidator._profile = self.profile
@@ -512,6 +514,53 @@ class MemoryService:
             return []
         return self.profile.facts_for(actor_id, predicate=predicate, limit=limit)
 
+    def build_persona(self, actor_id):
+        """Summarize a speaker's recent engrams into a natural-language
+        persona via the encoder LLM, and store it. Returns the Persona, or
+        None when persona is disabled / there is nothing to summarize / the
+        LLM is the rule fallback (which returns "")."""
+        if self.persona_store is None or not actor_id:
+            return None
+        cap = int(getattr(self.cfg, "persona_max_source", 20) or 20)
+        rows = [e for e in self.store.all(limit=5000)
+                if (e.actor_id or "") == actor_id]
+        rows = rows[:max(1, cap)]
+        if not rows:
+            return None
+        platform = ""
+        for e in rows:
+            if getattr(e, "platform", ""):
+                platform = e.platform
+                break
+        lines = []
+        for e in rows:
+            txt = (e.summary or e.content or "").strip()
+            if txt:
+                lines.append("- " + txt.replace("\n", " "))
+        if not lines:
+            return None
+        corpus = "\n".join(lines)
+        system = (
+            "你是一个用户画像助手。基于该用户最近的消息，用中文写一段简洁、"
+            "客观的用户画像，概括其稳定的偏好、身份特征与行为习惯。只输出画像"
+            "正文，不要前缀、不要罗列原文。控制在 120 字以内。")
+        try:
+            summary = self.llm.chat(system, corpus, max_tokens=256) or ""
+        except Exception as ex:
+            print("[hippocampus] build_persona llm error: " + repr(ex))
+            summary = ""
+        summary = summary.strip()
+        if not summary:
+            return None
+        persona = Persona(actor_id=actor_id, summary=summary,
+                          platform=platform, source_count=len(rows))
+        return self.persona_store.upsert(persona)
+
+    def get_persona(self, actor_id):
+        if self.persona_store is None or not actor_id:
+            return None
+        return self.persona_store.get(actor_id)
+
     def decay_profile(self, actor_id=None):
         if self.profile is None:
             return 0
@@ -556,7 +605,7 @@ class MemoryService:
     def close(self) -> None:
 
         for name in ("store", "semantic", "atom_store", "graph_store",
-                     "prospective_store", "profile"):
+                     "prospective_store", "profile", "persona_store"):
             obj = getattr(self, name, None)
             if obj is None:
                 continue

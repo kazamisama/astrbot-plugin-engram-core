@@ -35,6 +35,7 @@ class CommandRouter:
             "recall":                "recall.cmd_recall",
             "mem search":            "recall.cmd_mem_search",
             "mem profile":           "recall.cmd_mem_profile",
+            "mem persona":           "recall.cmd_mem_persona",
             "mem activate":          "recall.cmd_mem_activate",
             "mem cluster":           "recall.cmd_mem_cluster",
             "mem cluster-list":      "recall.cmd_mem_cluster_list",

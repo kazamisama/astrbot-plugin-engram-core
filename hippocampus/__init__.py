@@ -9,6 +9,7 @@ from .providers import (ProviderRegistry, OpenAIEmbeddingProvider, ProxyEmbeddin
 from .semantic import SemanticStore, EntityExtractor
 from .prospective import ProspectiveStore, TimeParser, ProspectiveScheduler
 from .profile import ProfileStore, ProfileFact
+from .persona import PersonaStore, Persona
 from .activation import SpreadingActivation
 from .retrieval import (RRFFusion, RankedCandidate, FusedCandidate,
                        rrf_fuse, RRF_K_DEFAULT,
@@ -24,7 +25,7 @@ from .config_manager import ConfigManager, LABELS
 from .managers.backup_manager import BackupManager, BackupRecord
 
 # 单一版本事实源:metadata.yaml / @register / export payload 都引用这里。
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 # 导出 JSON 的格式版本(与插件版本解耦,仅在导出结构变化时才 bump)。
 EXPORT_FORMAT_VERSION = "1.1"
 __all__ = [
@@ -37,7 +38,7 @@ __all__ = [
     "ProviderRegistry", "OpenAIEmbeddingProvider", "ProxyEmbeddingProvider", "default_registry",
     "SemanticStore", "EntityExtractor",
     "ProspectiveStore", "TimeParser", "ProspectiveScheduler",
-    "ProfileStore", "ProfileFact", "SpreadingActivation",
+    "ProfileStore", "ProfileFact", "PersonaStore", "Persona", "SpreadingActivation",
     "RRFFusion", "RankedCandidate", "FusedCandidate", "rrf_fuse", "RRF_K_DEFAULT",
     "DualRouteRetriever", "DualRouteConfig", "RouteKind",
     "GraphRetriever", "EntityMatch",

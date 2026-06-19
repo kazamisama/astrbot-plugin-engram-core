@@ -71,6 +71,30 @@ class RecallHandler:
         actor_id = (actor or "").strip() or meta["actor_id"]
         yield event.plain_result(format_profile(self.service, actor_id))
 
+    async def cmd_mem_persona(self, event, actor: str = ""):
+        if self.service is None:
+            yield event.plain_result("Memory service not initialized.")
+            return
+        if not getattr(self.service, "persona_store", None):
+            yield event.plain_result(
+                "用户画像未启用（请在配置中开启「启用用户画像」）。")
+            return
+        meta = _extract(event)
+        actor_id = (actor or "").strip() or meta["actor_id"]
+        persona = self.service.build_persona(actor_id)
+        if persona is None or not (persona.summary or "").strip():
+            existing = self.service.get_persona(actor_id)
+            if existing is not None and (existing.summary or "").strip():
+                yield event.plain_result(
+                    "用户画像（" + actor_id + "，未更新）：\n" + existing.summary)
+            else:
+                yield event.plain_result(
+                    "无法生成画像：该用户暂无足够记忆，或当前 LLM 为规则兜底。")
+            return
+        yield event.plain_result(
+            "用户画像（" + actor_id + "，基于 " + str(persona.source_count)
+            + " 条记忆）：\n" + persona.summary)
+
     async def cmd_mem_activate(self, event, seeds: str = ""):
         from ..format import format_activation
         if self.service is None:

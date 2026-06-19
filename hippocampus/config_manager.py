@@ -118,6 +118,10 @@ _FIELDS: dict[str, _FieldSpec] = {
     "session_aggregate_max_messages": _FieldSpec(int, (1, 100), label_zh="会话聚合最大条数", label_en="Session aggregate max messages"),
     "session_aggregate_idle_seconds": _FieldSpec(float, (0.0, 86400.0), label_zh="会话聚合静默秒数", label_en="Session aggregate idle seconds"),
     "session_aggregate_min_chars": _FieldSpec(int, (1, 1000), label_zh="会话聚合最小字数", label_en="Session aggregate min chars"),
+    # v1.8 persona
+    "enable_persona": _FieldSpec(bool, label_zh="启用用户画像", label_en="Enable persona"),
+    "persona_inject_enabled": _FieldSpec(bool, label_zh="启用画像注入", label_en="Persona inject enabled"),
+    "persona_max_source": _FieldSpec(int, (1, 1000), label_zh="画像取样条数", label_en="Persona max source"),
 }
 
 # Public i18n label dict: field name -> {zh, en}. Stable API for B8

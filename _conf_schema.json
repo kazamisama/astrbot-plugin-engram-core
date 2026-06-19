@@ -118,6 +118,24 @@
         "default": 2,
         "description": "会话聚合最小字数",
         "hint": "质量门：短于此长度的消息（去空白后）会被丢弃，不进入缓冲。"
+      },
+      "enable_persona": {
+        "type": "bool",
+        "default": false,
+        "description": "启用用户画像",
+        "hint": "开启后可用 /mem persona 为某个用户生成一段自然语言画像（基于其历史消息由 LLM 总结），与结构化用户事实互补。默认关闭。"
+      },
+      "persona_inject_enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用画像注入",
+        "hint": "开启后（且记忆自动注入已开），调用对话模型前会把该用户的画像作为稳定背景拼进上下文。默认关闭。"
+      },
+      "persona_max_source": {
+        "type": "int",
+        "default": 20,
+        "description": "画像取样条数",
+        "hint": "生成画像时，最多取该用户最近多少条记忆作为输入。"
       }
     }
   },

@@ -176,6 +176,13 @@ class HippocampusStar(Star):
                 "mem profile", event, (), {"actor": actor}):
             yield r
 
+    @filter.command("mem persona")
+    async def cmd_mem_persona(self, event: AstrMessageEvent,
+                              actor: str = ""):
+        async for r in self._commands.dispatch(
+                "mem persona", event, (), {"actor": actor}):
+            yield r
+
     @filter.command("mem activate")
     async def cmd_mem_activate(self, event: AstrMessageEvent,
                                seeds: str = ""):

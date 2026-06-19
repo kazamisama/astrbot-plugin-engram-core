@@ -117,3 +117,7 @@ class MemoryConfig:
     session_aggregate_max_messages: int = 5
     session_aggregate_idle_seconds: float = 120.0
     session_aggregate_min_chars: int = 2
+    # --- v1.8: natural-language user persona (narrative profile) ---
+    enable_persona: bool = False
+    persona_inject_enabled: bool = False
+    persona_max_source: int = 20
