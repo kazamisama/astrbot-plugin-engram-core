@@ -17,6 +17,7 @@ Endpoints:
   GET  /memories         -> list_memories(actor_id, k, offset)
   GET  /memories/detail  -> get_memory_detail(eid)
   POST /memories/delete  -> delete_memory(eid, hard)
+  POST /memories/update  -> update_memory(eid, fields) [re-embeds on text change]
   POST /recall/test      -> test_recall(query, mode, k)
   GET  /graph/overview   -> graph_overview()
   POST /graph/query      -> graph_query(name)
@@ -130,6 +131,8 @@ class PluginPageApi:
                  ["GET"], "Hippocampus memory detail")
         register(f"{PAGE_API_PREFIX}/memories/delete", self._delete_memory,
                  ["POST"], "Hippocampus memory delete")
+        register(f"{PAGE_API_PREFIX}/memories/update", self._update_memory,
+                 ["POST"], "Hippocampus memory update")
         register(f"{PAGE_API_PREFIX}/recall/test", self._test_recall,
                  ["POST"], "Hippocampus recall test")
         register(f"{PAGE_API_PREFIX}/graph/overview", self._graph_overview,
@@ -177,6 +180,18 @@ class PluginPageApi:
             eid=str(body.get("eid", "")),
             hard=_as_bool(body.get("hard"), False),
         )
+
+    async def _update_memory(self) -> dict[str, Any]:
+        body = await _json_body()
+        eid = str(body.get("eid", ""))
+        fields = body.get("fields")
+        if not isinstance(fields, dict):
+            # accept flat body too: pull known editable keys directly
+            fields = {k: body[k] for k in (
+                "summary", "content", "memory_type", "tier",
+                "importance", "strength", "topics", "tags") if k in body}
+        return self.memory_handler.update_memory(
+            self._service(), eid=eid, fields=fields)
 
     async def _test_recall(self) -> dict[str, Any]:
         body = await _json_body()

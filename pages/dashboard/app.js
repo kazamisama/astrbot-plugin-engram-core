@@ -88,12 +88,15 @@
     returned: "本页条数",
     offset: "偏移量",
     k: "请求条数",
-    mode: "模式"
+    mode: "模式",
+    topics: "话题",
+    tags: "标签",
+    tier: "分层"
   };
   function fieldLabel(k) { return FIELD_LABELS[k] || k; }
 
   var STREAM_LABELS = { what: "内容流（是什么）", where_when: "时空流（何时何地）", "": "未分类" };
-  var MEMTYPE_LABELS = { episodic: "情景记忆", semantic: "语义记忆", prospective: "前瞻记忆" };
+  var MEMTYPE_LABELS = { episodic: "情景记忆", semantic: "语义记忆", prospective: "前瞻记忆", diary: "日记" };
   function fieldValueText(k, v) {
     if (v === null || v === undefined || v === "") return "—";
     if (k === "stream") return STREAM_LABELS[v] || v;
@@ -234,13 +237,78 @@
     return html + "</div>";
   }
 
+  function editForm(d) {
+    function field(id, label, value, type) {
+      var v = value == null ? "" : String(value);
+      var input = (type === "textarea")
+        ? '<textarea id="' + id + '" class="edit-input" rows="4">' + escapeHtml(v) + "</textarea>"
+        : '<input id="' + id + '" class="edit-input" value="' + escapeHtml(v) + '" />';
+      return '<div class="edit-row"><label class="edit-k">' + escapeHtml(label) + "</label>" + input + "</div>";
+    }
+    var memType = d.memory_type == null ? "" : String(d.memory_type);
+    var typeOpts = ["episodic", "semantic", "prospective", "diary"].map(function (t) {
+      return '<option value="' + t + '"' + (t === memType ? " selected" : "") + ">" +
+        escapeHtml(MEMTYPE_LABELS[t] || t) + "</option>";
+    }).join("");
+    return '<div class="edit-box">' +
+      '<div class="section-title">编辑记忆</div>' +
+      field("ed-summary", "摘要", d.summary, "textarea") +
+      field("ed-content", "原文内容", d.content, "textarea") +
+      '<div class="edit-row"><label class="edit-k">记忆类型</label>' +
+        '<select id="ed-memtype" class="edit-input">' + typeOpts + "</select></div>" +
+      field("ed-importance", "重要度 (0-1)", d.importance, "text") +
+      field("ed-strength", "记忆强度 (0-1)", d.strength, "text") +
+      field("ed-topics", "话题 (逗号分隔)", (d.topics || []).join("、"), "text") +
+      field("ed-tags", "标签 (逗号分隔)", (d.tags || []).join("、"), "text") +
+      field("ed-tier", "分层", d.tier, "text") +
+      '<div class="edit-actions">' +
+        '<button id="ed-save" class="btn btn-sm">保存修改</button>' +
+        '<span id="ed-msg" class="edit-msg"></span></div>' +
+      '<div class="edit-hint">修改“原文内容”会重新计算向量。</div>' +
+      "</div>";
+  }
+
+  async function saveEdit(eid) {
+    var msg = document.getElementById("ed-msg");
+    if (msg) { msg.textContent = "保存中…"; msg.className = "edit-msg"; }
+    var fields = {
+      summary: document.getElementById("ed-summary").value,
+      content: document.getElementById("ed-content").value,
+      memory_type: document.getElementById("ed-memtype").value,
+      importance: document.getElementById("ed-importance").value,
+      strength: document.getElementById("ed-strength").value,
+      topics: document.getElementById("ed-topics").value,
+      tags: document.getElementById("ed-tags").value,
+      tier: document.getElementById("ed-tier").value
+    };
+    try {
+      var r = unwrap(await apiPost("page/memories/update", { eid: eid, fields: fields }));
+      var ch = (r && r.changed) || [];
+      var re = r && r.reembedded;
+      if (msg) {
+        msg.textContent = ch.length
+          ? ("已保存：" + ch.join("、") + (re ? "（已重算向量）" : ""))
+          : "无变更";
+        msg.className = "edit-msg ok";
+      }
+      await loadMemories();
+      await showDetail(eid);
+    } catch (e) {
+      if (msg) { msg.textContent = "保存失败：" + e.message; msg.className = "edit-msg err"; }
+    }
+  }
+
   async function showDetail(eid) {
     var el = document.getElementById("mem-detail");
     el.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + emptyBox("加载详情…");
     try {
       var d = unwrap(await apiGet("page/memories/detail", { eid: eid }));
-      el.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" +
-        (d && typeof d === "object" ? kvRows(d) : '<div class="raw">' + escapeHtml(JSON.stringify(d, null, 2)) + "</div>");
+      var body = (d && typeof d === "object")
+        ? (kvRows(d) + editForm(d))
+        : '<div class="raw">' + escapeHtml(JSON.stringify(d, null, 2)) + "</div>";
+      el.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + body;
+      var saveBtn = document.getElementById("ed-save");
+      if (saveBtn) { saveBtn.addEventListener("click", function () { saveEdit(eid); }); }
     } catch (e) {
       el.innerHTML = errBox(e.message);
     }

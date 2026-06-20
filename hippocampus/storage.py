@@ -252,6 +252,7 @@ class HippocampalStore:
               cluster_id,profile_fact_id,confidence,tier)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
+              content=excluded.content,
               summary=excluded.summary, topics=excluded.topics, entities=excluded.entities,
               entity_refs=excluded.entity_refs, tags=excluded.tags, similar_to=excluded.similar_to,
               importance=excluded.importance, strength=excluded.strength,

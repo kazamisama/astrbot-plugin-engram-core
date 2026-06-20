@@ -309,7 +309,7 @@ def test_backup_handler_list_backups():
 
 
 def test_page_api_registers_11_endpoints():
-    banner("page_api registers 11 endpoints (8 B9 + 2 backup + 1 graph/data)")
+    banner("page_api registers 12 endpoints (8 B9 + 2 backup + 1 graph/data + 1 update)")
     sys.path.insert(0, os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
@@ -322,7 +322,7 @@ def test_page_api_registers_11_endpoints():
             service=None, backup_manager=None))
     api = page_api.PluginPageApi(plugin)
     api.register_routes()
-    assert len(calls) == 11, "expected 11 endpoints, got " + str(len(calls))
+    assert len(calls) == 12, "expected 12 endpoints, got " + str(len(calls))
     paths = [c[0] for c in calls]
     for needed in ["/astrbot_plugin_engram/page/graph/data",
                    "/astrbot_plugin_engram/page/backups",

@@ -4,6 +4,7 @@ Endpoints:
   list_memories(actor_id, k, offset) -> paginated engram list
   get_memory_detail(eid)             -> single engram detail
   delete_memory(eid, hard)           -> soft (default) or hard delete
+  update_memory(eid, fields)         -> edit fields; re-embed on text change
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any
@@ -87,6 +88,9 @@ class MemoryHandler:
             "confidence": getattr(row, "confidence", None),
             "created_at": getattr(row, "created_at", None),
             "entity_refs": getattr(row, "entity_refs", None) or [],
+            "topics": getattr(row, "topics", None) or [],
+            "tags": getattr(row, "tags", None) or [],
+            "tier": getattr(row, "tier", None),
         })
 
     def delete_memory(self, service, eid: str,
@@ -114,3 +118,78 @@ class MemoryHandler:
             return self.utils.ok({"id": eid, "mode": "soft"})
         except Exception as e:
             return self.utils.error(f"soft forget failed: {e!r}")
+
+    # v1.21 B-4: edit an engram from the WebUI. Text changes (content)
+    # trigger an embedding recompute so recall stays consistent.
+    _STR_FIELDS = ("summary", "content", "memory_type", "tier")
+    _FLOAT_FIELDS = ("importance", "strength")
+    _LIST_FIELDS = ("topics", "tags")
+
+    def update_memory(self, service, eid: str,
+                      fields: dict) -> dict[str, Any]:
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        eid = (eid or "").strip()
+        if not eid:
+            return self.utils.error("Missing eid.")
+        if not isinstance(fields, dict) or not fields:
+            return self.utils.error("No fields to update.")
+        try:
+            row = service.store.get(eid)
+        except Exception as e:
+            return self.utils.error(f"get failed: {e!r}")
+        if row is None:
+            return self.utils.error(f"unknown id: {eid}")
+        changed = []
+        text_changed = False
+        for key in self._STR_FIELDS:
+            if key in fields and fields[key] is not None:
+                val = str(fields[key])
+                if getattr(row, key, "") != val:
+                    if key == "content":
+                        text_changed = True
+                    setattr(row, key, val)
+                    changed.append(key)
+        for key in self._FLOAT_FIELDS:
+            if key in fields and fields[key] is not None:
+                try:
+                    val = float(fields[key])
+                except (TypeError, ValueError):
+                    return self.utils.error(f"{key} must be a number")
+                val = max(0.0, min(1.0, val))
+                if getattr(row, key, 0.0) != val:
+                    setattr(row, key, val)
+                    changed.append(key)
+        for key in self._LIST_FIELDS:
+            if key in fields and fields[key] is not None:
+                val = self._coerce_list(fields[key])
+                if list(getattr(row, key, []) or []) != val:
+                    setattr(row, key, val)
+                    changed.append(key)
+        if not changed:
+            return self.utils.ok({"id": eid, "changed": [], "reembedded": False})
+        reembedded = False
+        if text_changed:
+            try:
+                row.embedding = service.embedder.embed(row.content or "")
+                row.embedding_model = getattr(
+                    service, "_current_embedding_name", "") or row.embedding_model
+                reembedded = True
+            except Exception as e:
+                return self.utils.error(f"re-embed failed: {e!r}")
+        try:
+            service.store.upsert(row)
+        except Exception as e:
+            return self.utils.error(f"upsert failed: {e!r}")
+        return self.utils.ok({"id": eid, "changed": changed,
+                              "reembedded": reembedded})
+
+    @staticmethod
+    def _coerce_list(val) -> list:
+        if isinstance(val, list):
+            return [str(x).strip() for x in val if str(x).strip()]
+        text = str(val or "").strip()
+        if not text:
+            return []
+        parts = [p.strip() for p in text.replace("\u3001", ",").split(",")]
+        return [p for p in parts if p]
