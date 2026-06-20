@@ -198,3 +198,26 @@ class ManageHandler:
             return
         res = self.service.force_consolidate()
         yield event.plain_result("consolidated: " + str(res))
+
+    async def cmd_mem_diary(self, event):
+        """v1.22: manually trigger the daily diary build (debug/verify).
+        Normally fires at diary_trigger_hour; this runs it now."""
+        if self.service is None:
+            yield event.plain_result("Memory service not initialized.")
+            return
+        cfg = getattr(self.service, "cfg", None)
+        if cfg is not None and not getattr(cfg, "diary_enabled", False):
+            yield event.plain_result("\u65e5\u8bb0\u672a\u542f\u7528\uff08diary_enabled=false\uff09\u3002")
+            return
+        if not hasattr(self.service, "run_daily_diary"):
+            yield event.plain_result("\u5f53\u524d\u7248\u672c\u4e0d\u652f\u6301\u65e5\u8bb0\u3002")
+            return
+        try:
+            n = self.service.run_daily_diary()
+        except Exception as e:
+            yield event.plain_result("\u65e5\u8bb0\u751f\u6210\u51fa\u9519\uff1a" + repr(e))
+            return
+        if n:
+            yield event.plain_result("\u5df2\u751f\u6210 " + str(n) + " \u7bc7\u65e5\u8bb0\uff08\u524d\u4e00\u4e2a\u903b\u8f91\u65e5\uff09\u3002")
+        else:
+            yield event.plain_result("\u672a\u751f\u6210\u65e5\u8bb0\uff1a\u524d\u4e00\u4e2a\u903b\u8f91\u65e5\u7f13\u5b58\u4e2d\u6ca1\u6709\u53ef\u7528\u6d88\u606f\u3002")

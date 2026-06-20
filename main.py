@@ -331,6 +331,12 @@ class HippocampusStar(Star):
                 "mem consolidate", event, (), {}):
             yield r
 
+    @filter.command("mem diary")
+    async def cmd_mem_diary(self, event: AstrMessageEvent):
+        async for r in self._commands.dispatch(
+                "mem diary", event, (), {}):
+            yield r
+
     @filter.command("mem forget")
     async def cmd_mem_forget(self, event: AstrMessageEvent, eid: str):
         async for r in self._commands.dispatch(

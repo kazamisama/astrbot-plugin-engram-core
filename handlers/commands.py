@@ -54,6 +54,7 @@ class CommandRouter:
             "mem prospective":       "manage.cmd_mem_prospective",
             "mem replay":            "manage.cmd_mem_replay",
             "mem consolidate":       "manage.cmd_mem_consolidate",
+            "mem diary":             "manage.cmd_mem_diary",
             "mem valence":           "manage.cmd_mem_valence",
             "mem streams":           "manage.cmd_mem_streams",
             "mem tier":              "manage.cmd_mem_tier",
