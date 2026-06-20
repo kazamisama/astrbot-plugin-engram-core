@@ -48,7 +48,8 @@ def _build_prompt(rec, target_chars: int) -> str:
         " \u5b57\u3002\u8fd4\u56de JSON\uff0c\u952e\uff1a"
         "summary(\u53d9\u8ff0\u6458\u8981), key_facts(\u4e8b\u5b9e\u5217\u8868), "
         "topics(\u8bdd\u9898), participants(\u53c2\u4e0e\u4eba), "
-        "relations(\u5217\u8868\uff0c\u6bcf\u9879 {subject, relation, object, confidence})\u3002\n\n"
+        "relations(\u5217\u8868\uff0c\u6bcf\u9879 {subject, subject_type, relation, object, object_type, confidence}\uff0c"
+        "\u5176\u4e2d subject_type/object_type \u4e3a person/place/object/org/unknown \u4e4b\u4e00)\u3002\n\n"
     )
     ctx = ""
     if rec.chat_type == "group":
@@ -181,6 +182,14 @@ def _as_list(v) -> list:
     return [v]
 
 
+_VALID_TYPES = {"person", "place", "object", "org", "unknown"}
+
+
+def _norm_type(v) -> str:
+    t = str(v or "").strip().lower()
+    return t if t in _VALID_TYPES else ""
+
+
 def _normalize(data: dict) -> dict:
     out = {}
     out["summary"] = str(data.get("summary", "") or "").strip()
@@ -193,12 +202,16 @@ def _normalize(data: dict) -> dict:
             subj = str(r.get("subject", "") or "").strip()
             rel = str(r.get("relation", "") or "").strip()
             obj = str(r.get("object", "") or "").strip()
+            styp = _norm_type(r.get("subject_type"))
+            otyp = _norm_type(r.get("object_type"))
             try:
                 conf = float(r.get("confidence", 0.5))
             except Exception:
                 conf = 0.5
             conf = min(1.0, max(0.0, conf))
             if subj and rel:
-                rels.append({"subject": subj, "relation": rel, "object": obj, "confidence": conf})
+                rels.append({"subject": subj, "relation": rel, "object": obj,
+                             "confidence": conf, "subject_type": styp,
+                             "object_type": otyp})
     out["relations"] = rels
     return out

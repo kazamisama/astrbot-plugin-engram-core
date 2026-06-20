@@ -337,7 +337,9 @@ class MemoryService:
                         confidence=float(r.get("confidence", 0.5) or 0.5),
                         actor_id=actor_id,
                         channel_id=identity.get("channel_id", "") or "",
-                        source_engram_id=e.id)
+                        source_engram_id=e.id,
+                        subject_type=str(r.get("subject_type", "") or "").strip(),
+                        object_type=str(r.get("object_type", "") or "").strip())
                     if rel.subject and rel.predicate:
                         self.relation_store.add_with_supersede(rel, hysteresis=hyst)
                 except Exception as rex:

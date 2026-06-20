@@ -1,9 +1,18 @@
-"""Graph handler for the page API (B9).
+"""Graph handler for the page API (v1.29: LLM-centric, RelationStore-sourced).
+
+The knowledge graph is sourced from RelationStore (LLM-summarized
+structured triples with per-relation confidence + supersede), NOT from
+SemanticStore. Entity nodes are DERIVED from relation endpoints; their
+type comes from the LLM-provided subject_type/object_type, falling back
+to rule classification.
 
 Endpoints:
   graph_overview()   -> {n_entities, n_relations, sample}
-  graph_query(name)  -> resolve a single entity and return its
-                       engram_refs + outgoing relations
+  graph_data(limit)  -> {nodes, edges, truncated}
+  graph_query(name)  -> entity + its relations + engram refs
+  delete_entity(name)-> hard-delete all relations touching the name
+  delete_relation(rid)
+  update_relation(rid, confidence)
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any
@@ -12,163 +21,159 @@ if TYPE_CHECKING:
     from .utils import PageApiUtils
 
 
+def _rs(service):
+    return getattr(service, "relation_store", None)
+
+
+def _infer_type(name: str, given: str = "") -> str:
+    g = (given or "").strip().lower()
+    if g and g != "unknown":
+        return g
+    try:
+        from hippocampus.semantic import _classify
+        t = _classify(name or "")
+        if t and t != "unknown":
+            return t
+    except Exception:
+        pass
+    return g or "unknown"
+
+
+def _eid(name: str) -> str:
+    # stable id derived from the (lowercased, trimmed) name
+    return "ent_" + (name or "").strip().lower()
+
+
 class GraphHandler:
     def __init__(self, utils: "PageApiUtils") -> None:
         self.utils = utils
 
+    # ---- nodes are derived from relation endpoints ----
+    def _collect_nodes(self, rels):
+        """name(lower) -> {id, name, type, mentions} from a list of Relation."""
+        nodes = {}
+        for r in rels:
+            for nm, ty in ((r.subject, getattr(r, "subject_type", "")),
+                           (r.object, getattr(r, "object_type", ""))):
+                key = (nm or "").strip()
+                if not key:
+                    continue
+                lk = key.lower()
+                node = nodes.get(lk)
+                if node is None:
+                    nodes[lk] = {"id": _eid(key), "name": key,
+                                 "type": _infer_type(key, ty), "mentions": 1}
+                else:
+                    node["mentions"] += 1
+                    if node["type"] in ("", "unknown"):
+                        node["type"] = _infer_type(key, ty)
+        return nodes
+
     def graph_overview(self, service) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
-        sem = service.semantic
-        if sem is None:
-            return self.utils.ok({"n_entities": 0, "n_relations": 0,
-                                   "sample": []})
+        rs = _rs(service)
+        if rs is None:
+            return self.utils.ok({"n_entities": 0, "n_relations": 0, "sample": []})
         try:
-            ents = sem.all_entities(limit=10_000_000)
-            n_entities = len(ents)
-        except Exception:
-            n_entities = -1
-        # SemanticStore has no all_relations(); n_relations is
-        # reported as -1 until B9.x. entities are Entity dataclasses.
-        n_relations = -1
-        sample = []
-        try:
-            for e in (ents or [])[:10]:
-                sample.append({
-                    "id": getattr(e, "id", None),
-                    "name": getattr(e, "name", None),
-                    "type": getattr(e, "type", None),
-                })
-        except Exception:
-            pass
+            rels = rs.all_active(limit=10_000_000)
+        except Exception as e:
+            return self.utils.error(f"all_active failed: {e!r}")
+        nodes = self._collect_nodes(rels)
+        sample = [{"id": n["id"], "name": n["name"], "type": n["type"]}
+                  for n in list(nodes.values())[:10]]
         return self.utils.ok({
-            "n_entities": n_entities,
-            "n_relations": n_relations,
+            "n_entities": len(nodes),
+            "n_relations": len(rels),
             "sample": sample,
         })
 
     def graph_data(self, service, limit: int = 300) -> dict[str, Any]:
-        """Build a node-link graph for visualization.
-
-        Walks every entity and its relations_of() once, de-duplicating
-        edges (relations_of returns both incoming + outgoing, so the
-        same relation surfaces from both endpoints). Returns:
-          {nodes: [{id, name, type, mentions}],
-           edges: [{src, dst, predicate}],
-           truncated: bool}
-        Nodes are capped at `limit` to keep the payload renderable.
-        """
         if service is None:
             return self.utils.error("Memory service not initialized.")
-        sem = service.semantic
-        if sem is None:
+        rs = _rs(service)
+        if rs is None:
             return self.utils.ok({"nodes": [], "edges": [], "truncated": False})
         try:
             cap = max(1, min(int(limit), 2000))
         except Exception:
             cap = 300
         try:
-            ents = sem.all_entities(limit=10_000_000) or []
+            rels = rs.all_active(limit=10_000_000) or []
         except Exception as e:
-            return self.utils.error(f"all_entities failed: {e!r}")
-        truncated = len(ents) > cap
-        ents = ents[:cap]
-        node_ids = set()
-        nodes = []
-        for e in ents:
-            eid = getattr(e, "id", None)
-            if eid is None:
-                continue
-            node_ids.add(eid)
-            nodes.append({
-                "id": eid,
-                "name": getattr(e, "name", None) or eid,
-                "type": getattr(e, "type", None) or "unknown",
-                "mentions": getattr(e, "mention_count", 0) or 0,
-            })
-        seen = set()
+            return self.utils.error(f"all_active failed: {e!r}")
+        nodes_map = self._collect_nodes(rels)
+        nodes = list(nodes_map.values())
+        truncated = len(nodes) > cap
+        nodes = nodes[:cap]
+        keep = {n["name"].strip().lower() for n in nodes}
         edges = []
-        for e in ents:
-            eid = getattr(e, "id", None)
-            if eid is None:
+        for r in rels:
+            s = (r.subject or "").strip().lower()
+            o = (r.object or "").strip().lower()
+            if not s or not o:
                 continue
-            try:
-                rels = sem.relations_of(eid) or []
-            except Exception:
+            if s not in keep or o not in keep:
                 continue
-            for r in rels:
-                src = getattr(r, "subject_id", None)
-                dst = getattr(r, "object_id", None)
-                if not src or not dst:
-                    continue
-                # keep edges only between nodes we actually return
-                if src not in node_ids or dst not in node_ids:
-                    continue
-                key = (src, dst, getattr(r, "predicate", "") or "")
-                if key in seen:
-                    continue
-                seen.add(key)
-                edges.append({
-                    "src": src,
-                    "dst": dst,
-                    "predicate": getattr(r, "predicate", None) or "",
-                })
+            edges.append({
+                "src": _eid(r.subject),
+                "dst": _eid(r.object),
+                "predicate": r.predicate or "",
+            })
         return self.utils.ok({
             "nodes": nodes,
             "edges": edges,
             "truncated": truncated,
         })
+
     def graph_query(self, service, name: str = "") -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
         name = (name or "").strip()
         if not name:
             return self.utils.error("Missing name.")
-        sem = service.semantic
-        if sem is None:
-            return self.utils.error("Semantic layer disabled.")
+        rs = _rs(service)
+        if rs is None:
+            return self.utils.error("Relation layer disabled.")
         try:
-            ent = sem.find_entity_by_name(name)
+            rels = rs.relations_for(name, limit=200)
         except Exception as e:
-            return self.utils.error(f"resolve failed: {e!r}")
-        if ent is None:
+            return self.utils.error(f"relations_for failed: {e!r}")
+        if not rels:
             return self.utils.error(f"unknown entity: {name}")
-        eid = getattr(ent, "id", None)
+        # resolve this entity's type from whichever endpoint matches
+        nm_l = name.lower()
+        etype = "unknown"
+        for r in rels:
+            if (r.subject or "").strip().lower() == nm_l:
+                etype = _infer_type(r.subject, getattr(r, "subject_type", ""))
+                break
+            if (r.object or "").strip().lower() == nm_l:
+                etype = _infer_type(r.object, getattr(r, "object_type", ""))
+                break
         out_rels = []
-        try:
-            # SemanticStore.relations_of(eid) returns relations
-            # involving eid (incoming + outgoing).
-            for r in (sem.relations_of(eid) or []):
-                # Relation has subject_id / object_id (entity ids);
-                # resolve to names via get_entity() for human-readable
-                # output. Falls back to the raw id on resolution fail.
-                src_id = getattr(r, "subject_id", None)
-                dst_id = getattr(r, "object_id", None)
-                src_ent = sem.get_entity(src_id) if src_id else None
-                dst_ent = sem.get_entity(dst_id) if dst_id else None
-                out_rels.append({
-                    "id": getattr(r, "id", None),
-                    "src": getattr(src_ent, "name", src_id),
-                    "predicate": getattr(r, "predicate", None),
-                    "dst": getattr(dst_ent, "name", dst_id),
-                    "confidence": getattr(r, "confidence", None),
-                })
-        except Exception:
-            pass
+        for r in rels:
+            out_rels.append({
+                "id": r.id,
+                "src": r.subject,
+                "predicate": r.predicate,
+                "dst": r.object,
+                "confidence": r.confidence,
+            })
         refs = []
         try:
-            for en in service.store.list_active(limit=10_000_000):
-                entity_refs = getattr(en, "entity_refs", None) or []
-                if eid in entity_refs:
-                    refs.append({
-                        "id": getattr(en, "id", None),
-                        "summary": (getattr(en, "summary", "") or "")[:160],
-                    })
+            src_ids = {r.source_engram_id for r in rels if r.source_engram_id}
+            if src_ids:
+                for en in service.store.list_active(limit=10_000_000):
+                    if getattr(en, "id", None) in src_ids:
+                        refs.append({
+                            "id": getattr(en, "id", None),
+                            "summary": (getattr(en, "summary", "") or "")[:160],
+                        })
         except Exception:
             pass
         return self.utils.ok({
-            "entity": {"id": eid, "name": getattr(ent, "name", None),
-                       "type": getattr(ent, "type", None)},
+            "entity": {"id": _eid(name), "name": name, "type": etype},
             "relations": out_rels[:100],
             "engram_refs": refs[:100],
         })
@@ -176,14 +181,16 @@ class GraphHandler:
     def delete_entity(self, service, eid: str) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
-        sem = service.semantic
-        if sem is None:
-            return self.utils.error("Semantic layer disabled.")
+        rs = _rs(service)
+        if rs is None:
+            return self.utils.error("Relation layer disabled.")
         eid = (eid or "").strip()
         if not eid:
             return self.utils.error("Missing eid.")
+        # eid is "ent_<name-lower>"; recover the name to match on.
+        name = eid[4:] if eid.startswith("ent_") else eid
         try:
-            n = sem.delete_entity(eid)
+            n = rs.delete_entity(name)
         except Exception as e:
             return self.utils.error(f"delete_entity failed: {e!r}")
         return self.utils.ok({"id": eid, "relations_removed": n})
@@ -191,27 +198,26 @@ class GraphHandler:
     def delete_relation(self, service, rid: str) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
-        sem = service.semantic
-        if sem is None:
-            return self.utils.error("Semantic layer disabled.")
+        rs = _rs(service)
+        if rs is None:
+            return self.utils.error("Relation layer disabled.")
         rid = (rid or "").strip()
         if not rid:
             return self.utils.error("Missing rid.")
         try:
-            ok = sem.delete_relation(rid)
+            ok = rs.delete_by_id(rid)
         except Exception as e:
             return self.utils.error(f"delete_relation failed: {e!r}")
         if not ok:
             return self.utils.error(f"unknown relation: {rid}")
         return self.utils.ok({"id": rid, "deleted": True})
 
-    def update_relation(self, service, rid: str,
-                        confidence) -> dict[str, Any]:
+    def update_relation(self, service, rid: str, confidence) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
-        sem = service.semantic
-        if sem is None:
-            return self.utils.error("Semantic layer disabled.")
+        rs = _rs(service)
+        if rs is None:
+            return self.utils.error("Relation layer disabled.")
         rid = (rid or "").strip()
         if not rid:
             return self.utils.error("Missing rid.")
@@ -220,7 +226,7 @@ class GraphHandler:
         except Exception:
             return self.utils.error("Invalid confidence.")
         try:
-            ok = sem.set_relation_confidence(rid, c)
+            ok = rs.set_confidence(rid, c)
         except Exception as e:
             return self.utils.error(f"update_relation failed: {e!r}")
         if not ok:

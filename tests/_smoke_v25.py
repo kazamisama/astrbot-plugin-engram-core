@@ -186,14 +186,28 @@ def test_real_service_roundtrip():
         r = api.recall_handler.test_recall(
             svc, query="Americano", mode="hybrid", k=2)
         assert r["status"] == "ok" and r["data"]["count"] >= 1
+        # v1.29: graph is sourced from RelationStore (LLM triples).
+        from hippocampus.relation_store import Relation as RSRel
+        svc.relation_store.add_with_supersede(RSRel(
+            subject="Alice", predicate="resides_in", object="Shanghai",
+            confidence=0.8, subject_type="person", object_type="place"))
+        svc.relation_store.add_with_supersede(RSRel(
+            subject="Bob", predicate="knows", object="Alice",
+            confidence=0.6, subject_type="person", object_type="person"))
+        svc.relation_store.add_with_supersede(RSRel(
+            subject="Alice", predicate="likes", object="Americano",
+            confidence=0.7, subject_type="person", object_type="object"))
         g = api.graph_handler.graph_overview(svc)
         assert g["data"]["n_entities"] >= 3, g
+        assert g["data"]["n_relations"] >= 3, g
         gq = api.graph_handler.graph_query(svc, name="Alice")
         assert gq["status"] == "ok"
         assert gq["data"]["entity"]["name"] == "Alice"
+        assert gq["data"]["entity"]["type"] == "person", gq
         for rel in gq["data"]["relations"]:
             assert rel["src"] is not None, rel
             assert rel["dst"] is not None, rel
+            assert rel["id"], rel
         gq2 = api.graph_handler.graph_query(svc, name="ZZZ_no_such")
         assert gq2["status"] == "error"
     finally:
