@@ -99,6 +99,10 @@ class HippocampusStar(Star):
         self._idle_flush_task = None
         self._start_idle_flush_loop()
 
+        # 5. v1.20 B-3: daily diary scheduler (runs at diary_trigger_hour).
+        self._diary_task = None
+        self._start_diary_loop()
+
     def _start_idle_flush_loop(self) -> None:
         try:
             import asyncio
@@ -129,6 +133,49 @@ class HippocampusStar(Star):
             self._idle_flush_task = loop.create_task(_loop())
         except Exception:
             self._idle_flush_task = None
+
+    def _start_diary_loop(self) -> None:
+        """Fire service.run_daily_diary() once per day at the configured
+        local hour. Best-effort; skips when no running loop (sync init)."""
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+        except Exception:
+            return
+
+        async def _loop():
+            import asyncio as _a
+            import time as _t
+            while True:
+                try:
+                    cfg = getattr(self.service, "cfg", None)
+                    if cfg is None or not getattr(cfg, "diary_enabled", False):
+                        await _a.sleep(3600.0)
+                        continue
+                    hour = int(getattr(cfg, "diary_trigger_hour", 12) or 12)
+                    now = _t.time()
+                    lt = _t.localtime(now)
+                    target = _t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                                        hour, 0, 0, lt.tm_wday, lt.tm_yday,
+                                        lt.tm_isdst))
+                    if target <= now:
+                        target += 86400.0
+                    await _a.sleep(max(5.0, target - now))
+                    try:
+                        n = self.service.run_daily_diary()
+                        if n:
+                            print("[hippocampus] daily diary wrote " + str(n) + " entries")
+                    except Exception as ex:
+                        print("[hippocampus] daily diary run error: " + repr(ex))
+                except _a.CancelledError:
+                    break
+                except Exception as ex:
+                    print("[hippocampus] diary loop error: " + repr(ex))
+                    await _a.sleep(3600.0)
+        try:
+            self._diary_task = loop.create_task(_loop())
+        except Exception:
+            self._diary_task = None
 
     # ---------- event hook ----------
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -386,6 +433,9 @@ class HippocampusStar(Star):
             task = getattr(self, "_idle_flush_task", None)
             if task is not None:
                 task.cancel()
+            dtask = getattr(self, "_diary_task", None)
+            if dtask is not None:
+                dtask.cancel()
         except Exception as e:
             print(f"[hippocampus] terminate flush error: {e!r}")
         if self.service is not None:

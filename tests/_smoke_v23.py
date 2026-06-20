@@ -44,7 +44,7 @@ def test_registry_covers_all_memory_config_fields():
         f"missing in registry: {cfg_fields - registry_fields}\n"
         f"extra in registry:   {registry_fields - cfg_fields}"
     )
-    assert len(registry_fields) == 109  # 67 base +5 backup +2 provider_id -4 openai +3 auto-inject +4 session-agg +3 persona +1 tokenizer +3 dedup +1 reltime +8 tiering +2 cold-archive +1 freq-recall +9 summary-b1 +1 idle-flush +3 relation-b2
+    assert len(registry_fields) == 120  # 67 base +5 backup +2 provider_id -4 openai +3 auto-inject +4 session-agg +3 persona +1 tokenizer +3 dedup +1 reltime +8 tiering +2 cold-archive +1 freq-recall +9 summary-b1 +1 idle-flush +3 relation-b2 +11 diary-b3
     print("  all 67 fields registered: OK")
 
 
@@ -179,7 +179,7 @@ def test_extras_collected_into_memory_config_extra():
 
 def test_labels_have_zh_and_en_for_every_field():
     banner("LABELS has zh + en for every field; spot-check 3 well-known fields")
-    assert len(LABELS) == 109  # 67 base +5 backup +2 provider_id -4 openai +3 auto-inject +4 session-agg +3 persona +1 tokenizer +3 dedup +1 reltime +8 tiering +2 cold-archive +1 freq-recall +9 summary-b1 +1 idle-flush +3 relation-b2
+    assert len(LABELS) == 120  # 67 base +5 backup +2 provider_id -4 openai +3 auto-inject +4 session-agg +3 persona +1 tokenizer +3 dedup +1 reltime +8 tiering +2 cold-archive +1 freq-recall +9 summary-b1 +1 idle-flush +3 relation-b2 +11 diary-b3
     for fname, lab in LABELS.items():
         assert "zh" in lab and "en" in lab
         assert lab["zh"] and lab["en"], f"{fname}: empty label"

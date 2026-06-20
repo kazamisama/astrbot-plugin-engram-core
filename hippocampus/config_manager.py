@@ -150,6 +150,18 @@ _FIELDS: dict[str, _FieldSpec] = {
     "relation_supersede_hysteresis": _FieldSpec(float, (0.0, 1.0), label_zh="关系覆盖迟滞", label_en="Relation supersede hysteresis"),
     "relation_inject_top_n": _FieldSpec(int, (0, 50), label_zh="关系注入条数", label_en="Relation inject top n"),
     "relation_inject_min_confidence": _FieldSpec(float, (0.0, 1.0), label_zh="关系注入最低置信", label_en="Relation inject min confidence"),
+    # v1.20 B-3 diary layer
+    "diary_enabled": _FieldSpec(bool, label_zh="启用日记", label_en="Enable diary"),
+    "diary_trigger_hour": _FieldSpec(int, (0, 23), label_zh="日记生成钟点", label_en="Diary trigger hour"),
+    "diary_night_window_hours": _FieldSpec(float, (0.0, 12.0), label_zh="夜间裁断窗口小时", label_en="Diary night window hours"),
+    "diary_night_gap_seconds": _FieldSpec(float, (60.0, 86400.0), label_zh="夜间冷却间隔秒", label_en="Diary night gap seconds"),
+    "diary_message_ttl_days": _FieldSpec(int, (1, 60), label_zh="当日消息缓存天数", label_en="Diary message TTL days"),
+    "diary_compress_ratio": _FieldSpec(float, (0.0, 1.0), label_zh="日记压缩比", label_en="Diary compress ratio"),
+    "diary_compress_floor": _FieldSpec(int, (0, 5000), label_zh="日记字数下限", label_en="Diary compress floor"),
+    "diary_compress_cap": _FieldSpec(int, (0, 10000), label_zh="日记字数上限", label_en="Diary compress cap"),
+    "diary_chunk_max_chars": _FieldSpec(int, (50, 4000), label_zh="日记分块字数", label_en="Diary chunk max chars"),
+    "diary_inject_top_n": _FieldSpec(int, (0, 20), label_zh="日记注入条数", label_en="Diary inject top n"),
+    "diary_inject_min_score": _FieldSpec(float, (0.0, 1.0), label_zh="日记注入最低得分", label_en="Diary inject min score"),
     # v1.8 persona
     "enable_persona": _FieldSpec(bool, label_zh="启用用户画像", label_en="Enable persona"),
     "persona_inject_enabled": _FieldSpec(bool, label_zh="启用画像注入", label_en="Persona inject enabled"),

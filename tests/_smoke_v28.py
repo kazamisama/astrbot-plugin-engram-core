@@ -142,7 +142,7 @@ def test_enabled_before():
     h = InjectHandler(svc)
     req = _FakeReq("我刚才说到哪了")
     asyncio.run(h.handle_inject(_FakeEvent("我刚才说到哪了"), req))
-    assert req.prompt.startswith("[相关长期记忆]"), req.prompt
+    assert req.prompt.startswith("[近期对话]"), req.prompt  # v1.20 B-3 relabel
     assert "用户喜欢侦探小说" in req.prompt
     assert "用户在做 AstrBot 插件" in req.prompt
     assert "第三条不该出现" not in req.prompt  # top_k=2 cap

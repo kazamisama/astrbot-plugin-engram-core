@@ -59,10 +59,14 @@ class InjectHandler:
                 except Exception as pex:
                     print("[hippocampus] persona fetch skipped: " + repr(pex))
 
+            # v1.20 B-3: layered recall - conversation summaries only
+            # (episodic/semantic), diary is recalled separately below with
+            # its own quota so the two layers do not crowd each other out.
             result = svc.recall(Cue(
                 text=query,
                 actor_id=actor_id,
                 channel_id=meta.get("channel_id"),
+                memory_types=["episodic", "semantic", "prospective"],
                 k=top_k))
             engrams = getattr(result, "engrams", None) or []
             show_time = bool(getattr(cfg, "auto_inject_relative_time", True))
@@ -76,7 +80,7 @@ class InjectHandler:
                     lines.append("- [" + label + "] " + summ)
                 else:
                     lines.append("- " + summ)
-            memory_block = ("[相关长期记忆]\n" + "\n".join(lines)) if lines else ""
+            memory_block = ("[近期对话]\n" + "\n".join(lines)) if lines else ""
 
             # v1.19 B-2: relation injection (option-4 pipeline filter).
             relation_block = ""
@@ -98,8 +102,22 @@ class InjectHandler:
                 except Exception as rex:
                     print("[hippocampus] relation inject skipped: " + repr(rex))
 
-            # Persona goes first (stable background), then relations, then memories.
-            parts = [b for b in (persona_block, relation_block, memory_block) if b]
+            # v1.20 B-3: diary recall with its own quota + source label.
+            diary_block = ""
+            if hasattr(svc, "recall_diary_chunks"):
+                try:
+                    dtop = int(getattr(cfg, "diary_inject_top_n", 1) or 0)
+                    if dtop > 0:
+                        dmin = float(getattr(cfg, "diary_inject_min_score", 0.0) or 0.0)
+                        hits = svc.recall_diary_chunks(query, top_n=dtop, min_score=dmin)
+                        dlines = ["- " + t for t, _sc in hits if (t or "").strip()]
+                        if dlines:
+                            diary_block = "[\u4eca\u65e5\u56de\u987e]\n" + "\n".join(dlines)
+                except Exception as dex:
+                    print("[hippocampus] diary inject skipped: " + repr(dex))
+
+            # Persona (background) -> relations -> recent conversation -> diary.
+            parts = [b for b in (persona_block, relation_block, memory_block, diary_block) if b]
             if not parts:
                 return
             block = "\n\n".join(parts)

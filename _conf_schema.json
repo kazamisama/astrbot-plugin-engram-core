@@ -255,6 +255,30 @@
         "default": 0.0,
         "description": "关系覆盖迟滞",
         "hint": "新关系置信度 >= 旧值-迟滞 才覆盖旧关系，否则作为候选。"
+      },
+      "diary_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用日记",
+        "hint": "每天为每个会话生成一篇 bot 第一人称日记。"
+      },
+      "diary_trigger_hour": {
+        "type": "int",
+        "default": 12,
+        "description": "日记生成钟点",
+        "hint": "每天本地几点生成前一天的日记（0-23）。"
+      },
+      "diary_inject_top_n": {
+        "type": "int",
+        "default": 1,
+        "description": "日记注入条数",
+        "hint": "每次最多注入多少条日记（独立于总结配额），0=关闭。"
+      },
+      "diary_compress_cap": {
+        "type": "int",
+        "default": 2500,
+        "description": "日记字数上限",
+        "hint": "单篇日记最多字数。"
       }
     }
   },

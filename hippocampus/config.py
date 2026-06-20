@@ -152,6 +152,18 @@ class MemoryConfig:
     relation_supersede_hysteresis: float = 0.0   # new conf >= old-hyst to supersede; else candidate
     relation_inject_top_n: int = 3               # max relations injected per LLM request
     relation_inject_min_confidence: float = 0.0  # drop relations below this confidence before inject
+    # --- v1.20 (B-3): diary layer (daily bot-first-person summary) ---
+    diary_enabled: bool = True                    # build one diary per channel per logical day
+    diary_trigger_hour: int = 12                  # local hour-of-day to run the daily diary build
+    diary_night_window_hours: float = 6.0         # scan [00:00, +N h) for the night cut gap
+    diary_night_gap_seconds: float = 1800.0       # idle gap that marks the night cut (30min)
+    diary_message_ttl_days: int = 7               # daily-message cache retention before purge
+    diary_compress_ratio: float = 0.025           # target = total * (ratio / participants)
+    diary_compress_floor: int = 50                # min diary chars
+    diary_compress_cap: int = 2500                # max diary chars
+    diary_chunk_max_chars: int = 400              # chunk size for chunk-level recall
+    diary_inject_top_n: int = 1                   # diary entries injected per LLM request (own quota)
+    diary_inject_min_score: float = 0.0           # drop diary chunks below this recall score
     # --- v1.8: natural-language user persona (narrative profile) ---
     enable_persona: bool = False
     persona_inject_enabled: bool = False

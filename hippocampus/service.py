@@ -18,6 +18,16 @@ from .consolidator import ReplayConsolidator
 from .profile import ProfileStore, ProfileFact
 from .persona import PersonaStore, Persona
 from .activation import SpreadingActivation
+import math as _math
+
+
+def _diary_cos(a, b) -> float:
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    da = _math.sqrt(sum(x * x for x in a[:n])) or 1.0
+    db = _math.sqrt(sum(x * x for x in b[:n])) or 1.0
+    return sum(a[i] * b[i] for i in range(n)) / (da * db)
 
 
 class MemoryService:
@@ -57,6 +67,8 @@ class MemoryService:
         self.semantic = SemanticStore(self.cfg.sqlite_path) if self.cfg.enable_semantic else None
         from .relation_store import RelationStore
         self.relation_store = RelationStore(self.cfg.sqlite_path)
+        from .diary_store import DiaryStore
+        self.diary_store = DiaryStore(self.cfg.sqlite_path)
         self.extractor = EntityExtractor(self.llm) if self.cfg.enable_semantic else None
         self.prospective_store = ProspectiveStore(self.cfg.sqlite_path) if self.cfg.enable_prospective else None
         self.prospective_scheduler = (
@@ -356,6 +368,206 @@ class MemoryService:
         except Exception as ex:
             print("[hippocampus] recall_relations error: " + repr(ex))
             return []
+
+    # ---------- v1.20 (B-3): diary layer ----------
+    def cache_daily_line(self, meta: dict) -> None:
+        """Append one raw line (user OR bot) to the daily cache. Best-effort;
+        never raises out of the event hook."""
+        ds = getattr(self, "diary_store", None)
+        if ds is None:
+            return
+        if not bool(getattr(self.cfg, "diary_enabled", False)):
+            return
+        content = (meta.get("content", "") or "").strip()
+        if not content:
+            return
+        try:
+            from .diary_store import DailyLine
+            ds.add_line(DailyLine(
+                channel_id=meta.get("channel_id", "") or "",
+                chat_type=meta.get("chat_type", "") or "",
+                actor_id=meta.get("actor_id", "") or "",
+                speaker=meta.get("speaker", "") or meta.get("actor_id", "") or "",
+                content=content,
+                is_bot=bool(meta.get("is_bot", False)),
+                group_id=meta.get("group_id", "") or "",
+                group_name=meta.get("group_name", "") or "",
+                peer_actor_id=meta.get("peer_actor_id", "") or "",
+                peer_name=meta.get("peer_name", "") or "",
+                session_id=meta.get("session_id", "") or "",
+                platform=meta.get("platform", "") or ""))
+        except Exception as ex:
+            print("[hippocampus] cache_daily_line error: " + repr(ex))
+
+    def store_diary(self, diary: dict, identity: dict) -> "Engram | None":
+        """Persist ONE diary as an engram (memory_type=diary) + chunk-level
+        embeddings for chunk recall. Mirrors store_summary persistence."""
+        from .types import Engram
+        text = (diary.get("summary") or "").strip()
+        if not text:
+            return None
+        facts = diary.get("key_facts") or []
+        content = text
+        if facts:
+            content = text + "\n" + "\n".join("- " + str(f) for f in facts)
+        actor_id = identity.get("actor_id") or identity.get("peer_actor_id") or "diary"
+        e = Engram(
+            session_id=identity.get("session_id", "") or "",
+            actor_id=actor_id,
+            platform=identity.get("platform", "") or "",
+            channel_id=identity.get("channel_id", "") or "",
+            content=content,
+            summary=text,
+            topics=list(diary.get("topics") or []),
+            entities=list(diary.get("participants") or []),
+            importance=float(diary.get("importance", 0.6) or 0.6),
+            memory_type="diary",
+            embedding_model=self._current_embedding_name,
+        )
+        try:
+            e.embedding = self.embedder.embed(content)
+        except Exception as ex:
+            print("[hippocampus] store_diary embed error: " + repr(ex))
+            e.embedding = []
+        stamps = ["kind:diary"]
+        if identity.get("chat_type"):
+            stamps.append("chat:" + identity["chat_type"])
+        if identity.get("group_id"):
+            stamps.append("group:" + str(identity["group_id"]))
+        if identity.get("group_name"):
+            stamps.append("groupname:" + str(identity["group_name"]))
+        if identity.get("peer_name"):
+            stamps.append("peer:" + str(identity["peer_name"]))
+        if identity.get("day_label"):
+            stamps.append("day:" + str(identity["day_label"]))
+        e.tags = list(e.tags) + stamps
+        try:
+            self.store.upsert(e)
+            self._post_ingest(e)
+        except Exception as ex:
+            print("[hippocampus] store_diary persist error: " + repr(ex))
+            return None
+        # chunk-level embeddings for chunk recall
+        ds = getattr(self, "diary_store", None)
+        if ds is not None:
+            try:
+                from .diary_writer import split_chunks
+                from .diary_store import DiaryChunk
+                first_ts = float(diary.get("_first_ts", 0.0) or 0.0)
+                last_ts = float(diary.get("_last_ts", 0.0) or 0.0)
+                cmax = int(getattr(self.cfg, "diary_chunk_max_chars", 400) or 400)
+                pieces = split_chunks(text, first_ts, last_ts, max_chars=cmax)
+                chunks = []
+                for seq, ptext, ts0, ts1 in pieces:
+                    try:
+                        emb = self.embedder.embed(ptext)
+                    except Exception:
+                        emb = []
+                    chunks.append(DiaryChunk(
+                        diary_id=e.id, channel_id=e.channel_id, seq=seq,
+                        text=ptext, embedding=emb,
+                        embedding_model=self._current_embedding_name,
+                        ts_start=ts0, ts_end=ts1))
+                if chunks:
+                    ds.add_chunks(chunks)
+            except Exception as ex:
+                print("[hippocampus] store_diary chunk error: " + repr(ex))
+        return e
+
+    def recall_diary_chunks(self, query: str, *, top_n: int = 1,
+                            min_score: float = 0.0) -> list:
+        """Chunk-level diary recall (B-3 req 13): embed query, score against
+        stored diary chunks by cosine, return top-N chunk texts. Returns
+        list[(text, score)]."""
+        ds = getattr(self, "diary_store", None)
+        if ds is None or top_n <= 0:
+            return []
+        try:
+            qvec = self.embedder.embed(query or "")
+        except Exception:
+            return []
+        if not qvec:
+            return []
+        try:
+            chunks = ds.all_chunks(limit=2000)
+        except Exception:
+            return []
+        scored = []
+        for ch in chunks:
+            if not ch.embedding:
+                continue
+            s = _diary_cos(qvec, ch.embedding)
+            if s >= min_score:
+                scored.append((ch.text, s))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:max(0, top_n)]
+
+    def run_daily_diary(self, *, now: float | None = None) -> int:
+        """Build diaries for the just-finished logical day across all cached
+        channels, then TTL-purge old daily messages. Returns count written."""
+        import time as _t
+        ds = getattr(self, "diary_store", None)
+        if ds is None or not bool(getattr(self.cfg, "diary_enabled", False)):
+            return 0
+        now = now if now is not None else _t.time()
+        from .diary_writer import (DiaryWriter, day_bounds, resolve_cut)
+        writer = getattr(self, "_diary_writer", None)
+        if writer is None:
+            writer = DiaryWriter(self.cfg, llm=self.llm)
+            self._diary_writer = writer
+        else:
+            try:
+                writer.set_llm(self.llm)
+            except Exception:
+                pass
+        night_h = float(getattr(self.cfg, "diary_night_window_hours", 6.0) or 6.0)
+        gap = float(getattr(self.cfg, "diary_night_gap_seconds", 1800.0) or 1800.0)
+        # target = the day that ended at the most recent midnight (yesterday)
+        today_start, _ = day_bounds(now)
+        target_day = today_start - 86400.0
+        d_start, _ = day_bounds(target_day)
+        next_start, _ = day_bounds(d_start + 86400.0 + 3600.0)
+        day_label = _t.strftime("%Y-%m-%d", _t.localtime(d_start))
+        written = 0
+        try:
+            channels = ds.channels_with_lines(d_start, next_start + night_h * 3600.0)
+        except Exception as ex:
+            print("[hippocampus] run_daily_diary channels error: " + repr(ex))
+            channels = []
+        for ch in channels:
+            try:
+                t0 = resolve_cut(ds, ch, d_start, night_hours=night_h, min_gap_seconds=gap)
+                t1 = resolve_cut(ds, ch, next_start, night_hours=night_h, min_gap_seconds=gap)
+                lines = ds.lines_in_range(ch, t0, t1)
+                if not lines:
+                    continue
+                diary = writer.compose(lines, day_label)
+                if diary is None or not (diary.get("summary") or "").strip():
+                    continue
+                first = lines[0]
+                identity = {
+                    "session_id": first.session_id,
+                    "actor_id": first.peer_actor_id or "",
+                    "platform": first.platform,
+                    "channel_id": ch,
+                    "chat_type": first.chat_type,
+                    "group_id": first.group_id,
+                    "group_name": first.group_name,
+                    "peer_actor_id": first.peer_actor_id,
+                    "peer_name": first.peer_name,
+                    "day_label": day_label,
+                }
+                if self.store_diary(diary, identity) is not None:
+                    written += 1
+            except Exception as ex:
+                print("[hippocampus] run_daily_diary channel error: " + repr(ex))
+        # TTL purge
+        try:
+            ttl_days = int(getattr(self.cfg, "diary_message_ttl_days", 7) or 7)
+            ds.purge_older_than(now - ttl_days * 86400.0)
+        except Exception as ex:
+            print("[hippocampus] run_daily_diary purge error: " + repr(ex))
+        return written
 
     def _find_text_duplicate(self, e: Engram):
         """Text-layer near-duplicate check (v1.11). Uses FTS to pull
@@ -836,7 +1048,7 @@ class MemoryService:
 
         for name in ("store", "semantic", "atom_store", "graph_store",
                      "prospective_store", "profile", "persona_store",
-                     "relation_store"):
+                     "relation_store", "diary_store"):
             obj = getattr(self, name, None)
             if obj is None:
                 continue

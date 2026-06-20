@@ -137,6 +137,12 @@ class ObserveHandler:
             cfg, "summary_mode_enabled", False))
         debug_ingest = bool(cfg is not None and getattr(
             cfg, "per_message_ingest_debug", False))
+        # v1.20 B-3: cache every inbound line (incl. for diary) before any
+        # summary routing, so the daily diary sees the full transcript.
+        try:
+            self.service.cache_daily_line(meta)
+        except Exception as ce:
+            print(f"[hippocampus] daily cache error: {ce!r}")
         try:
             if summary_mode:
                 # Conversation-level summarization owns ingest. Per-message
@@ -170,7 +176,9 @@ class ObserveHandler:
         if not body:
             return
         cfg = getattr(self.service, "cfg", None)
-        if not (cfg is not None and getattr(cfg, "summary_mode_enabled", False)):
+        summary_on = bool(cfg is not None and getattr(cfg, "summary_mode_enabled", False))
+        diary_on = bool(cfg is not None and getattr(cfg, "diary_enabled", False))
+        if not (summary_on or diary_on):
             return
         try:
             meta = _extract(event)
@@ -185,6 +193,13 @@ class ObserveHandler:
                 meta["group_name"] = await _resolve_group_name(event)
             except Exception:
                 meta["group_name"] = ""
+        # v1.20 B-3: cache bot's own line for the daily diary.
+        try:
+            self.service.cache_daily_line(meta)
+        except Exception as ce:
+            print(f"[hippocampus] bot daily cache error: {ce!r}")
+        if not summary_on:
+            return
         try:
             self._get_conv_buffer().feed(meta)
         except Exception as e:
