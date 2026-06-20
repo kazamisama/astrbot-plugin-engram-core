@@ -278,6 +278,12 @@ class HippocampusStar(Star):
                 "mem streams", event, (), {}):
             yield r
 
+    @filter.command("mem tier")
+    async def cmd_mem_tier(self, event: AstrMessageEvent, arg: str = ""):
+        async for r in self._commands.dispatch(
+                "mem tier", event, (), {"arg": arg}):
+            yield r
+
     # Back-compat thin shim: smoke v16 calls this method directly
     # (it bypasses __init__ by using __new__, then sets star.service
     # manually before calling this). The real work lives in

@@ -144,6 +144,30 @@ class ManageHandler:
                  "  untyped:                              " + str(b.get("untyped", 0))]
         yield event.plain_result(chr(10).join(lines))
 
+    async def cmd_mem_tier(self, event, arg: str = ""):
+        """/mem tier        -> show hot/warm/cold counts (live classify)
+           /mem tier reclass -> recompute + persist tiers, then show counts
+           /mem tier archive -> archive cold tier to a compressed file"""
+        if self.service is None:
+            yield event.plain_result("Memory service not initialized.")
+            return
+        cfg = getattr(self.service, "cfg", None)
+        if not getattr(cfg, "tiering_enabled", False):
+            yield event.plain_result("记忆分层未启用（tiering_enabled=false）。")
+            return
+        sub = (arg or "").strip().lower()
+        from ..format import format_tier
+        if sub == "reclass":
+            counts = self.service.reclassify_tiers()
+            yield event.plain_result("已重算分层。" + chr(10) + format_tier(self.service, counts))
+            return
+        if sub == "archive":
+            from ..format import format_tier_archive
+            res = self.service.archive_cold()
+            yield event.plain_result(format_tier_archive(res))
+            return
+        yield event.plain_result(format_tier(self.service))
+
     async def cmd_mem_remember(self, event, arg: str = ""):
         if self.service is None:
             yield event.plain_result("Memory service not initialized.")

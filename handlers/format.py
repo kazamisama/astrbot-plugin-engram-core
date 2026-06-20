@@ -533,3 +533,56 @@ def format_session(service):
 def _join_or_all(xs):
     return "(all)" if not xs else ", ".join(xs)
 
+
+def format_tier(service, counts=None):
+    """v1.13 /mem tier: hot/warm/cold breakdown.
+
+    When `counts` (from reclassify_tiers) is given, show the persisted
+    result; otherwise classify live over all engrams for a fresh view.
+    """
+    if service is None:
+        return "Memory service not initialized."
+    cfg = getattr(service, "cfg", None)
+    if counts is None:
+        try:
+            from hippocampus.tiering import classify, HOT, WARM, COLD
+            import time as _t
+            now = _t.time()
+            c = {HOT: 0, WARM: 0, COLD: 0}
+            for e in service.store.all(limit=10_000_000):
+                c[classify(e, cfg, now)] += 1
+            counts = c
+        except Exception as ex:
+            return "tier classify error: " + repr(ex)
+    hot = counts.get("hot", 0)
+    warm = counts.get("warm", 0)
+    cold = counts.get("cold", 0)
+    total = hot + warm + cold
+    lines = ["## 记忆分层 (hot/warm/cold)",
+             "  热 (hot)： " + str(hot) + "  → 优先召回",
+             "  温 (warm)：" + str(warm) + "  → 正常召回",
+             "  冷 (cold)：" + str(cold) + "  → 仅兑底召回",
+             "  总计：    " + str(total)]
+    if "changed" in counts:
+        lines.append("  本次重算变更：" + str(counts.get("changed", 0)))
+    try:
+        from hippocampus.cold_archive import ColdArchiver
+        n_arch = ColdArchiver(service.store, cfg).count_archived()
+        lines.append("  已归档(冷存文件)：" + str(n_arch))
+    except Exception:
+        pass
+    return chr(10).join(lines)
+
+
+def format_tier_archive(res):
+    """Render the result of service.archive_cold()."""
+    if not isinstance(res, dict):
+        return "tier archive: " + str(res)
+    if res.get("error"):
+        return "冷层归档失败：" + str(res.get("error"))
+    lines = ["## 冷层归档",
+             "  已归档并从库中移除：" + str(res.get("archived", 0)),
+             "  因太新跳过：" + str(res.get("skipped_recent", 0)),
+             "  归档文件：" + str(res.get("path", ""))]
+    return chr(10).join(lines)
+

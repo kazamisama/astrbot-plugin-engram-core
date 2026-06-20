@@ -556,6 +556,21 @@ class MemoryService:
             print("[hippocampus] reclassify_tiers error: " + repr(ex))
             return {}
 
+    def archive_cold(self, *, min_age_days=None) -> dict:
+        """v1.14: physically archive cold-tier engrams to a compressed file
+        and evict them from the live DB. Explicit / destructive to live rows
+        (data moves to the archive). Returns the archiver result dict, or {}
+        when tiering is disabled."""
+        if not getattr(self.cfg, "tiering_enabled", False):
+            return {}
+        from .cold_archive import ColdArchiver
+        try:
+            return ColdArchiver(self.store, self.cfg).archive_cold(
+                min_age_days=min_age_days)
+        except Exception as ex:
+            print("[hippocampus] archive_cold error: " + repr(ex))
+            return {"archived": 0, "error": repr(ex)}
+
     # ---------- v1.1+ delegations to profile / activation / consolidator ----------
     def build_profile(self, actor_id):
         if self.profile is None or self.semantic is None:

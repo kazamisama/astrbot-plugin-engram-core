@@ -1,261 +1,273 @@
 {
-    "provider_settings": {
-        "description": "模型提供商",
-        "type": "object",
-        "hint": "Embedding 与对话模型（LLM）都直接调用 AstrBot 已配置的提供商，无需在此填写 API Key。留空则使用 AstrBot 当前默认提供商。",
-        "items": {
-            "embedding_provider_id": {
-                "type": "string",
-                "default": "",
-                "description": "Embedding 提供商 ID",
-                "hint": "填写 AstrBot 中已配置的 Embedding 提供商 ID（在 AstrBot「服务提供商」页面查看）。留空则使用 AstrBot 当前默认的 Embedding。Embedding 用于把记忆文本转成向量，做语义检索。"
-            },
-            "llm_provider_id": {
-                "type": "string",
-                "_special": "select_provider",
-                "default": "",
-                "description": "对话模型（LLM）提供商",
-                "hint": "从下拉选择 AstrBot 已配置的对话模型提供商。留空则使用 AstrBot 当前默认对话模型。此处的 LLM 仅供记忆系统内部做摘要/抽取实体（工具调用，不含人格），与机器人对外聊天用的模型相互独立。"
-            },
-            "embedding_dim": {
-                "type": "int",
-                "default": 64,
-                "description": "Embedding 向量维度",
-                "hint": "本地兜底 hash embedding 的向量维度；接入真实 Embedding 提供商后以实际模型维度为准。"
-            }
-        }
-    },
-    "storage_settings": {
-        "description": "存储与语言",
-        "type": "object",
-        "items": {
-            "bot_language": {
-                "type": "string",
-                "default": "zh",
-                "description": "机器人回复语言",
-                "hint": "zh（中文）或 en（英文）。暂不支持热重载，修改后需重载插件生效。"
-            },
-            "sqlite_path": {
-                "type": "string",
-                "default": "data/hippocampus.db",
-                "description": "SQLite 数据库路径",
-                "hint": "记忆数据的本地存储文件路径，相对插件数据目录。"
-            }
-        }
-    },
-    "memory_settings": {
-        "description": "记忆行为",
-        "type": "object",
-        "items": {
-            "enable_semantic": {
-                "type": "bool",
-                "default": true,
-                "description": "启用语义记忆（实体抽取）",
-                "hint": "从对话中抽取实体并构建语义网络。"
-            },
-            "enable_prospective": {
-                "type": "bool",
-                "default": true,
-                "description": "启用前瞻记忆（待办触发）",
-                "hint": "记录并在条件满足时触发未来意图 / 提醒。"
-            },
-            "enable_promotion": {
-                "type": "bool",
-                "default": true,
-                "description": "启用记忆晋升",
-                "hint": "将高价值的情景记忆晋升为长期记忆。"
-            },
-            "metamemory_enabled": {
-                "type": "bool",
-                "default": true,
-                "description": "启用元记忆",
-                "hint": "追踪记忆的置信度与来源等元信息。"
-            },
-            "enable_episodic_semantic": {
-                "type": "bool",
-                "default": true,
-                "description": "启用情景到语义的固化",
-                "hint": "重放时将情景记忆固化为语义知识。"
-            },
-            "auto_inject_enabled": {
-                "type": "bool",
-                "default": true,
-                "description": "启用记忆自动注入",
-                "hint": "开启后，在每次调用对话模型前自动检索相关长期记忆，并拼接进发送给 LLM 的用户消息中（无需 LLM 主动调用工具）。默认开启；关闭则回到「按需工具调用」行为。"
-            },
-            "auto_inject_top_k": {
-                "type": "int",
-                "default": 3,
-                "description": "自动注入条数",
-                "hint": "每次自动注入最多拼接多少条记忆摘要。数值越大占用上下文 token 越多，建议 1-5。"
-            },
-            "auto_inject_position": {
-                "type": "string",
-                "default": "before",
-                "description": "自动注入位置",
-                "hint": "before=把记忆拼在用户消息之前，after=拼在之后。默认 before。"
-            },
-            "auto_inject_relative_time": {
-                "type": "bool",
-                "default": true,
-                "description": "注入相对时间标签",
-                "hint": "自动注入记忆时，在每条记忆前加上“刚刚/3 小时前/2 天前”等中文相对时间，让 LLM 感知记忆新旧。默认开启。"
-            },
-            "session_aggregate_enabled": {
-                "type": "bool",
-                "default": true,
-                "description": "启用会话聚合",
-                "hint": "开启后，同一频道内同一发言人的连续消息会先缓冲，攵够若干条或静默超时后合并成一条记忆再入库（而非逐条入库）。按发言人分桶，群聊里不同人不会被错误合并。默认开启；关闭则逐条入库。"
-            },
-            "session_aggregate_max_messages": {
-                "type": "int",
-                "default": 5,
-                "description": "会话聚合最大条数",
-                "hint": "同一发言人缓冲达到这么多条消息时立即合并入库。"
-            },
-            "session_aggregate_idle_seconds": {
-                "type": "float",
-                "default": 8.0,
-                "description": "会话聚合静默秒数",
-                "hint": "同一人两条消息间隔超过这么多秒就视为两段记忆。默认 8 秒，只把同一人“无人插话、短时间连发”的多条合并为一条，不会跨发言人合并（缓冲按 channel_id+actor_id 区分）。0 表示不按静默触发（仅靠条数）。"
-            },
-            "session_aggregate_min_chars": {
-                "type": "int",
-                "default": 0,
-                "description": "会话聚合最小字数",
-                "hint": "低于该字数的消息不进聚合缓冲。0 表示不限（默认）。"
-            },
-            "enable_persona": {
-                "type": "bool",
-                "default": false,
-                "description": "启用用户画像",
-                "hint": "开启后可用 /mem persona 为某个用户生成一段自然语言画像（基于其历史消息由 LLM 总结），与结构化用户事实互补。默认关闭。"
-            },
-            "persona_inject_enabled": {
-                "type": "bool",
-                "default": false,
-                "description": "启用画像注入",
-                "hint": "开启后（且记忆自动注入已开），调用对话模型前会把该用户的画像作为稳定背景拼进上下文。默认关闭。"
-            },
-            "persona_max_source": {
-                "type": "int",
-                "default": 20,
-                "description": "画像取样条数",
-                "hint": "生成画像时，最多取该用户最近多少条记忆作为输入。"
-            },
-            "tokenizer_mode": {
-                "type": "string",
-                "default": "jieba",
-                "options": [
-                    "char",
-                    "bigram",
-                    "jieba"
-                ],
-                "description": "FTS 分词模式",
-                "hint": "中文关键词检索（FTS/BM25）的分词方式。jieba=词级分词（默认，未安装 jieba 时自动降级为 bigram）；bigram=二元词（区分度高，零依赖）；char=逐字（零依赖，最粗糙）。切换后重启会自动重建 FTS 索引。"
-            },
-            "dedup_enabled": {
-                "type": "bool",
-                "default": true,
-                "description": "启用写入去重",
-                "hint": "写入前增加一道词级 Jaccard 近重复检查（补向量相似合并之不足，不依赖 embedding 质量）。命中时合并到已有记忆。默认开启。"
-            },
-            "dedup_threshold": {
-                "type": "float",
-                "default": 0.9,
-                "description": "去重 Jaccard 阈值",
-                "hint": "词集 Jaccard 相似度 ≥ 该值才判为近重复。越高越严格，默认 0.9。"
-            },
-            "dedup_candidate_k": {
-                "type": "int",
-                "default": 10,
-                "description": "去重候选数",
-                "hint": "用 FTS 拉取多少条同用户候选做 Jaccard 比对。默认 10。"
-            },
-            "tiering_enabled": {
-                "type": "bool",
-                "default": true,
-                "description": "启用记忆分层（热/温/冷）",
-                "hint": "仿 memori 的 active/dormant/archived：按强度与访问时间把记忆分为热/温/冷。正常召回只用热+温，冷层仅在热+温不足时兑底。不删数据，只是路由。默认开启。"
-            },
-            "tier_hot_max_age_days": {
-                "type": "float",
-                "default": 3.0,
-                "description": "热层最大天龄",
-                "hint": "最近访问且强度达标的记忆为热层；超过这么多天未访问则不再是热层。默认 3 天。"
-            },
-            "tier_hot_min_strength": {
-                "type": "float",
-                "default": 0.5,
-                "description": "热层最小强度",
-                "hint": "强度 ≥ 该值且足够新才算热层。默认 0.5。"
-            },
-            "tier_warm_max_age_days": {
-                "type": "float",
-                "default": 30.0,
-                "description": "温层最大天龄",
-                "hint": "非热层但在这么多天内的记忆为温层，仍参与正常召回；超过则转冷层。默认 30 天。"
-            },
-            "tier_cold_strength_floor": {
-                "type": "float",
-                "default": 0.1,
-                "description": "冷层强度下限",
-                "hint": "强度低于该值的记忆直接归为冷层（不论年龄）。默认 0.1。"
-            },
-            "tier_recall_include_cold": {
-                "type": "bool",
-                "default": false,
-                "description": "召回总是含冷层",
-                "hint": "开启后每次召回都把冷层一起纳入（会变慢/噪声增加）。默认关闭，仅兑底时查冷层。"
-            },
-            "tier_cold_fallback_min_hits": {
-                "type": "int",
-                "default": 1,
-                "description": "冷层兑底阈值",
-                "hint": "热+温命中数小于该值时，才把冷层拉进来兑底。0 表示从不兑底（冷层完全不参与召回）。默认 1。"
-            },
-            "tier_maintenance_interval_seconds": {
-                "type": "float",
-                "default": 1800.0,
-                "description": "分层重算周期秒",
-                "hint": "后台重算分层的周期（秒）。目前主要在插件启动时做一次全量重算，该值为预留配置。0 表示关闭。"
-            }
-        }
-    },
-    "backup_settings": {
-        "description": "备份",
-        "type": "object",
-        "items": {
-            "enable_backup": {
-                "type": "bool",
-                "default": true,
-                "description": "启用自动定期备份",
-                "hint": "周期性地备份 .db 数据库文件。"
-            },
-            "backup_interval_hours": {
-                "type": "float",
-                "default": 24.0,
-                "description": "备份间隔（小时）",
-                "hint": "0 表示禁用自动备份。"
-            },
-            "backup_keep_last": {
-                "type": "int",
-                "default": 7,
-                "description": "保留最近备份数",
-                "hint": "保留最近的 N 个备份。"
-            },
-            "backup_keep_weekly": {
-                "type": "int",
-                "default": 1,
-                "description": "保留周备份数",
-                "hint": "在 keep_last 之外，每约 7 天保留一个备份。"
-            },
-            "backup_keep_monthly": {
-                "type": "int",
-                "default": 1,
-                "description": "保留月备份数",
-                "hint": "在周备份之外，每约 30 天保留一个备份。"
-            }
-        }
+  "provider_settings": {
+    "description": "模型提供商",
+    "type": "object",
+    "hint": "Embedding 与对话模型（LLM）都直接调用 AstrBot 已配置的提供商，无需在此填写 API Key。留空则使用 AstrBot 当前默认提供商。",
+    "items": {
+      "embedding_provider_id": {
+        "type": "string",
+        "default": "",
+        "description": "Embedding 提供商 ID",
+        "hint": "填写 AstrBot 中已配置的 Embedding 提供商 ID（在 AstrBot「服务提供商」页面查看）。留空则使用 AstrBot 当前默认的 Embedding。Embedding 用于把记忆文本转成向量，做语义检索。"
+      },
+      "llm_provider_id": {
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "description": "对话模型（LLM）提供商",
+        "hint": "从下拉选择 AstrBot 已配置的对话模型提供商。留空则使用 AstrBot 当前默认对话模型。此处的 LLM 仅供记忆系统内部做摘要/抽取实体（工具调用，不含人格），与机器人对外聊天用的模型相互独立。"
+      },
+      "embedding_dim": {
+        "type": "int",
+        "default": 64,
+        "description": "Embedding 向量维度",
+        "hint": "本地兜底 hash embedding 的向量维度；接入真实 Embedding 提供商后以实际模型维度为准。"
+      }
     }
+  },
+  "storage_settings": {
+    "description": "存储与语言",
+    "type": "object",
+    "items": {
+      "bot_language": {
+        "type": "string",
+        "default": "zh",
+        "description": "机器人回复语言",
+        "hint": "zh（中文）或 en（英文）。暂不支持热重载，修改后需重载插件生效。"
+      },
+      "sqlite_path": {
+        "type": "string",
+        "default": "data/hippocampus.db",
+        "description": "SQLite 数据库路径",
+        "hint": "记忆数据的本地存储文件路径，相对插件数据目录。"
+      }
+    }
+  },
+  "memory_settings": {
+    "description": "记忆行为",
+    "type": "object",
+    "items": {
+      "enable_semantic": {
+        "type": "bool",
+        "default": true,
+        "description": "启用语义记忆（实体抽取）",
+        "hint": "从对话中抽取实体并构建语义网络。"
+      },
+      "enable_prospective": {
+        "type": "bool",
+        "default": true,
+        "description": "启用前瞻记忆（待办触发）",
+        "hint": "记录并在条件满足时触发未来意图 / 提醒。"
+      },
+      "enable_promotion": {
+        "type": "bool",
+        "default": true,
+        "description": "启用记忆晋升",
+        "hint": "将高价值的情景记忆晋升为长期记忆。"
+      },
+      "metamemory_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用元记忆",
+        "hint": "追踪记忆的置信度与来源等元信息。"
+      },
+      "enable_episodic_semantic": {
+        "type": "bool",
+        "default": true,
+        "description": "启用情景到语义的固化",
+        "hint": "重放时将情景记忆固化为语义知识。"
+      },
+      "auto_inject_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用记忆自动注入",
+        "hint": "开启后，在每次调用对话模型前自动检索相关长期记忆，并拼接进发送给 LLM 的用户消息中（无需 LLM 主动调用工具）。默认开启；关闭则回到「按需工具调用」行为。"
+      },
+      "auto_inject_top_k": {
+        "type": "int",
+        "default": 3,
+        "description": "自动注入条数",
+        "hint": "每次自动注入最多拼接多少条记忆摘要。数值越大占用上下文 token 越多，建议 1-5。"
+      },
+      "auto_inject_position": {
+        "type": "string",
+        "default": "before",
+        "description": "自动注入位置",
+        "hint": "before=把记忆拼在用户消息之前，after=拼在之后。默认 before。"
+      },
+      "auto_inject_relative_time": {
+        "type": "bool",
+        "default": true,
+        "description": "注入相对时间标签",
+        "hint": "自动注入记忆时，在每条记忆前加上“刚刚/3 小时前/2 天前”等中文相对时间，让 LLM 感知记忆新旧。默认开启。"
+      },
+      "session_aggregate_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用会话聚合",
+        "hint": "开启后，同一频道内同一发言人的连续消息会先缓冲，攵够若干条或静默超时后合并成一条记忆再入库（而非逐条入库）。按发言人分桶，群聊里不同人不会被错误合并。默认开启；关闭则逐条入库。"
+      },
+      "session_aggregate_max_messages": {
+        "type": "int",
+        "default": 5,
+        "description": "会话聚合最大条数",
+        "hint": "同一发言人缓冲达到这么多条消息时立即合并入库。"
+      },
+      "session_aggregate_idle_seconds": {
+        "type": "float",
+        "default": 8.0,
+        "description": "会话聚合静默秒数",
+        "hint": "同一人两条消息间隔超过这么多秒就视为两段记忆。默认 8 秒，只把同一人“无人插话、短时间连发”的多条合并为一条，不会跨发言人合并（缓冲按 channel_id+actor_id 区分）。0 表示不按静默触发（仅靠条数）。"
+      },
+      "session_aggregate_min_chars": {
+        "type": "int",
+        "default": 0,
+        "description": "会话聚合最小字数",
+        "hint": "低于该字数的消息不进聚合缓冲。0 表示不限（默认）。"
+      },
+      "enable_persona": {
+        "type": "bool",
+        "default": false,
+        "description": "启用用户画像",
+        "hint": "开启后可用 /mem persona 为某个用户生成一段自然语言画像（基于其历史消息由 LLM 总结），与结构化用户事实互补。默认关闭。"
+      },
+      "persona_inject_enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用画像注入",
+        "hint": "开启后（且记忆自动注入已开），调用对话模型前会把该用户的画像作为稳定背景拼进上下文。默认关闭。"
+      },
+      "persona_max_source": {
+        "type": "int",
+        "default": 20,
+        "description": "画像取样条数",
+        "hint": "生成画像时，最多取该用户最近多少条记忆作为输入。"
+      },
+      "tokenizer_mode": {
+        "type": "string",
+        "default": "jieba",
+        "options": [
+          "char",
+          "bigram",
+          "jieba"
+        ],
+        "description": "FTS 分词模式",
+        "hint": "中文关键词检索（FTS/BM25）的分词方式。jieba=词级分词（默认，未安装 jieba 时自动降级为 bigram）；bigram=二元词（区分度高，零依赖）；char=逐字（零依赖，最粗糙）。切换后重启会自动重建 FTS 索引。"
+      },
+      "dedup_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用写入去重",
+        "hint": "写入前增加一道词级 Jaccard 近重复检查（补向量相似合并之不足，不依赖 embedding 质量）。命中时合并到已有记忆。默认开启。"
+      },
+      "dedup_threshold": {
+        "type": "float",
+        "default": 0.9,
+        "description": "去重 Jaccard 阈值",
+        "hint": "词集 Jaccard 相似度 ≥ 该值才判为近重复。越高越严格，默认 0.9。"
+      },
+      "dedup_candidate_k": {
+        "type": "int",
+        "default": 10,
+        "description": "去重候选数",
+        "hint": "用 FTS 拉取多少条同用户候选做 Jaccard 比对。默认 10。"
+      },
+      "tiering_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用记忆分层（热/温/冷）",
+        "hint": "仿 memori 的 active/dormant/archived：按强度与访问时间把记忆分为热/温/冷。正常召回只用热+温，冷层仅在热+温不足时兑底。不删数据，只是路由。默认开启。"
+      },
+      "tier_hot_max_age_days": {
+        "type": "float",
+        "default": 3.0,
+        "description": "热层最大天龄",
+        "hint": "最近访问且强度达标的记忆为热层；超过这么多天未访问则不再是热层。默认 3 天。"
+      },
+      "tier_hot_min_strength": {
+        "type": "float",
+        "default": 0.5,
+        "description": "热层最小强度",
+        "hint": "强度 ≥ 该值且足够新才算热层。默认 0.5。"
+      },
+      "tier_warm_max_age_days": {
+        "type": "float",
+        "default": 30.0,
+        "description": "温层最大天龄",
+        "hint": "非热层但在这么多天内的记忆为温层，仍参与正常召回；超过则转冷层。默认 30 天。"
+      },
+      "tier_cold_strength_floor": {
+        "type": "float",
+        "default": 0.1,
+        "description": "冷层强度下限",
+        "hint": "强度低于该值的记忆直接归为冷层（不论年龄）。默认 0.1。"
+      },
+      "tier_recall_include_cold": {
+        "type": "bool",
+        "default": false,
+        "description": "召回总是含冷层",
+        "hint": "开启后每次召回都把冷层一起纳入（会变慢/噪声增加）。默认关闭，仅兑底时查冷层。"
+      },
+      "tier_cold_fallback_min_hits": {
+        "type": "int",
+        "default": 1,
+        "description": "冷层兑底阈值",
+        "hint": "热+温命中数小于该值时，才把冷层拉进来兑底。0 表示从不兑底（冷层完全不参与召回）。默认 1。"
+      },
+      "tier_maintenance_interval_seconds": {
+        "type": "float",
+        "default": 1800.0,
+        "description": "分层重算周期秒",
+        "hint": "后台重算分层的周期（秒）。目前主要在插件启动时做一次全量重算，该值为预留配置。0 表示关闭。"
+      },
+      "cold_archive_path": {
+        "type": "string",
+        "default": "",
+        "description": "冷层归档文件路径",
+        "hint": "执行 /mem tier archive 时，将超龄的冷层记忆追加写入的 gzip JSONL 文件路径。留空则默认为数据库同目录下的 engram_cold_archive.jsonl.gz。归档会从数据库删除该记忆（仅手动命令触发）。"
+      },
+      "cold_archive_min_age_days": {
+        "type": "float",
+        "default": 60.0,
+        "description": "冷层归档最小龄期天",
+        "hint": "只有处于冷层且超过该天数（从创建时间算）的记忆才会被 /mem tier archive 归档出库。默认 60 天。"
+      }
+    }
+  },
+  "backup_settings": {
+    "description": "备份",
+    "type": "object",
+    "items": {
+      "enable_backup": {
+        "type": "bool",
+        "default": true,
+        "description": "启用自动定期备份",
+        "hint": "周期性地备份 .db 数据库文件。"
+      },
+      "backup_interval_hours": {
+        "type": "float",
+        "default": 24.0,
+        "description": "备份间隔（小时）",
+        "hint": "0 表示禁用自动备份。"
+      },
+      "backup_keep_last": {
+        "type": "int",
+        "default": 7,
+        "description": "保留最近备份数",
+        "hint": "保留最近的 N 个备份。"
+      },
+      "backup_keep_weekly": {
+        "type": "int",
+        "default": 1,
+        "description": "保留周备份数",
+        "hint": "在 keep_last 之外，每约 7 天保留一个备份。"
+      },
+      "backup_keep_monthly": {
+        "type": "int",
+        "default": 1,
+        "description": "保留月备份数",
+        "hint": "在周备份之外，每约 30 天保留一个备份。"
+      }
+    }
+  }
 }

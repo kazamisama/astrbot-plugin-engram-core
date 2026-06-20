@@ -56,6 +56,7 @@ class CommandRouter:
             "mem consolidate":       "manage.cmd_mem_consolidate",
             "mem valence":           "manage.cmd_mem_valence",
             "mem streams":           "manage.cmd_mem_streams",
+            "mem tier":              "manage.cmd_mem_tier",
             "mem session":           "manage.cmd_mem_session",
             "mem remember":          "manage.cmd_mem_remember",
         }

@@ -280,9 +280,12 @@ class HippocampalStore:
             cur = self._conn.execute("SELECT * FROM engrams ORDER BY created_at DESC LIMIT ?", (limit,))
             return [Engram.from_row(dict(r)) for r in cur.fetchall()]
 
-    def delete(self, eid: str) -> None:
+    def delete(self, eid: str) -> bool:
+        """Delete an engram by id. Returns True if a row was removed.
+        (FTS rows are dropped by the AFTER DELETE trigger.)"""
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM engrams WHERE id=?", (eid,))
+            cur = self._conn.execute("DELETE FROM engrams WHERE id=?", (eid,))
+            return cur.rowcount > 0
 
     def all_after(self, after_id: str, limit: int = 100) -> list:
         """Return engrams with id > `after_id`, ordered by id ASC. Used by v1.3 rebuild checkpoint."""

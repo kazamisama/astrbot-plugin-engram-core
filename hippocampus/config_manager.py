@@ -77,6 +77,8 @@ _FIELDS: dict[str, _FieldSpec] = {
     "tier_recall_include_cold": _FieldSpec(bool, label_zh="召回总是含冷层", label_en="Always recall cold tier"),
     "tier_cold_fallback_min_hits": _FieldSpec(int, (0, 1000), label_zh="冷层兑底阈值", label_en="Cold fallback min hits"),
     "tier_maintenance_interval_seconds": _FieldSpec(float, (0.0, 86400.0), label_zh="分层重算周期秒", label_en="Tier maintenance interval seconds"),
+    "cold_archive_path": _FieldSpec(str, label_zh="冷层归档文件路径", label_en="Cold archive path"),
+    "cold_archive_min_age_days": _FieldSpec(float, (0.0, 3650.0), label_zh="冷层归档最小天龄", label_en="Cold archive min age days"),
     # v0.9
     "enable_separation": _FieldSpec(bool, label_zh="启用 DG 模式分离", label_en="Enable DG separation"),
     "separation_max_links": _FieldSpec(int, (0, 100), label_zh="分离链长度上限", label_en="Separation max links"),

@@ -60,6 +60,9 @@ class MemoryConfig:
     tier_recall_include_cold: bool = False # cold joins normal recall only as fallback
     tier_cold_fallback_min_hits: int = 1   # run cold fallback when hot+warm hits < this
     tier_maintenance_interval_seconds: float = 1800.0  # background reclassify period; 0=off
+    # --- v1.14: physical cold-tier archive (explicit/opt-in) ---
+    cold_archive_path: str = ""            # empty => <db dir>/engram_cold_archive.jsonl.gz
+    cold_archive_min_age_days: float = 60.0  # only archive cold engrams older than this
     # --- v0.9: 模式分离 (DG) ---
     enable_separation: bool = True
     separation_max_links: int = 5  # per engram,双向 similar_to 链总长度上限
