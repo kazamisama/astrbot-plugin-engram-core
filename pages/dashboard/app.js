@@ -475,6 +475,7 @@
       canvas.id = "graph-canvas";
       canvas.className = "graph-canvas";
       stage.appendChild(canvas);
+      graphReady = false;
     }
     return canvas;
   }
