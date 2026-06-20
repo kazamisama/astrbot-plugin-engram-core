@@ -11,6 +11,7 @@ guarded; on any failure we simply skip injection.
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from ..format import _extract
+from hippocampus.reltime import relative_label
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 
@@ -64,10 +65,16 @@ class InjectHandler:
                 channel_id=meta.get("channel_id"),
                 k=top_k))
             engrams = getattr(result, "engrams", None) or []
+            show_time = bool(getattr(cfg, "auto_inject_relative_time", True))
             lines = []
             for e in engrams[:top_k]:
                 summ = (getattr(e, "summary", "") or "").strip()
-                if summ:
+                if not summ:
+                    continue
+                label = relative_label(getattr(e, "created_at", 0.0)) if show_time else ""
+                if label:
+                    lines.append("- [" + label + "] " + summ)
+                else:
                     lines.append("- " + summ)
             memory_block = ("[相关长期记忆]\n" + "\n".join(lines)) if lines else ""
 

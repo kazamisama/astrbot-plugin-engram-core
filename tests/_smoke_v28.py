@@ -110,10 +110,10 @@ def test_fields_registered_with_defaults():
         assert f in LABELS, f
     cm = ConfigManager({})
     cfg = cm.memory_config
-    assert cfg.auto_inject_enabled is False
+    assert cfg.auto_inject_enabled is True
     assert cfg.auto_inject_top_k == 3
     assert cfg.auto_inject_position == "before"
-    print("  defaults: enabled=False top_k=3 position=before OK")
+    print("  defaults: enabled=True top_k=3 position=before OK")
 
 
 def test_disabled_is_noop():

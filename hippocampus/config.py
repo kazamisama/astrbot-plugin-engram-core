@@ -46,9 +46,9 @@ class MemoryConfig:
     auto_rebuild_on_switch: bool = True
     rebuild_batch_size: int = 50
     # --- v1.10: configurable FTS tokenizer ---
-    tokenizer_mode: str = "char"  # char | bigram | jieba
+    tokenizer_mode: str = "jieba"  # char | bigram | jieba
     # --- v1.11: text-layer near-duplicate dedup (memori-inspired) ---
-    dedup_enabled: bool = False
+    dedup_enabled: bool = True
     dedup_threshold: float = 0.9  # Jaccard >= this => near-duplicate
     dedup_candidate_k: int = 10   # FTS candidates to Jaccard-check
     # --- v0.9: 模式分离 (DG) ---
@@ -115,14 +115,15 @@ class MemoryConfig:
     backup_keep_weekly: int = 1
     backup_keep_monthly: int = 1
     # --- v1.5: auto memory injection into LLM context (on_llm_request) ---
-    auto_inject_enabled: bool = False
+    auto_inject_enabled: bool = True
     auto_inject_top_k: int = 3
     auto_inject_position: str = "before"
+    auto_inject_relative_time: bool = True  # prefix recalled memories with a zh relative-time label
     # --- v1.6: per-speaker conversation aggregation (optional) ---
-    session_aggregate_enabled: bool = False
+    session_aggregate_enabled: bool = True
     session_aggregate_max_messages: int = 5
     session_aggregate_idle_seconds: float = 8.0
-    session_aggregate_min_chars: int = 2
+    session_aggregate_min_chars: int = 0
     # --- v1.8: natural-language user persona (narrative profile) ---
     enable_persona: bool = False
     persona_inject_enabled: bool = False

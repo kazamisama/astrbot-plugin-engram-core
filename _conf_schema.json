@@ -79,7 +79,7 @@
             },
             "auto_inject_enabled": {
                 "type": "bool",
-                "default": false,
+                "default": true,
                 "description": "启用记忆自动注入",
                 "hint": "开启后，在每次调用对话模型前自动检索相关长期记忆，并拼接进发送给 LLM 的用户消息中（无需 LLM 主动调用工具）。默认关闭，保持原有「按需工具调用」行为。"
             },
@@ -95,9 +95,15 @@
                 "description": "自动注入位置",
                 "hint": "before=把记忆拼在用户消息之前，after=拼在之后。默认 before。"
             },
+            "auto_inject_relative_time": {
+                "type": "bool",
+                "default": true,
+                "description": "注入相对时间标签",
+                "hint": "自动注入记忆时，在每条记忆前加上“刚刚/3 小时前/2 天前”等中文相对时间，让 LLM 感知记忆新旧。默认开启。"
+            },
             "session_aggregate_enabled": {
                 "type": "bool",
-                "default": false,
+                "default": true,
                 "description": "启用会话聚合",
                 "hint": "开启后，同一频道内同一发言人的连续消息会先缓冲，攒够若干条或静默超时后合并成一条记忆再入库（而非逐条入库）。按发言人分桶，群聊里不同人不会被错误合并。默认关闭，保持逐条入库行为。"
             },
@@ -115,9 +121,9 @@
             },
             "session_aggregate_min_chars": {
                 "type": "int",
-                "default": 2,
+                "default": 0,
                 "description": "会话聚合最小字数",
-                "hint": "质量门：短于此长度的消息（去空白后）会被丢弃，不进入缓冲。"
+                "hint": "低于该字数的消息不进聚合缓冲。0 表示不限（默认）。"
             },
             "enable_persona": {
                 "type": "bool",
@@ -139,7 +145,7 @@
             },
             "tokenizer_mode": {
                 "type": "string",
-                "default": "char",
+                "default": "jieba",
                 "options": [
                     "char",
                     "bigram",
@@ -150,7 +156,7 @@
             },
             "dedup_enabled": {
                 "type": "bool",
-                "default": false,
+                "default": true,
                 "description": "启用写入去重",
                 "hint": "写入前增加一道词级 Jaccard 近重复检查（补向量相似合并之不足，不依赖 embedding 质量）。命中时合并到已有记忆。默认关闭。"
             },

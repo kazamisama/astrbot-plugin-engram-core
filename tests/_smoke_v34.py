@@ -51,7 +51,7 @@ def test_config_fields():
         assert f in _FIELDS, f
         assert f in LABELS, f
     cfg = ConfigManager({}).memory_config
-    assert cfg.dedup_enabled is False
+    assert cfg.dedup_enabled is True
     assert cfg.dedup_threshold == 0.9
     assert cfg.dedup_candidate_k == 10
     print("  defaults OK (disabled)")

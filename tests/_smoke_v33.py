@@ -52,9 +52,9 @@ def test_config_field():
     banner("config tokenizer_mode field")
     assert "tokenizer_mode" in _FIELDS
     assert "tokenizer_mode" in LABELS
-    assert ConfigManager({}).memory_config.tokenizer_mode == "char"
+    assert ConfigManager({}).memory_config.tokenizer_mode == "jieba"
     assert ConfigManager({"tokenizer_mode": "bigram"}).memory_config.tokenizer_mode == "bigram"
-    assert ConfigManager({"tokenizer_mode": "WRONG"}).memory_config.tokenizer_mode == "char"
+    assert ConfigManager({"tokenizer_mode": "WRONG"}).memory_config.tokenizer_mode == "jieba"
     print("  field + validation OK")
 
 
