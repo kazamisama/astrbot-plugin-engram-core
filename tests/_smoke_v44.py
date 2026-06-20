@@ -105,6 +105,11 @@ def test_update_text_reembeds():
     g4 = svc.store.get(e.id)
     assert abs(g4.importance - 1.0) < 1e-9, g4.importance
 
+    # 4b) tier is editable as a plain string (WebUI dropdown hot/warm/cold)
+    r4b = h.update_memory(svc, e.id, {"tier": "warm"})
+    assert "tier" in r4b["data"]["changed"], r4b
+    assert svc.store.get(e.id).tier == "warm"
+
     # 5) no-op when nothing changes
     r5 = h.update_memory(svc, e.id, {"memory_type": "semantic"})
     assert r5["data"]["changed"] == [], r5

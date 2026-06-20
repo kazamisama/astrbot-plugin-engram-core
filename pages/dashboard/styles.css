@@ -218,3 +218,12 @@ textarea.edit-input { resize: vertical; min-height: 56px; }
 .edit-msg.ok { color: var(--success); }
 .edit-msg.err { color: var(--danger); }
 .edit-hint { margin-top: 6px; font-size: 11px; color: var(--text-3); }
+
+/* edit-form sliders + selects (B-4 polish) */
+select.edit-input { cursor: pointer; }
+.slider-val { font-weight: 600; color: var(--accent); margin-left: 4px; }
+.edit-slider {
+  width: 100%; box-sizing: border-box; margin: 4px 0; cursor: pointer;
+  accent-color: var(--accent);
+}
+.edit-actions .btn-danger { margin-left: auto; }

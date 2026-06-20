@@ -97,6 +97,7 @@
 
   var STREAM_LABELS = { what: "内容流（是什么）", where_when: "时空流（何时何地）", "": "未分类" };
   var MEMTYPE_LABELS = { episodic: "情景记忆", semantic: "语义记忆", prospective: "前瞻记忆", diary: "日记" };
+  var TIER_LABELS = { "": "未分类", hot: "热 (hot)", warm: "温 (warm)", cold: "冷 (cold)" };
   function fieldValueText(k, v) {
     if (v === null || v === undefined || v === "") return "—";
     if (k === "stream") return STREAM_LABELS[v] || v;
@@ -245,26 +246,43 @@
         : '<input id="' + id + '" class="edit-input" value="' + escapeHtml(v) + '" />';
       return '<div class="edit-row"><label class="edit-k">' + escapeHtml(label) + "</label>" + input + "</div>";
     }
+    function selectField(id, label, value, opts, labels) {
+      var v = value == null ? "" : String(value);
+      var html = opts.map(function (o) {
+        return '<option value="' + o + '"' + (o === v ? " selected" : "") + ">" +
+          escapeHtml((labels && labels[o]) || o || "未分类") + "</option>";
+      }).join("");
+      return '<div class="edit-row"><label class="edit-k">' + escapeHtml(label) + "</label>" +
+        '<select id="' + id + '" class="edit-input">' + html + "</select></div>";
+    }
+    function sliderField(id, label, value) {
+      var num = Number(value);
+      if (isNaN(num)) num = 0;
+      num = Math.max(0, Math.min(1, num));
+      var shown = num.toFixed(2);
+      return '<div class="edit-row"><label class="edit-k">' + escapeHtml(label) +
+        ' <span id="' + id + '-val" class="slider-val">' + shown + "</span></label>" +
+        '<input id="' + id + '" class="edit-slider" type="range" min="0" max="1" step="0.01" value="' + num + '" />' +
+        "</div>";
+    }
     var memType = d.memory_type == null ? "" : String(d.memory_type);
-    var typeOpts = ["episodic", "semantic", "prospective", "diary"].map(function (t) {
-      return '<option value="' + t + '"' + (t === memType ? " selected" : "") + ">" +
-        escapeHtml(MEMTYPE_LABELS[t] || t) + "</option>";
-    }).join("");
     return '<div class="edit-box">' +
       '<div class="section-title">编辑记忆</div>' +
       field("ed-summary", "摘要", d.summary, "textarea") +
       field("ed-content", "原文内容", d.content, "textarea") +
-      '<div class="edit-row"><label class="edit-k">记忆类型</label>' +
-        '<select id="ed-memtype" class="edit-input">' + typeOpts + "</select></div>" +
-      field("ed-importance", "重要度 (0-1)", d.importance, "text") +
-      field("ed-strength", "记忆强度 (0-1)", d.strength, "text") +
+      selectField("ed-memtype", "记忆类型", memType,
+        ["episodic", "semantic", "prospective", "diary"], MEMTYPE_LABELS) +
+      sliderField("ed-importance", "重要度", d.importance) +
+      sliderField("ed-strength", "记忆强度", d.strength) +
       field("ed-topics", "话题 (逗号分隔)", (d.topics || []).join("、"), "text") +
       field("ed-tags", "标签 (逗号分隔)", (d.tags || []).join("、"), "text") +
-      field("ed-tier", "分层", d.tier, "text") +
+      selectField("ed-tier", "记忆分层", d.tier,
+        ["", "hot", "warm", "cold"], TIER_LABELS) +
       '<div class="edit-actions">' +
         '<button id="ed-save" class="btn btn-sm">保存修改</button>' +
+        '<button id="ed-del" class="btn btn-sm btn-danger">删除记忆</button>' +
         '<span id="ed-msg" class="edit-msg"></span></div>' +
-      '<div class="edit-hint">修改“原文内容”会重新计算向量。</div>' +
+      '<div class="edit-hint">修改“原文内容”会重新计算向量。删除为软删除（可被遗忘）。</div>' +
       "</div>";
   }
 
@@ -309,8 +327,31 @@
       el.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + body;
       var saveBtn = document.getElementById("ed-save");
       if (saveBtn) { saveBtn.addEventListener("click", function () { saveEdit(eid); }); }
+      var delBtn = document.getElementById("ed-del");
+      if (delBtn) { delBtn.addEventListener("click", function () { deleteMem(eid); }); }
+      ["ed-importance", "ed-strength"].forEach(function (sid) {
+        var sl = document.getElementById(sid);
+        var lab = document.getElementById(sid + "-val");
+        if (sl && lab) {
+          sl.addEventListener("input", function () { lab.textContent = Number(sl.value).toFixed(2); });
+        }
+      });
     } catch (e) {
       el.innerHTML = errBox(e.message);
+    }
+  }
+
+  async function deleteMem(eid) {
+    var msg = document.getElementById("ed-msg");
+    if (!window.confirm("确认删除该记忆？（软删除，可被遗忘）")) { return; }
+    if (msg) { msg.textContent = "删除中…"; msg.className = "edit-msg"; }
+    try {
+      unwrap(await apiPost("page/memories/delete", { eid: eid, hard: false }));
+      var el = document.getElementById("mem-detail");
+      if (el) { el.innerHTML = emptyBox("已删除记忆 #" + eid); }
+      await loadMemories();
+    } catch (e) {
+      if (msg) { msg.textContent = "删除失败：" + e.message; msg.className = "edit-msg err"; }
     }
   }
 
