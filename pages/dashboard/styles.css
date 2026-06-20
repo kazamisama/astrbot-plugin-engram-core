@@ -132,6 +132,7 @@ body {
 .btn-danger { background: var(--danger); }
 .btn-danger:hover { background: var(--danger-hover); }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-armed { box-shadow: 0 0 0 2px var(--danger); font-weight: 600; }
 
 /* ---- memory list as cards ---- */
 .mem-grid { display: flex; flex-direction: column; gap: 8px; }

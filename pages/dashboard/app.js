@@ -344,13 +344,32 @@
     }
   }
 
+  var _delArm = { eid: null, hard: null, timer: null };
+  function _disarmDelete() {
+    if (_delArm.timer) { clearTimeout(_delArm.timer); _delArm.timer = null; }
+    _delArm.eid = null; _delArm.hard = null;
+    var b1 = document.getElementById("ed-del");
+    var b2 = document.getElementById("ed-del-hard");
+    if (b1) { b1.textContent = "软删除"; b1.classList.remove("btn-armed"); }
+    if (b2) { b2.textContent = "永久删除"; b2.classList.remove("btn-armed"); }
+  }
+
   async function deleteMem(eid, hard) {
     var msg = document.getElementById("ed-msg");
     var label = hard ? "永久删除" : "软删除";
-    var warn = hard
-      ? "确认永久删除该记忆？此操作不可恢复！"
-      : "确认软删除该记忆？（可被遗忘机制清理）";
-    if (!window.confirm(warn)) { return; }
+    var btn = document.getElementById(hard ? "ed-del-hard" : "ed-del");
+    if (!(_delArm.eid === eid && _delArm.hard === hard)) {
+      _disarmDelete();
+      _delArm.eid = eid; _delArm.hard = hard;
+      if (btn) { btn.textContent = "再次点击确认" + label; btn.classList.add("btn-armed"); }
+      if (msg) {
+        msg.textContent = hard ? "永久删除不可恢复，确认请再点一次。" : "软删除可被遗忘机制清理，确认请再点一次。";
+        msg.className = "edit-msg";
+      }
+      _delArm.timer = setTimeout(_disarmDelete, 4000);
+      return;
+    }
+    _disarmDelete();
     if (msg) { msg.textContent = label + "中…"; msg.className = "edit-msg"; }
     try {
       unwrap(await apiPost("page/memories/delete", { eid: eid, hard: !!hard }));
