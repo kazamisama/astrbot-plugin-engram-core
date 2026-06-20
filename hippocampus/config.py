@@ -149,6 +149,7 @@ class MemoryConfig:
     summary_compress_cap: int = 1200
     summary_compress_cap_group: int = 400             # max summary chars
     summary_idle_flush_interval_seconds: float = 60.0  # background sweep period for idle channels
+    summary_fallback_enabled: bool = False       # LLM 失败时是否回退截断转写写入；默认关（不回退、不写入）
     # --- v1.19 (B-2): structured relation layer ---
     relation_supersede_hysteresis: float = 0.0   # new conf >= old-hyst to supersede; else candidate
     relation_inject_top_n: int = 3               # max relations injected per LLM request

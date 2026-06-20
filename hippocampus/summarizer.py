@@ -103,7 +103,13 @@ class ConversationSummarizer:
                                floor=self._floor(), cap=self._cap(chat_type))
         result = self._llm_summarize(rec, target)
         if result is None:
-            result = self._fallback(rec, target)
+            if bool(getattr(self.cfg, "summary_fallback_enabled", False)):
+                result = self._fallback(rec, target)
+            else:
+                # 不回退：返回空摘要，下游 store_summary 会因 text 为空跳过写入
+                print("[hippocampus] summary skipped: LLM unavailable and fallback disabled")
+                result = {"summary": "", "key_facts": [], "topics": [],
+                          "participants": [], "relations": []}
         result.setdefault("summary", "")
         result.setdefault("key_facts", [])
         result.setdefault("topics", [])

@@ -165,12 +165,18 @@ def test_persona_prefill():
 
 
 def test_fallback_no_llm():
-    banner("no-LLM fallback still yields a summary")
+    banner("no-LLM fallback: opt-in writes summary, default skips")
     rec, cfg = _mk_record()
+    # default: fallback disabled -> empty summary (downstream skips write)
     s = ConversationSummarizer(cfg, llm=RuleLLMProvider())
     out = s.summarize(rec)
-    assert out["summary"], "fallback must produce summary text"
-    print("  fallback summary OK")
+    assert not out["summary"], "default must NOT fall back to truncation"
+    # opt-in: fallback enabled -> truncated transcript as summary
+    cfg.summary_fallback_enabled = True
+    s2 = ConversationSummarizer(cfg, llm=RuleLLMProvider())
+    out2 = s2.summarize(rec)
+    assert out2["summary"], "fallback enabled must produce summary text"
+    print("  default-skip + opt-in fallback OK")
 
 
 def main():

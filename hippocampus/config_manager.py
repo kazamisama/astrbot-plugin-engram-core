@@ -147,6 +147,7 @@ _FIELDS: dict[str, _FieldSpec] = {
     "summary_compress_cap": _FieldSpec(int, (0, 5000), label_zh="总结字数上限(私聊/通用)", label_en="Summary compress cap (private/default)"),
     "summary_compress_cap_group": _FieldSpec(int, (0, 5000), label_zh="总结字数上限(群聊)", label_en="Summary compress cap (group)"),
     "summary_idle_flush_interval_seconds": _FieldSpec(float, (5.0, 3600.0), label_zh="空闲扫描周期秒", label_en="Idle flush interval seconds"),
+    "summary_fallback_enabled": _FieldSpec(bool, label_zh="总结回退写入", label_en="Summary fallback write"),
     # v1.19 B-2 relation layer
     "relation_supersede_hysteresis": _FieldSpec(float, (0.0, 1.0), label_zh="关系覆盖迟滞", label_en="Relation supersede hysteresis"),
     "relation_inject_top_n": _FieldSpec(int, (0, 50), label_zh="关系注入条数", label_en="Relation inject top n"),
