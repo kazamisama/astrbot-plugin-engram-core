@@ -282,6 +282,72 @@
       }
     }
   },
+  "summary_settings": {
+    "description": "会话总结",
+    "type": "object",
+    "items": {
+      "summary_mode_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用总结模式",
+        "hint": "开启后以“会话总结”为主：按冷却/条数结算一段对话并压缩成 1 条记忆。关闭则退回逐条入库。"
+      },
+      "summary_idle_seconds_private": {
+        "type": "float",
+        "default": 1800.0,
+        "description": "私聊冷却秒",
+        "hint": "私聊距上一条超过这么多秒无人说话就结算总结。默认 1800（30 分钟）。0 表示不按冷却触发。"
+      },
+      "summary_idle_seconds_group": {
+        "type": "float",
+        "default": 120.0,
+        "description": "群聊冷却秒",
+        "hint": "群聊距上一条超过这么多秒无人说话就结算总结。默认 120 秒。0 表示不按冷却触发。"
+      },
+      "summary_max_messages": {
+        "type": "int",
+        "default": 30,
+        "description": "条数上限自动压缩",
+        "hint": "缓冲区累计达到这么多条（含 bot）就立即总结并重置冷却计时。默认 30。0 表示不限条数（仅靠冷却）。"
+      },
+      "summary_min_chars": {
+        "type": "int",
+        "default": 0,
+        "description": "总结最小字数",
+        "hint": "单条消息字数小于此值会被丢弃不计入总结。默认 0（不过滤）。"
+      },
+      "summary_compress_ratio": {
+        "type": "float",
+        "default": 0.15,
+        "description": "总结压缩比",
+        "hint": "总结目标字数 = 原文总字数 × 压缩比。默认 0.15。"
+      },
+      "summary_compress_floor": {
+        "type": "int",
+        "default": 0,
+        "description": "总结字数下限",
+        "hint": "总结不少于这么多字。0 表示无下限。默认 0。"
+      },
+      "summary_compress_cap": {
+        "type": "int",
+        "default": 1200,
+        "description": "总结字数上限(私聊/通用)",
+        "hint": "私聊与通用场景的总结最多字数。0 表示无上限。默认 1200。"
+      },
+      "summary_compress_cap_group": {
+        "type": "int",
+        "default": 400,
+        "description": "总结字数上限(群聊)",
+        "hint": "群聊总结最多字数，独立于私聊上限。0 表示沿用私聊/通用上限。默认 400。"
+      },
+      "per_message_ingest_debug": {
+        "type": "bool",
+        "default": false,
+        "description": "逐条入库(调试)",
+        "hint": "仅调试用：总结模式下同时保留“一句一条”逐条入库。默认关。"
+      }
+    }
+  },
   "backup_settings": {
     "description": "备份",
     "type": "object",

@@ -204,9 +204,9 @@ def test_conf_schema_has_bot_language_and_en_descriptions():
     schema = json.load(open(p, encoding="utf-8"))
     # v1.4.9: schema is now 4 nested `type: object` groups. Flatten
     # the inner items so we can spot-check field-level descriptions.
-    assert len(schema) == 4, len(schema)
+    assert len(schema) == 5, len(schema)
     groups = {"provider_settings", "storage_settings",
-              "memory_settings", "backup_settings"}
+              "memory_settings", "summary_settings", "backup_settings"}
     assert set(schema) == groups, set(schema)
     flat = {}
     for g in schema.values():

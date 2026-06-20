@@ -36,16 +36,18 @@ def test_config_fields():
               "summary_idle_seconds_private", "summary_idle_seconds_group",
               "summary_max_messages", "summary_min_chars",
               "summary_compress_ratio", "summary_compress_floor",
-              "summary_compress_cap"):
+              "summary_compress_cap", "summary_compress_cap_group"):
         assert f in _FIELDS, f
         assert f in LABELS, f
     cfg = ConfigManager({}).memory_config
     assert cfg.summary_mode_enabled is True
     assert cfg.per_message_ingest_debug is False
     assert cfg.summary_idle_seconds_private == 1800.0
-    assert cfg.summary_idle_seconds_group == 600.0
+    assert cfg.summary_idle_seconds_group == 120.0
+    assert cfg.summary_max_messages == 30
     assert cfg.summary_compress_ratio == 0.15
     assert cfg.summary_compress_cap == 1200
+    assert cfg.summary_compress_cap_group == 400
     print("  fields + defaults OK")
 
 

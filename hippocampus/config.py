@@ -141,12 +141,13 @@ class MemoryConfig:
     summary_mode_enabled: bool = True            # per-channel buffer -> LLM summary -> store summary only
     per_message_ingest_debug: bool = False       # debug: also keep legacy one-engram-per-message ingest
     summary_idle_seconds_private: float = 1800.0  # private chat cooldown before flush
-    summary_idle_seconds_group: float = 600.0     # group chat cooldown before flush
-    summary_max_messages: int = 0                # hard cap on buffered msgs before forced flush; 0=off
+    summary_idle_seconds_group: float = 120.0     # group chat cooldown before flush
+    summary_max_messages: int = 30                # hard cap on buffered msgs before forced flush; 0=off
     summary_min_chars: int = 0                   # drop shorter inbound lines from the buffer
     summary_compress_ratio: float = 0.15         # target_chars = total_chars * ratio
     summary_compress_floor: int = 0              # min summary chars; 0=unbounded
-    summary_compress_cap: int = 1200             # max summary chars
+    summary_compress_cap: int = 1200
+    summary_compress_cap_group: int = 400             # max summary chars
     summary_idle_flush_interval_seconds: float = 60.0  # background sweep period for idle channels
     # --- v1.19 (B-2): structured relation layer ---
     relation_supersede_hysteresis: float = 0.0   # new conf >= old-hyst to supersede; else candidate

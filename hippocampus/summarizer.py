@@ -73,7 +73,11 @@ class ConversationSummarizer:
     def _ratio(self) -> float:
         return float(getattr(self.cfg, "summary_compress_ratio", 0.15) or 0.0)
 
-    def _cap(self) -> int:
+    def _cap(self, chat_type: str = "") -> int:
+        if chat_type == "group":
+            g = int(getattr(self.cfg, "summary_compress_cap_group", 0) or 0)
+            if g > 0:
+                return g
         return int(getattr(self.cfg, "summary_compress_cap", 1200) or 0)
 
     def _floor(self) -> int:
@@ -94,8 +98,9 @@ class ConversationSummarizer:
         """Return a structured dict; never raises. Always yields a summary."""
         transcript = rec.transcript()
         total = len(transcript)
+        chat_type = getattr(rec, "chat_type", "") or ""
         target = target_length(total, self._ratio(),
-                               floor=self._floor(), cap=self._cap())
+                               floor=self._floor(), cap=self._cap(chat_type))
         result = self._llm_summarize(rec, target)
         if result is None:
             result = self._fallback(rec, target)
