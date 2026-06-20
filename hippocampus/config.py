@@ -148,6 +148,10 @@ class MemoryConfig:
     summary_compress_floor: int = 0              # min summary chars; 0=unbounded
     summary_compress_cap: int = 1200             # max summary chars
     summary_idle_flush_interval_seconds: float = 60.0  # background sweep period for idle channels
+    # --- v1.19 (B-2): structured relation layer ---
+    relation_supersede_hysteresis: float = 0.0   # new conf >= old-hyst to supersede; else candidate
+    relation_inject_top_n: int = 3               # max relations injected per LLM request
+    relation_inject_min_confidence: float = 0.0  # drop relations below this confidence before inject
     # --- v1.8: natural-language user persona (narrative profile) ---
     enable_persona: bool = False
     persona_inject_enabled: bool = False

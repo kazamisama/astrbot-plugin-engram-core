@@ -237,6 +237,24 @@
         "default": 60.0,
         "description": "冷层归档最小龄期天",
         "hint": "只有处于冷层且超过该天数（从创建时间算）的记忆才会被 /mem tier archive 归档出库。默认 60 天。"
+      },
+      "relation_inject_top_n": {
+        "type": "int",
+        "default": 3,
+        "description": "关系注入条数",
+        "hint": "每次最多注入多少条人物关系。设为 0 则关闭关系注入。"
+      },
+      "relation_inject_min_confidence": {
+        "type": "float",
+        "default": 0.0,
+        "description": "关系注入最低置信",
+        "hint": "低于该置信度的关系不注入（0-1）。"
+      },
+      "relation_supersede_hysteresis": {
+        "type": "float",
+        "default": 0.0,
+        "description": "关系覆盖迟滞",
+        "hint": "新关系置信度 >= 旧值-迟滞 才覆盖旧关系，否则作为候选。"
       }
     }
   },

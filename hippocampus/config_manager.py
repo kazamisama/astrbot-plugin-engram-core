@@ -146,6 +146,10 @@ _FIELDS: dict[str, _FieldSpec] = {
     "summary_compress_floor": _FieldSpec(int, (0, 5000), label_zh="总结字数下限", label_en="Summary compress floor"),
     "summary_compress_cap": _FieldSpec(int, (0, 5000), label_zh="总结字数上限", label_en="Summary compress cap"),
     "summary_idle_flush_interval_seconds": _FieldSpec(float, (5.0, 3600.0), label_zh="空闲扫描周期秒", label_en="Idle flush interval seconds"),
+    # v1.19 B-2 relation layer
+    "relation_supersede_hysteresis": _FieldSpec(float, (0.0, 1.0), label_zh="关系覆盖迟滞", label_en="Relation supersede hysteresis"),
+    "relation_inject_top_n": _FieldSpec(int, (0, 50), label_zh="关系注入条数", label_en="Relation inject top n"),
+    "relation_inject_min_confidence": _FieldSpec(float, (0.0, 1.0), label_zh="关系注入最低置信", label_en="Relation inject min confidence"),
     # v1.8 persona
     "enable_persona": _FieldSpec(bool, label_zh="启用用户画像", label_en="Enable persona"),
     "persona_inject_enabled": _FieldSpec(bool, label_zh="启用画像注入", label_en="Persona inject enabled"),

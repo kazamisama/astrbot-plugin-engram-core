@@ -55,6 +55,8 @@ class MemoryService:
         self.completer = PatternCompleter(self.store, self.embedder, self.cfg, self.reconsolidator)
         self.consolidator = ReplayConsolidator(self.store, self.cfg, llm=self.llm)
         self.semantic = SemanticStore(self.cfg.sqlite_path) if self.cfg.enable_semantic else None
+        from .relation_store import RelationStore
+        self.relation_store = RelationStore(self.cfg.sqlite_path)
         self.extractor = EntityExtractor(self.llm) if self.cfg.enable_semantic else None
         self.prospective_store = ProspectiveStore(self.cfg.sqlite_path) if self.cfg.enable_prospective else None
         self.prospective_scheduler = (
@@ -308,7 +310,52 @@ class MemoryService:
         except Exception as ex:
             print("[hippocampus] store_summary persist error: " + repr(ex))
             return None
+        # v1.19 B-2: persist structured relations with conflict-driven supersede.
+        rels = summary.get("relations") or []
+        if rels and getattr(self, "relation_store", None) is not None:
+            from .relation_store import Relation
+            hyst = float(getattr(self.cfg, "relation_supersede_hysteresis", 0.0) or 0.0)
+            for r in rels:
+                try:
+                    rel = Relation(
+                        subject=str(r.get("subject", "") or "").strip(),
+                        predicate=str(r.get("relation", "") or "").strip(),
+                        object=str(r.get("object", "") or "").strip(),
+                        confidence=float(r.get("confidence", 0.5) or 0.5),
+                        actor_id=actor_id,
+                        channel_id=identity.get("channel_id", "") or "",
+                        source_engram_id=e.id)
+                    if rel.subject and rel.predicate:
+                        self.relation_store.add_with_supersede(rel, hysteresis=hyst)
+                except Exception as rex:
+                    print("[hippocampus] relation persist error: " + repr(rex))
         return e
+
+    def recall_relations(self, query: str, *, top_n: int = 3,
+                         min_confidence: float = 0.0) -> list:
+        """v1.19 B-2: pipeline-filtered relations for injection (option 4,
+        no weighting): relevance (subject/object/predicate appears in query)
+        -> confidence threshold -> top-N. Returns list[Relation]."""
+        rs = getattr(self, "relation_store", None)
+        if rs is None:
+            return []
+        try:
+            q = (query or "").lower()
+            cands = rs.all_active(limit=500)
+            # relevance filter: any of subject/object/predicate substring-matches query
+            relevant = []
+            for r in cands:
+                fields = (r.subject, r.object, r.predicate)
+                if any(f and f.lower() in q for f in fields):
+                    relevant.append(r)
+            # fallback: if query matched nothing, do not inject noise
+            pool = relevant
+            pool = [r for r in pool if r.confidence >= min_confidence]
+            pool.sort(key=lambda r: (r.confidence, r.updated_at), reverse=True)
+            return pool[:max(0, top_n)]
+        except Exception as ex:
+            print("[hippocampus] recall_relations error: " + repr(ex))
+            return []
 
     def _find_text_duplicate(self, e: Engram):
         """Text-layer near-duplicate check (v1.11). Uses FTS to pull
@@ -788,7 +835,8 @@ class MemoryService:
     def close(self) -> None:
 
         for name in ("store", "semantic", "atom_store", "graph_store",
-                     "prospective_store", "profile", "persona_store"):
+                     "prospective_store", "profile", "persona_store",
+                     "relation_store"):
             obj = getattr(self, name, None)
             if obj is None:
                 continue

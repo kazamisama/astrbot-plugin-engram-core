@@ -78,8 +78,28 @@ class InjectHandler:
                     lines.append("- " + summ)
             memory_block = ("[相关长期记忆]\n" + "\n".join(lines)) if lines else ""
 
-            # Persona goes first (stable background), then memories.
-            parts = [b for b in (persona_block, memory_block) if b]
+            # v1.19 B-2: relation injection (option-4 pipeline filter).
+            relation_block = ""
+            if hasattr(svc, "recall_relations"):
+                try:
+                    rtop = int(getattr(cfg, "relation_inject_top_n", 3) or 0)
+                    if rtop > 0:
+                        rmin = float(getattr(cfg, "relation_inject_min_confidence", 0.0) or 0.0)
+                        rels = svc.recall_relations(query, top_n=rtop, min_confidence=rmin)
+                        rlines = []
+                        for r in rels:
+                            subj = (getattr(r, "subject", "") or "").strip()
+                            pred = (getattr(r, "predicate", "") or "").strip()
+                            obj = (getattr(r, "object", "") or "").strip()
+                            if subj and pred:
+                                rlines.append("- " + subj + " " + pred + (" " + obj if obj else ""))
+                        if rlines:
+                            relation_block = "[人物关系]\n" + "\n".join(rlines)
+                except Exception as rex:
+                    print("[hippocampus] relation inject skipped: " + repr(rex))
+
+            # Persona goes first (stable background), then relations, then memories.
+            parts = [b for b in (persona_block, relation_block, memory_block) if b]
             if not parts:
                 return
             block = "\n\n".join(parts)
