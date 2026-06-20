@@ -141,7 +141,7 @@ class MemoryConfig:
     summary_mode_enabled: bool = True            # per-channel buffer -> LLM summary -> store summary only
     per_message_ingest_debug: bool = False       # debug: also keep legacy one-engram-per-message ingest
     summary_idle_seconds_private: float = 1800.0  # private chat cooldown before flush
-    summary_idle_seconds_group: float = 120.0     # group chat cooldown before flush
+    summary_idle_seconds_group: float = 300.0     # group chat cooldown before flush
     summary_max_messages: int = 30                # hard cap on buffered msgs before forced flush; 0=off
     summary_min_chars: int = 0                   # drop shorter inbound lines from the buffer
     summary_compress_ratio: float = 0.15         # target_chars = total_chars * ratio

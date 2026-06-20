@@ -300,9 +300,9 @@
       },
       "summary_idle_seconds_group": {
         "type": "float",
-        "default": 120.0,
+        "default": 300.0,
         "description": "群聊冷却秒",
-        "hint": "群聊距上一条超过这么多秒无人说话就结算总结。默认 120 秒。0 表示不按冷却触发。"
+        "hint": "群聊距上一条超过这么多秒无人说话就结算总结。默认 300 秒。0 表示不按冷却触发。"
       },
       "summary_max_messages": {
         "type": "int",

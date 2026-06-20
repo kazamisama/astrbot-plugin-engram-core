@@ -43,7 +43,7 @@ def test_config_fields():
     assert cfg.summary_mode_enabled is True
     assert cfg.per_message_ingest_debug is False
     assert cfg.summary_idle_seconds_private == 1800.0
-    assert cfg.summary_idle_seconds_group == 120.0
+    assert cfg.summary_idle_seconds_group == 300.0
     assert cfg.summary_max_messages == 30
     assert cfg.summary_compress_ratio == 0.15
     assert cfg.summary_compress_cap == 1200
