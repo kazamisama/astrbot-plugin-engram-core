@@ -10,6 +10,7 @@ from .memory import MemoryHandler
 from .recall import RecallHandler
 from .graph import GraphHandler
 from .backup import BackupHandler
+from .diary import DiaryHandler
 
 __all__ = [
     "PageApiUtils",
@@ -18,4 +19,5 @@ __all__ = [
     "RecallHandler",
     "GraphHandler",
     "BackupHandler",
+    "DiaryHandler",
 ]

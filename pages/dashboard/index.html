@@ -22,6 +22,7 @@
       <nav class="tabs">
         <button class="tab active" data-tab="overview">概览</button>
         <button class="tab" data-tab="memories">记忆列表</button>
+        <button class="tab" data-tab="diary">日记</button>
         <button class="tab" data-tab="graph">关系图谱</button>
         <button class="tab" data-tab="recall">召回测试</button>
         <button class="tab" data-tab="backups">备份</button>
@@ -47,6 +48,28 @@
             <div class="empty">点击「加载」查看记忆</div>
           </div>
           <div id="mem-detail" class="detail"></div>
+        </section>
+
+        <!-- 日记 -->
+        <section class="panel" data-panel="diary">
+          <div class="toolbar">
+            <select id="diary-channel" class="input input-sm" title="会话/群聊">
+              <option value="">全部会话</option>
+            </select>
+            <select id="diary-persona" class="input input-sm" title="人格">
+              <option value="">全部人格</option>
+            </select>
+            <select id="diary-day" class="input input-sm" title="日期">
+              <option value="">全部日期</option>
+            </select>
+            <input id="diary-search" class="input input-grow" placeholder="按内容检索（留空=全部）" />
+            <button class="btn" id="btn-load-diary">加载</button>
+          </div>
+          <div class="mem-grid" id="diary-rows">
+            <div class="empty">点击「加载」查看日记</div>
+          </div>
+          <div class="pager" id="diary-pager"></div>
+          <div id="diary-detail" class="detail"></div>
         </section>
 
         <!-- 关系图谱 -->

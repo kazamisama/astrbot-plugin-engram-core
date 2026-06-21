@@ -43,6 +43,7 @@ from page_api_modules import (
     RecallHandler,
     GraphHandler,
     BackupHandler,
+    DiaryHandler,
 )
 
 PLUGIN_NAME = "astrbot_plugin_engram"
@@ -103,6 +104,7 @@ class PluginPageApi:
         self.recall_handler = RecallHandler(self.utils)
         self.graph_handler = GraphHandler(self.utils)
         self.backup_handler = BackupHandler(self.utils)
+        self.diary_handler = DiaryHandler(self.utils)
 
     def _service(self):
         """Return the live MemoryService or None if not initialized."""
@@ -251,3 +253,23 @@ class PluginPageApi:
         body = await _json_body()
         return self.backup_handler.restore_backup(
             self._backup_manager(), backup_id=str(body.get("backup_id", "")))
+
+    async def _list_diaries(self) -> dict[str, Any]:
+        args = await _query_args()
+        return self.diary_handler.list_diaries(
+            self._service(),
+            channel_id=str(args.get("channel_id", "")),
+            persona_id=str(args.get("persona_id", "")),
+            day=str(args.get("day", "")),
+            q=str(args.get("q", "")),
+            k=_as_int(args.get("k"), 50),
+            offset=_as_int(args.get("offset"), 0),
+        )
+
+    async def _diary_options(self) -> dict[str, Any]:
+        return self.diary_handler.options(self._service())
+
+    async def _diary_detail(self) -> dict[str, Any]:
+        args = await _query_args()
+        return self.diary_handler.get_detail(
+            self._service(), eid=str(args.get("eid", "")))

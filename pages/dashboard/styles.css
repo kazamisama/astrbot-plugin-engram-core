@@ -236,3 +236,7 @@ select.edit-input { cursor: pointer; }
 #ed-del:hover { background: var(--bg-hover); }
 #ed-del { margin-left: auto; }
 #ed-del-hard { margin-left: 8px; }
+
+.pager { display: flex; align-items: center; gap: 12px; justify-content: center; margin: 12px 0 4px; }
+.pager-info { color: var(--text-2); font-size: 13px; }
+.pager .btn[disabled] { opacity: .4; cursor: not-allowed; }

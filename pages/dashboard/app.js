@@ -134,6 +134,9 @@
       document.querySelectorAll(".panel").forEach(function (p) { p.classList.remove("active"); });
       tab.classList.add("active");
       document.querySelector('.panel[data-panel="' + tab.getAttribute("data-tab") + '"]').classList.add("active");
+      if (tab.getAttribute("data-tab") === "diary" && !_diaryState.optionsLoaded) {
+        loadDiaryOptions();
+      }
     });
   });
 
@@ -673,11 +676,142 @@
   }
 
   // ---------- wire ----------
+  // ---------- diary ----------
+  var _diaryState = { offset: 0, k: 50, total: 0, optionsLoaded: false };
+
+  function _diaryFilters() {
+    return {
+      channel_id: document.getElementById("diary-channel").value || "",
+      persona_id: document.getElementById("diary-persona").value || "",
+      day: document.getElementById("diary-day").value || "",
+      q: document.getElementById("diary-search").value.trim()
+    };
+  }
+
+  async function loadDiaryOptions() {
+    try {
+      var d = unwrap(await apiGet("page/diaries/options", {}));
+      var chSel = document.getElementById("diary-channel");
+      var pSel = document.getElementById("diary-persona");
+      var daySel = document.getElementById("diary-day");
+      var chVal = chSel.value, pVal = pSel.value, dayVal = daySel.value;
+      chSel.innerHTML = '<option value="">\u5168\u90e8\u4f1a\u8bdd</option>';
+      ((d && d.channels) || []).forEach(function (c) {
+        var o = document.createElement("option");
+        o.value = c.channel_id;
+        o.textContent = c.label || c.channel_id;
+        chSel.appendChild(o);
+      });
+      pSel.innerHTML = '<option value="">\u5168\u90e8\u4eba\u683c</option>';
+      ((d && d.personas) || []).forEach(function (p) {
+        var o = document.createElement("option");
+        if (p === "") { o.value = "__none__"; o.textContent = "\uff08\u65e0\u4eba\u683c\uff09"; }
+        else { o.value = p; o.textContent = p; }
+        pSel.appendChild(o);
+      });
+      daySel.innerHTML = '<option value="">\u5168\u90e8\u65e5\u671f</option>';
+      ((d && d.days) || []).forEach(function (dy) {
+        var o = document.createElement("option");
+        o.value = dy; o.textContent = dy;
+        daySel.appendChild(o);
+      });
+      chSel.value = chVal; pSel.value = pVal; daySel.value = dayVal;
+      _diaryState.optionsLoaded = true;
+    } catch (e) { /* options are best-effort */ }
+  }
+
+  function renderDiaryPager() {
+    var pager = document.getElementById("diary-pager");
+    if (!pager) return;
+    var st = _diaryState;
+    var start = st.total ? st.offset + 1 : 0;
+    var end = Math.min(st.offset + st.k, st.total);
+    var hasPrev = st.offset > 0;
+    var hasNext = st.offset + st.k < st.total;
+    pager.innerHTML =
+      '<button class="btn btn-ghost btn-sm" id="diary-prev"' + (hasPrev ? "" : " disabled") + ">\u4e0a\u4e00\u9875</button>" +
+      '<span class="pager-info">' + start + "\u2013" + end + " / \u5171 " + st.total + " \u7bc7</span>" +
+      '<button class="btn btn-ghost btn-sm" id="diary-next"' + (hasNext ? "" : " disabled") + ">\u4e0b\u4e00\u9875</button>";
+    var prev = document.getElementById("diary-prev");
+    var next = document.getElementById("diary-next");
+    if (prev && hasPrev) prev.addEventListener("click", function () {
+      _diaryState.offset = Math.max(0, _diaryState.offset - _diaryState.k); loadDiaries(true);
+    });
+    if (next && hasNext) next.addEventListener("click", function () {
+      _diaryState.offset = _diaryState.offset + _diaryState.k; loadDiaries(true);
+    });
+  }
+
+  async function loadDiaries(keepOffset) {
+    if (!_diaryState.optionsLoaded) { await loadDiaryOptions(); }
+    if (!keepOffset) _diaryState.offset = 0;
+    var f = _diaryFilters();
+    var wrap = document.getElementById("diary-rows");
+    document.getElementById("diary-detail").innerHTML = "";
+    wrap.innerHTML = emptyBox("\u52a0\u8f7d\u4e2d\u2026");
+    try {
+      var d = unwrap(await apiGet("page/diaries", {
+        channel_id: f.channel_id, persona_id: f.persona_id, day: f.day,
+        q: f.q, k: _diaryState.k, offset: _diaryState.offset
+      }));
+      _diaryState.total = (d && d.total) || 0;
+      var items = (d && d.items) || [];
+      if (!items.length) { wrap.innerHTML = emptyBox("\u6682\u65e0\u65e5\u8bb0"); renderDiaryPager(); return; }
+      wrap.innerHTML = "";
+      items.forEach(function (it) {
+        var div = document.createElement("div");
+        div.className = "mem-item";
+        var ctype = it.chat_type === "group" ? "\u7fa4\u804a" : (it.chat_type === "private" ? "\u79c1\u804a" : "");
+        var head = '<div class="mem-head">' +
+          (it.day ? '<span class="chip">' + escapeHtml(it.day) + "</span>" : "") +
+          (ctype ? '<span class="chip chip-muted">' + ctype + "</span>" : "") +
+          (it.channel_label ? '<span class="chip chip-muted">' + escapeHtml(it.channel_label) + "</span>" : "") +
+          (it.persona_id ? '<span class="chip chip-muted">\u4eba\u683c ' + escapeHtml(it.persona_id) + "</span>" : "") +
+          "</div>";
+        div.innerHTML = head + '<div class="mem-summary">' +
+          escapeHtml(it.summary || "\uff08\u65e0\u6458\u8981\uff09") + "</div>";
+        div.addEventListener("click", function () { showDiaryDetail(it.id); });
+        wrap.appendChild(div);
+      });
+      renderDiaryPager();
+    } catch (e) {
+      wrap.innerHTML = errBox(e.message);
+    }
+  }
+
+  async function showDiaryDetail(eid) {
+    var box = document.getElementById("diary-detail");
+    box.innerHTML = emptyBox("\u52a0\u8f7d\u4e2d\u2026");
+    try {
+      var d = unwrap(await apiGet("page/diaries/detail", { eid: eid }));
+      var meta = {};
+      meta["\u65e5\u671f"] = d.day || "\u2014";
+      meta["\u7c7b\u578b"] = d.chat_type === "group" ? "\u7fa4\u804a" : (d.chat_type === "private" ? "\u79c1\u804a" : "\u2014");
+      meta["\u4f1a\u8bdd"] = d.channel_label || d.channel_id || "\u2014";
+      meta["\u4eba\u683c"] = d.persona_id || "\uff08\u65e0\uff09";
+      if (d.participants && d.participants.length) meta["\u53c2\u4e0e\u8005"] = d.participants.join("\u3001");
+      if (d.topics && d.topics.length) meta["\u4e3b\u9898"] = d.topics.join("\u3001");
+      if (d.created_at != null) meta["\u5199\u5165\u65f6\u95f4"] = fmtTime(d.created_at);
+      box.innerHTML = '<div class="section-title">\u65e5\u8bb0\u8be6\u60c5 #' + escapeHtml(d.id) + "</div>" +
+        kvRows(meta) +
+        '<div class="raw">' + escapeHtml(d.content || d.summary_full || "") + "</div>";
+    } catch (e) {
+      box.innerHTML = errBox(e.message);
+    }
+  }
+
   document.getElementById("btn-refresh-stats").addEventListener("click", loadStats);
   document.getElementById("btn-load-mem").addEventListener("click", loadMemories);
   document.getElementById("btn-recall").addEventListener("click", runRecall);
   document.getElementById("btn-load-backups").addEventListener("click", loadBackups);
   document.getElementById("btn-load-graph").addEventListener("click", loadGraph);
+  document.getElementById("btn-load-diary").addEventListener("click", function () { loadDiaries(false); });
+  ["diary-channel", "diary-persona", "diary-day"].forEach(function (id) {
+    document.getElementById(id).addEventListener("change", function () { loadDiaries(false); });
+  });
+  document.getElementById("diary-search").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") loadDiaries(false);
+  });
   document.getElementById("rc-query").addEventListener("keydown", function (e) {
     if (e.key === "Enter") runRecall();
   });
