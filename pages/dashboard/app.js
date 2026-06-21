@@ -205,10 +205,17 @@
       items.forEach(function (it) {
         var div = document.createElement("div");
         div.className = "mem-item";
+        var groupTxt = "";
+        if (it.group_name && it.group_id) groupTxt = it.group_name + " (" + it.group_id + ")";
+        else if (it.group_name) groupTxt = String(it.group_name);
+        else if (it.group_id) groupTxt = String(it.group_id);
+        else if (it.channel_id) groupTxt = String(it.channel_id);
         var head = '<div class="mem-head">' +
           '<span class="chip">#' + escapeHtml(it.id == null ? "?" : it.id) + "</span>" +
           (it.actor_id ? '<span class="chip chip-muted">用户 ' + escapeHtml(it.actor_id) + "</span>" : "") +
           (it.strength != null ? '<span class="chip chip-muted">强度 ' + Number(it.strength).toFixed(2) + "</span>" : "") +
+          (groupTxt ? '<span class="chip chip-muted">群 ' + escapeHtml(groupTxt) + "</span>" : "") +
+          (it.persona_id ? '<span class="chip chip-muted">人格 ' + escapeHtml(it.persona_id) + "</span>" : "") +
           "</div>";
         div.innerHTML = head + '<div class="mem-summary">' +
           escapeHtml(it.summary || "（无摘要）") + "</div>";

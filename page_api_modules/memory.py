@@ -44,20 +44,36 @@ class MemoryHandler:
             rows = [r for r in rows if _hit(r)]
         page = rows[offset_i:offset_i + k_i]
         return self.utils.ok({
-            "items": [
-                {
-                    "id": getattr(r, "id", None),
-                    "summary": (getattr(r, "summary", "") or "")[:200],
-                    "actor_id": getattr(r, "actor_id", None),
-                    "strength": getattr(r, "strength", None),
-                    "created_at": getattr(r, "created_at", None),
-                }
-                for r in page
-            ],
+            "items": [self._list_item(r) for r in page],
             "returned": len(page),
             "offset": offset_i,
             "k": k_i,
         })
+
+    @staticmethod
+    def _tag_value(tags, prefix: str) -> str:
+        """Pull the value of a `prefix:value` stamp from an engram's tags."""
+        for t in (tags or []):
+            t = str(t)
+            if t.startswith(prefix):
+                return t[len(prefix):]
+        return ""
+
+    def _list_item(self, r) -> dict:
+        tags = getattr(r, "tags", None) or []
+        group_id = self._tag_value(tags, "group:")
+        group_name = self._tag_value(tags, "groupname:")
+        return {
+            "id": getattr(r, "id", None),
+            "summary": (getattr(r, "summary", "") or "")[:200],
+            "actor_id": getattr(r, "actor_id", None),
+            "strength": getattr(r, "strength", None),
+            "created_at": getattr(r, "created_at", None),
+            "channel_id": getattr(r, "channel_id", None),
+            "persona_id": getattr(r, "persona_id", None),
+            "group_id": group_id or None,
+            "group_name": group_name or None,
+        }
 
     def get_memory_detail(self, service, eid: str) -> dict[str, Any]:
         if service is None:

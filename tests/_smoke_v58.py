@@ -137,8 +137,44 @@ def test_webui_persona_edit():
         except Exception: pass
 
 
+
+
+def test_webui_list_enriched():
+    """WebUI memory list items expose channel_id, group_id, group_name (parsed
+    from tag stamps) and persona_id for the preview row."""
+    from page_api_modules.memory import MemoryHandler
+    from page_api_modules.utils import PageApiUtils
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    svc = _mk(db)
+    h = MemoryHandler(PageApiUtils())
+    try:
+        ident = {"session_id": "shelly:GroupMessage:708947555",
+                 "actor_id": "conversation", "platform": "aiocqhttp",
+                 "channel_id": "708947555", "persona_id": "shelly",
+                 "chat_type": "group", "group_id": "708947555",
+                 "group_name": "testgroup", "memory_type": "episodic"}
+        summ = {"summary": "group chat about coffee",
+                "content": "group chat about coffee", "topics": [], "tags": []}
+        e = svc.store_summary(summ, ident)
+        assert e is not None
+        res = h.list_memories(svc, q="", k=50, offset=0)
+        items = res.get("data", res).get("items", [])
+        it = [x for x in items if x["id"] == e.id][0]
+        assert it["channel_id"] == "708947555", it
+        assert it["group_id"] == "708947555", it
+        assert it["group_name"] == "testgroup", it
+        assert it["persona_id"] == "shelly", it
+        print("[OK] WebUI list item enriched with group + persona")
+    finally:
+        try: svc.close()
+        except Exception: pass
+        try: os.remove(db)
+        except Exception: pass
+
+
 if __name__ == "__main__":
     main()
     test_old_db_migration_and_index()
     test_webui_persona_edit()
+    test_webui_list_enriched()
     print("ALL PASS v58")
