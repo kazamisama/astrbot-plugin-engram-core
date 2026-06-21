@@ -82,7 +82,6 @@ class HippocampalStore:
             CREATE INDEX IF NOT EXISTS idx_session ON engrams(session_id);
             CREATE INDEX IF NOT EXISTS idx_actor ON engrams(actor_id);
             CREATE INDEX IF NOT EXISTS idx_channel ON engrams(channel_id);
-            CREATE INDEX IF NOT EXISTS idx_persona ON engrams(persona_id);
             CREATE INDEX IF NOT EXISTS idx_time ON engrams(created_at);
             CREATE INDEX IF NOT EXISTS idx_type ON engrams(memory_type);
             CREATE INDEX IF NOT EXISTS idx_embmodel ON engrams(embedding_model);
@@ -152,6 +151,14 @@ class HippocampalStore:
         ran = run_migrations(self._conn, self._lock)
         for v in ran:
             print("[hippocampus] applied compat migration: " + v)
+        # v1.36: index on persona_id, created after the column-append
+        # migration guarantees the column exists (old DBs included).
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_persona ON engrams(persona_id)")
+        except Exception as _ix:
+            print("[hippocampus] idx_persona create skipped: " + repr(_ix))
 
     def _meta_get(self, key: str):
         try:

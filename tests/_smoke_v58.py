@@ -59,5 +59,53 @@ def main():
             pass
 
 
+
+
+def test_old_db_migration_and_index():
+    """Regression: opening an OLD engrams table (no persona_id column) must
+    migrate cleanly, build idx_persona, and not leak legacy rows into a
+    persona-scoped recall."""
+    import sqlite3
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+      CREATE TABLE engrams (
+        id TEXT PRIMARY KEY, created_at REAL, session_id TEXT, actor_id TEXT,
+        platform TEXT, channel_id TEXT, content TEXT, summary TEXT,
+        topics TEXT, entities TEXT, entity_refs TEXT, tags TEXT, similar_to TEXT,
+        importance REAL, strength REAL, access_count INTEGER, last_accessed REAL,
+        reconsolidation_lock_until REAL, supersedes TEXT, embedding_json TEXT,
+        memory_type TEXT, promoted_at REAL, embedding_model TEXT, fts_text TEXT,
+        valence REAL DEFAULT 0.0, intensity REAL DEFAULT 0.0, temporal_bucket INTEGER DEFAULT 0,
+        stream TEXT DEFAULT '', forgotten_at REAL DEFAULT 0.0,
+        cluster_id TEXT DEFAULT '', profile_fact_id TEXT DEFAULT '',
+        confidence REAL DEFAULT 0.5, tier TEXT DEFAULT 'hot'
+      );
+      INSERT INTO engrams(id, content, summary, actor_id, channel_id, strength)
+        VALUES ('old1', 'legacy memory', 'legacy memory', 'a', 'c', 1.0);
+    """)
+    conn.commit(); conn.close()
+    svc = _mk(db)
+    try:
+        old = svc.store.get("old1")
+        assert old is not None and old.persona_id == "", old
+        idx = {r[1] for r in svc.store._conn.execute("PRAGMA index_list(engrams)").fetchall()}
+        assert "idx_persona" in idx, idx
+        svc.observe(session_id="s", actor_id="a", platform="qq", channel_id="c",
+                    content="new scoped note", persona_id="cat")
+        r = svc.recall(Cue(text="memory note", actor_id="a", channel_id="c",
+                           persona_id="cat", k=10, mode="hybrid"))
+        pids = {getattr(e, "persona_id", "") for e in r.engrams}
+        assert pids <= {"cat"}, ("legacy leaked", pids)
+        print("[OK] old-DB migration + idx_persona + scoped recall")
+    finally:
+        try: svc.close()
+        except Exception: pass
+        try: os.remove(db)
+        except Exception: pass
+
+
 if __name__ == "__main__":
     main()
+    test_old_db_migration_and_index()
+    print("ALL PASS v58")
