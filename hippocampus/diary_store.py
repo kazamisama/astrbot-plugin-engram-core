@@ -247,6 +247,52 @@ class DiaryStore:
         c.commit()
         return cur.rowcount or 0
 
+    def purge_lines_in_range(self, channel_id: str, t0: float, t1: float,
+                             persona_id: str | None = None) -> int:
+        """FIX (v1.41) for BUG-3 + BUG-7: drop the raw lines that were
+        consumed by a diary write so a re-run of run_daily_diary (manual
+        /mem diary or a delayed scheduler tick) does not reproduce the
+        same diary. Bounded by [t0, t1). persona_id filters to a
+        single persona's slice when given.
+        """
+        c = self._ensure_conn()
+        if persona_id is None:
+            cur = c.execute(
+                "DELETE FROM daily_messages WHERE channel_id=? "
+                "AND ts >= ? AND ts < ?",
+                (channel_id, t0, t1))
+        else:
+            cur = c.execute(
+                "DELETE FROM daily_messages WHERE channel_id=? "
+                "AND COALESCE(persona_id, '')=? "
+                "AND ts >= ? AND ts < ?",
+                (channel_id, persona_id, t0, t1))
+        c.commit()
+        return cur.rowcount or 0
+
+    def add_lines_batch(self, lines: list) -> int:
+        """FIX (v1.41) for BUG-7: insert N lines inside a single commit
+        so a hot channel does not fsync once per message. Same INSERT
+        shape as add_line; returns rows inserted.
+        """
+        if not lines:
+            return 0
+        c = self._ensure_conn()
+        rows = [
+            (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
+             ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
+             ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
+             ln.platform, ln.persona_id)
+            for ln in lines]
+        c.executemany(
+            "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
+            "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
+            "peer_actor_id,peer_name,session_id,platform,persona_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows)
+        c.commit()
+        return len(rows)
+
     def count_lines(self) -> int:
         c = self._ensure_conn()
         row = c.execute("SELECT COUNT(*) AS n FROM daily_messages").fetchone()

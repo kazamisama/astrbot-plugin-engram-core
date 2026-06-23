@@ -213,11 +213,22 @@ class ManageHandler:
             yield event.plain_result("\u5f53\u524d\u7248\u672c\u4e0d\u652f\u6301\u65e5\u8bb0\u3002")
             return
         try:
-            n = self.service.run_daily_diary()
+            res = self.service.run_daily_diary()
         except Exception as e:
             yield event.plain_result("\u65e5\u8bb0\u751f\u6210\u51fa\u9519\uff1a" + repr(e))
             return
+        # FIX (v1.41) BUG-12: run_daily_diary now returns (written, failed)
+        # so partial failures are visible instead of silently dropped.
+        if isinstance(res, tuple):
+            n, failed = res
+        else:
+            n, failed = (int(res or 0), [])
         if n:
-            yield event.plain_result("\u5df2\u751f\u6210 " + str(n) + " \u7bc7\u65e5\u8bb0\uff08\u524d\u4e00\u4e2a\u903b\u8f91\u65e5\uff09\u3002")
+            msg = "\u5df2\u751f\u6210 " + str(n) + " \u7bc7\u65e5\u8bb0\uff08\u524d\u4e00\u4e2a\u903b\u8f91\u65e5\uff09\u3002"
+            if failed:
+                msg += "\n\u90e8\u5206\u9891\u9053\u5931\u8d25\uff1a" + str(len(failed))
+                for fe in failed[:5]:
+                    msg += "\n - " + str(fe.get("channel_id", "?")) + ": " + str(fe.get("error", "?"))
+            yield event.plain_result(msg)
         else:
             yield event.plain_result("\u672a\u751f\u6210\u65e5\u8bb0\uff1a\u524d\u4e00\u4e2a\u903b\u8f91\u65e5\u7f13\u5b58\u4e2d\u6ca1\u6709\u53ef\u7528\u6d88\u606f\u3002")

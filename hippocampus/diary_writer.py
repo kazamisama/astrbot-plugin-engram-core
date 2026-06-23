@@ -34,29 +34,61 @@ DAY_SECONDS = 86400.0
 
 def day_bounds(day_epoch: float) -> tuple:
     """Return (00:00, 24:00) local-time epoch bounds for the day containing
-    day_epoch."""
+    day_epoch.
+
+    FIX (v1.41): compute tomorrow's midnight via date arithmetic, not
+    `start + 86400`. The old approach drifted +/- 1 hour on DST transition
+    days, which caused the daily diary window to leak into the previous
+    day (spring forward) or skip an hour of the new day (fall back).
+    """
     lt = time.localtime(day_epoch)
     start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0,
                          lt.tm_wday, lt.tm_yday, lt.tm_isdst))
-    return start, start + DAY_SECONDS
+    # Date arithmetic: mktime of tomorrow's local midnight handles DST.
+    y, m, d = lt.tm_year, lt.tm_mon, lt.tm_mday
+    if m == 12 and d == 31:
+        ny, nm, nd = y + 1, 1, 1
+    elif m in (1, 3, 5, 7, 8, 10) and d == 31:
+        ny, nm, nd = y, m + 1, 1
+    elif m in (4, 6, 9, 11) and d == 30:
+        ny, nm, nd = y, m + 1, 1
+    elif m == 2:
+        leap = (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0)
+        last = 29 if leap else 28
+        if d == last:
+            ny, nm, nd = y, m + 1, 1
+        else:
+            ny, nm, nd = y, m, d + 1
+    else:
+        ny, nm, nd = y, m, d + 1
+    next_start = time.mktime((ny, nm, nd, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst))
+    return start, next_start
 
 
 def resolve_cut(store, channel_id: str, boundary_epoch: float, *,
                 persona_id=None,
-                night_hours: float, min_gap_seconds: float) -> float:
+                night_hours: float, min_gap_seconds: float,
+                fallback: float | None = None) -> float:
     """Resolve the logical cut at a midnight boundary.
 
     boundary_epoch is the calendar 00:00 of the day whose START we want.
     We scan the night window [boundary, boundary + night_hours) for the last
     idle gap >= min_gap_seconds and use it as the real start; if none, we
-    degrade to boundary (plain 00:00).
+    degrade to `fallback` (default: boundary, plain 00:00).
+
+    FIX (v1.41): callers that want the window to extend to the end of the
+    night when the session is still active (no idle gap yet) pass
+    `fallback=boundary + night_hours * 3600`. The old fixed-fallback to
+    `boundary_epoch` truncated cross-midnight sessions at today 00:00.
     """
     win_end = boundary_epoch + night_hours * 3600.0
     try:
         cut = store.find_idle_gap(channel_id, boundary_epoch, win_end, min_gap_seconds, persona_id=persona_id)
     except Exception:
         cut = None
-    return cut if cut is not None else boundary_epoch
+    if cut is not None:
+        return cut
+    return fallback if fallback is not None else boundary_epoch
 
 
 def target_length(total_chars: int, ratio_per_person: float,
@@ -214,29 +246,51 @@ def split_chunks(text: str, first_ts: float, last_ts: float,
                  max_chars: int = 400) -> list:
     """Split diary narrative into ordered chunks for chunk-level recall.
 
-    Prefers paragraph boundaries; falls back to char windows. Each chunk
-    gets a proportional [ts_start, ts_end) slice of the diary's span so a
-    time query can localise. Returns list[(seq, text, ts_start, ts_end)].
+    FIX (v1.41): split on Chinese sentence punctuation (\u3002\uff01\uff1f)
+    as well as blank lines and newlines; LLM-generated Chinese diaries
+    frequently use no blank-line separators at all, so the old
+    `re.split(r"\n{2,}")` collapsed everything into one giant chunk and
+    then had to be re-cut by raw char window, losing semantic boundaries.
+
+    Splits on (in priority order):
+      1. blank line (\n{2,})
+      2. CJK sentence-final punctuation followed by newline/space/end
+      3. single newline
+    Then enforces max_chars by hard-wrapping overlong paragraphs.
+
+    Each chunk gets a proportional [ts_start, ts_end) slice of the
+    diary's span so a time query can localise.
+    Returns list[(seq, text, ts_start, ts_end)].
     """
     text = (text or "").strip()
     if not text:
         return []
-    paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-    if not paras:
-        paras = [text]
+    # First pass: blank-line boundaries.
+    blocks = [b.strip() for b in re.split(r"\n{2,}", text) if b.strip()]
+    if not blocks:
+        blocks = [text]
+    # Second pass: split each block on CJK sentence punctuation when there
+    # is no blank line in between.
     pieces = []
-    for p in paras:
-        if len(p) <= max_chars:
-            pieces.append(p)
-        else:
-            for i in range(0, len(p), max_chars):
-                pieces.append(p[i:i + max_chars])
+    cjk_punct = re.compile(r"([\u3002\uff01\uff1f\u2026]+[\s\u3000]*)")
+    for b in blocks:
+        subs = [s.strip() for s in cjk_punct.split(b) if s and s.strip()]
+        if not subs:
+            subs = [b]
+        for s in subs:
+            if len(s) <= max_chars:
+                pieces.append(s)
+            else:
+                for i in range(0, len(s), max_chars):
+                    pieces.append(s[i:i + max_chars])
+    if not pieces:
+        pieces = [text]
     span = max(0.0, (last_ts or 0.0) - (first_ts or 0.0))
     n = len(pieces)
     out = []
     for i, piece in enumerate(pieces):
-        ts0 = (first_ts or 0.0) + span * (i / n)
-        ts1 = (first_ts or 0.0) + span * ((i + 1) / n)
+        ts0 = (first_ts or 0.0) + span * (i / n) if n > 0 else (first_ts or 0.0)
+        ts1 = (first_ts or 0.0) + span * ((i + 1) / n) if n > 0 else (last_ts or 0.0)
         out.append((i, piece, ts0, ts1))
     return out
 

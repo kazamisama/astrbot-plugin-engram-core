@@ -27,11 +27,36 @@ class DiaryHandler:
         return ""
 
     def _diaries(self, service) -> list:
-        """All active diary engrams, newest first."""
-        rows = service.store.list_active(limit=10_000_000)
-        out = [r for r in rows if (getattr(r, "memory_type", "") or "") == "diary"]
-        out.sort(key=lambda r: getattr(r, "created_at", 0.0) or 0.0, reverse=True)
-        return out
+        """All active diary engrams, newest first.
+
+        FIX (v1.41) BUG-8: previously called `list_active(limit=10_000_000)`
+        and then filtered in Python. For installs with hundreds of thousands
+        of active engrams the WebUI list view ground to a halt because every
+        request materialised every engram into Python only to keep the
+        `memory_type == "diary"` slice. Now we page at SQL level via
+        HippocampalStore.list_active(memory_type="diary", limit=...) when
+        the store supports the keyword, falling back to the old path for
+        older HippocampalStore builds.
+        """
+        store = getattr(service, "store", None) if service is not None else None
+        rows = None
+        if store is not None:
+            try:
+                rows = store.list_active(memory_type="diary", limit=20000)
+            except TypeError:
+                # Older signature: no memory_type kwarg.
+                rows = None
+            except Exception:
+                rows = None
+        if rows is None:
+            try:
+                rows = store.list_active(limit=20000) if store is not None else []
+            except Exception:
+                rows = []
+            rows = [r for r in rows if (getattr(r, "memory_type", "") or "") == "diary"]
+        rows = list(rows)
+        rows.sort(key=lambda r: getattr(r, "created_at", 0.0) or 0.0, reverse=True)
+        return rows
 
     def _channel_label(self, r) -> str:
         tags = getattr(r, "tags", None) or []

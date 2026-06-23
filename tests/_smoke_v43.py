@@ -193,8 +193,11 @@ def test_run_daily_diary_end_to_end():
                                            actor_id=aid, speaker=aid, content=txt,
                                            is_bot=isbot, peer_actor_id="A",
                                            peer_name="A", ts=midday + i))
-    n = svc.run_daily_diary(now=now)
-    assert n == 1, n
+    res = svc.run_daily_diary(now=now)
+    # FIX (v1.41): run_daily_diary returns (written, failed)
+    n, failed = res if isinstance(res, tuple) else (int(res or 0), [])
+    assert n == 1, (n, failed)
+    assert failed == [], failed
     # the diary engram exists
     diaries = [x for x in svc.store.all(limit=10000)
                if getattr(x, "memory_type", "") == "diary"]

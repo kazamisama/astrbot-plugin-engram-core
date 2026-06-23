@@ -22,12 +22,21 @@ import math as _math
 
 
 def _diary_cos(a, b) -> float:
+    """Cosine similarity over two embedding vectors.
+
+    FIX (v1.41): bail to 0.0 when dimensions disagree. Cross-dimension
+    comparisons used to silently truncate the longer vector to the
+    shorter one AND compute norms on the truncated slice, returning
+    meaningless scores after an embedding provider switch without a
+    full rebuild.
+    """
     if not a or not b:
         return 0.0
-    n = min(len(a), len(b))
-    da = _math.sqrt(sum(x * x for x in a[:n])) or 1.0
-    db = _math.sqrt(sum(x * x for x in b[:n])) or 1.0
-    return sum(a[i] * b[i] for i in range(n)) / (da * db)
+    if len(a) != len(b):
+        return 0.0
+    da = _math.sqrt(sum(x * x for x in a)) or 1.0
+    db = _math.sqrt(sum(x * x for x in b)) or 1.0
+    return sum(a[i] * b[i] for i in range(len(a))) / (da * db)
 
 
 class MemoryService:
@@ -498,7 +507,15 @@ class MemoryService:
                             persona_id: str | None = None) -> list:
         """Chunk-level diary recall (B-3 req 13): embed query, score against
         stored diary chunks by cosine, return top-N chunk texts. Returns
-        list[(text, score)]."""
+        list[(text, score)].
+
+        FIX (v1.41) BUG-4: when the diary_chunks table is missing entries
+        for some diary engrams (e.g. process crashed between the engram
+        upsert and the chunks commit), fall back to slicing the diary
+        engram's summary on the fly so the user does not silently lose
+        recall coverage. The fallback embeds each slice with the current
+        embedder on demand; no write back.
+        """
         ds = getattr(self, "diary_store", None)
         if ds is None or top_n <= 0:
             return []
@@ -511,24 +528,71 @@ class MemoryService:
         try:
             chunks = ds.all_chunks(limit=2000, persona_id=persona_id)
         except Exception:
-            return []
+            chunks = []
         scored = []
+        seen_diary_ids = set()
         for ch in chunks:
             if not ch.embedding:
                 continue
+            seen_diary_ids.add(ch.diary_id)
             s = _diary_cos(qvec, ch.embedding)
             if s >= min_score:
                 scored.append((ch.text, s))
+        # Fallback: cover diaries that have an engram but no chunks yet.
+        try:
+            for d in self.store.list_active(limit=50000):
+                if (getattr(d, "memory_type", "") or "") != "diary":
+                    continue
+                if d.id in seen_diary_ids:
+                    continue
+                if (persona_id is not None
+                        and (getattr(d, "persona_id", "") or "") != (persona_id or "")):
+                    continue
+                text = (getattr(d, "summary", "") or getattr(d, "content", "") or "").strip()
+                if not text:
+                    continue
+                try:
+                    from .diary_writer import split_chunks as _split
+                except Exception:
+                    continue
+                try:
+                    pieces = _split(text, 0.0, 0.0, max_chars=400)
+                except Exception:
+                    pieces = []
+                for _seq, ptext, _t0, _t1 in pieces:
+                    try:
+                        emb = self.embedder.embed(ptext)
+                    except Exception:
+                        emb = []
+                    if not emb:
+                        continue
+                    s = _diary_cos(qvec, emb)
+                    if s >= min_score:
+                        scored.append((ptext, s))
+        except Exception:
+            pass
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:max(0, top_n)]
 
-    def run_daily_diary(self, *, now: float | None = None) -> int:
+    def run_daily_diary(self, *, now: float | None = None) -> "tuple[int, list]":
         """Build diaries for the just-finished logical day across all cached
-        channels, then TTL-purge old daily messages. Returns count written."""
+        channels, then TTL-purge old daily messages.
+
+        FIX (v1.41):
+          - BUG-2:  t1 extends to next_start + night_hours so a still-active
+                    late-night session is not truncated at today 00:00.
+          - BUG-3:  Idempotency check skips (ch, pid, day_label) already
+                    written; the raw daily_messages for that window are
+                    purged after a successful write so a manual /mem diary
+                    re-run on the same day cannot re-produce the diary.
+          - BUG-11: Dropped the dead `+ 3600.0` that day_bounds() ate.
+          - BUG-12: Returns (written, failed) so callers can surface partial
+                    failure instead of silently swallowing it.
+        """
         import time as _t
         ds = getattr(self, "diary_store", None)
         if ds is None or not bool(getattr(self.cfg, "diary_enabled", False)):
-            return 0
+            return (0, [])
         now = now if now is not None else _t.time()
         from .diary_writer import (DiaryWriter, day_bounds, resolve_cut)
         writer = getattr(self, "_diary_writer", None)
@@ -542,22 +606,39 @@ class MemoryService:
                 pass
         night_h = float(getattr(self.cfg, "diary_night_window_hours", 6.0) or 6.0)
         gap = float(getattr(self.cfg, "diary_night_gap_seconds", 1800.0) or 1800.0)
+        consume = bool(getattr(self.cfg, "diary_consume_cache_on_write", True))
         # target = the day that ended at the most recent midnight (yesterday)
         today_start, _ = day_bounds(now)
         target_day = today_start - 86400.0
-        d_start, _ = day_bounds(target_day)
-        next_start, _ = day_bounds(d_start + 86400.0 + 3600.0)
+        d_start, next_start = day_bounds(target_day)
         day_label = _t.strftime("%Y-%m-%d", _t.localtime(d_start))
         written = 0
+        failed: list = []
+        # search upper bound for channel activity: include the entire
+        # night window past next_start so cross-midnight sessions show up.
+        search_end = next_start + night_h * 3600.0
         try:
-            channels = ds.channels_with_lines(d_start, next_start + night_h * 3600.0)
+            channels = ds.channels_with_lines(d_start, search_end)
         except Exception as ex:
             print("[hippocampus] run_daily_diary channels error: " + repr(ex))
             channels = []
         for ch, pid in channels:
             try:
-                t0 = resolve_cut(ds, ch, d_start, night_hours=night_h, min_gap_seconds=gap, persona_id=pid)
-                t1 = resolve_cut(ds, ch, next_start, night_hours=night_h, min_gap_seconds=gap, persona_id=pid)
+                # Idempotency: skip (channel, persona, day) already written.
+                if self._existing_diary_for_day(ch, pid, day_label) is not None:
+                    continue
+                t0 = resolve_cut(ds, ch, d_start,
+                                  night_hours=night_h,
+                                  min_gap_seconds=gap,
+                                  persona_id=pid)
+                # FIX (v1.41) BUG-2: when no idle gap exists in the night
+                # window, extend the diary to the end of the night window
+                # rather than clamping at today 00:00.
+                t1 = resolve_cut(ds, ch, next_start,
+                                  night_hours=night_h,
+                                  min_gap_seconds=gap,
+                                  persona_id=pid,
+                                  fallback=search_end)
                 lines = ds.lines_in_range(ch, t0, t1, persona_id=pid)
                 if not lines:
                     continue
@@ -580,15 +661,49 @@ class MemoryService:
                 }
                 if self.store_diary(diary, identity) is not None:
                     written += 1
+                    # FIX (v1.41) BUG-3: consume the cache window so the
+                    # next run (manual / scheduler drift) cannot re-write
+                    # the same diary from the same raw lines.
+                    if consume:
+                        try:
+                            ds.purge_lines_in_range(ch, t0, t1, persona_id=pid)
+                        except Exception as pex:
+                            print("[hippocampus] diary cache purge error: " + repr(pex))
             except Exception as ex:
                 print("[hippocampus] run_daily_diary channel error: " + repr(ex))
+                failed.append({"channel_id": ch, "persona_id": pid, "error": repr(ex)})
         # TTL purge
         try:
             ttl_days = int(getattr(self.cfg, "diary_message_ttl_days", 7) or 7)
             ds.purge_older_than(now - ttl_days * 86400.0)
         except Exception as ex:
             print("[hippocampus] run_daily_diary purge error: " + repr(ex))
-        return written
+        return (written, failed)
+
+    def _existing_diary_for_day(self, channel_id: str, persona_id: str,
+                               day_label: str):
+        """FIX (v1.41) BUG-3: scan active diary engrams for an existing
+        (channel_id, persona_id, day:<day_label>) triple. Returns the
+        Engram id or None. Cheap O(N) over active engrams; runs at most
+        once per channel per day.
+        """
+        if not day_label:
+            return None
+        day_tag = "day:" + str(day_label)
+        try:
+            for r in self.store.list_active(limit=200000):
+                if (getattr(r, "memory_type", "") or "") != "diary":
+                    continue
+                if (getattr(r, "channel_id", "") or "") != channel_id:
+                    continue
+                if (getattr(r, "persona_id", "") or "") != (persona_id or ""):
+                    continue
+                tags = getattr(r, "tags", None) or []
+                if any(str(t) == day_tag for t in tags):
+                    return getattr(r, "id", None)
+        except Exception:
+            return None
+        return None
 
     def _find_text_duplicate(self, e: Engram):
         """Text-layer near-duplicate check (v1.11). Uses FTS to pull
@@ -657,6 +772,15 @@ class MemoryService:
             print("[hippocampus] mirror relation error: " + repr(ex))
 
     def _post_ingest(self, e: Engram, name_map: dict | None = None) -> None:
+        # FIX (v1.41) BUG-9: diary + summary engrams are already produced
+        # by the diary / summary pipeline (which extracts relations and
+        # entities itself). Running them through the per-engram extractor
+        # again would dump every diary-mentioned person into the semantic
+        # graph as a fresh entity and re-fan-out the atom layer every
+        # single day. Skip silently.
+        mtype = (getattr(e, "memory_type", "") or "").lower()
+        if mtype in ("diary", "summary", "conversation"):
+            return
         if self.semantic is not None and self.extractor is not None:
             from .semantic import _classify
             ents = self.extractor.extract_entities(e)

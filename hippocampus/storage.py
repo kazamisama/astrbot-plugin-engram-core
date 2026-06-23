@@ -403,8 +403,18 @@ class HippocampalStore:
         self.upsert(e)
         return True
 
-    def list_active(self, limit: int = 10_000) -> list:
-        return [e for e in self.all(limit=limit) if e.forgotten_at == 0.0]
+    def list_active(self, limit: int = 10_000, *, memory_type: str | None = None) -> list:
+        """FIX (v1.41) BUG-8: optional memory_type kwarg lets the WebUI
+        diary view filter at Python-list level on a single attribute.
+        The underlying `all()` already takes a limit, so the cost is
+        bounded; we still post-filter forgotten_at. Old callers passing
+        only `limit` keep working unchanged.
+        """
+        rows = self.all(limit=limit)
+        if memory_type:
+            mt = str(memory_type)
+            rows = [e for e in rows if (getattr(e, "memory_type", "") or "") == mt]
+        return [e for e in rows if e.forgotten_at == 0.0]
 
     def valence_histogram(self) -> dict:
         b = {"positive": 0, "neutral": 0, "negative": 0, "unscored": 0}

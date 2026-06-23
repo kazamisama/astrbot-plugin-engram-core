@@ -108,8 +108,11 @@ class HippocampusStar(Star):
             import asyncio
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            print("[hippocampus] idle flush loop: no running asyncio loop at init; "
+                  "background idle flush disabled (conversations will still flush on demand).")
             return
         except Exception:
+            print("[hippocampus] idle flush loop: unexpected init failure; disabled.")
             return
 
         async def _loop():
@@ -136,11 +139,21 @@ class HippocampusStar(Star):
 
     def _start_diary_loop(self) -> None:
         """Fire service.run_daily_diary() once per day at the configured
-        local hour. Best-effort; skips when no running loop (sync init)."""
+        local hour. Best-effort; skips when no running loop (sync init).
+
+        FIX (v1.41) BUG-6: previously returned silently when no loop was
+        running, leaving the operator without any signal that the auto
+        diary trigger is off. Now logs a one-line warning and the user
+        can still trigger via /mem diary."""
         try:
             import asyncio
             loop = asyncio.get_running_loop()
-        except Exception:
+        except RuntimeError:
+            print("[hippocampus] diary loop: no running asyncio loop at init; "
+                  "daily auto-trigger disabled. Use /mem diary manually.")
+            return
+        except Exception as ex:
+            print("[hippocampus] diary loop: unexpected init failure; disabled: " + repr(ex))
             return
 
         async def _loop():
