@@ -124,10 +124,31 @@ class HippocampusStar(Star):
                     if cfg is not None:
                         interval = float(getattr(
                             cfg, "summary_idle_flush_interval_seconds", 60.0) or 60.0)
+                        # FIX (v1.42) BUG-7: clamp the loop to also honour
+                        # diary_message_flush_interval_seconds when it is
+                        # shorter, so a low-traffic channel still has its
+                        # buffer drained within its own SLA.
+                        diary_interval = float(getattr(
+                            cfg, "diary_message_flush_interval_seconds", 30.0) or 30.0)
+                        if diary_interval > 0:
+                            interval = min(interval, max(5.0, diary_interval))
                     await _a.sleep(max(5.0, interval))
                     convbuf = getattr(self._observer, "_conv_buffer", None)
                     if convbuf is not None:
                         convbuf.flush_idle_now()
+                    # FIX (v1.42) BUG-7: time-trigger flush for the diary
+                    # write buffer so low-traffic channels do not let lines
+                    # sit in memory longer than the configured SLA.
+                    ds = getattr(self.service, "diary_store", None)
+                    if ds is not None and hasattr(ds, "flush_now"):
+                        try:
+                            n = ds.flush_now()
+                            if n:
+                                print("[hippocampus] diary buffer flushed "
+                                      + str(n) + " lines")
+                        except Exception as dex:
+                            print("[hippocampus] diary buffer flush error: "
+                                  + repr(dex))
                 except _a.CancelledError:
                     break
                 except Exception as ex:

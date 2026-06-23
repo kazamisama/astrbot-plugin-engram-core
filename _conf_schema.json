@@ -333,6 +333,18 @@
         "default": 2500,
         "description": "日记字数上限",
         "hint": "单篇日记最多字数。"
+      },
+      "diary_message_batch_size": {
+        "type": "int",
+        "default": 50,
+        "description": "日记原始消息批量写入阈值 (v1.42)",
+        "hint": "DiaryStore 把每条 cache_daily_line 写先放到内存 buffer，达到这个条数再一次性 fsync commit。热频道把这个从 1 提到 50 可以把 fsync 频率从每秒几十次降到 1-2 次。空闲时（任何读查询触发 flush_now()）也会落盘。设为 1 退化为逐条 commit。"
+      },
+      "diary_message_flush_interval_seconds": {
+        "type": "float",
+        "default": 30.0,
+        "description": "日记 buffer 时间触发 flush 间隔 (v1.42)",
+        "hint": "除了批量阈值和读触发外，后台循环每这么多秒强制 flush 一次 buffer，确保低流量时段也不会让消息在内存里停留太久。"
       }
     }
   },

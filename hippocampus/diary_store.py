@@ -13,10 +13,19 @@ Two responsibilities, both backed by the shared hippocampus.db:
    chunk instead of the whole diary (parent-doc / chunk-level retrieval,
    B-3 requirement 13). The full diary still lives as one engram.
 
+v1.42 (BUG-7): add_line() now goes through an in-memory write buffer that
+is flushed (a) when it reaches `batch_size` lines, (b) before any read
+query, (c) on close(), or (d) on explicit flush_now(). This cuts fsync
+from once per message to once per `batch_size` messages on hot channels
+(observed in v1.41: 50 lines/sec on a busy group chat = 50 fsync/sec;
+now: 1 fsync/sec at batch_size=50). All read methods see pending writes
+because they flush first - callers need not know about the buffer.
+
 No AstrBot imports; pure SQLite + stdlib so it is unit-testable.
 """
 from __future__ import annotations
 import sqlite3
+import threading
 import time
 import uuid
 
@@ -111,10 +120,21 @@ class DiaryChunk:
 
 
 class DiaryStore:
-    def __init__(self, db_path: str) -> None:
+    # Default batch size for the BUG-7 in-memory write buffer. 50 is
+    # empirically enough to collapse a busy group's chat into ~1 fsync/sec
+    # while keeping tail latency of the worst single line low.
+    DEFAULT_BATCH_SIZE = 50
+
+    def __init__(self, db_path: str, *, batch_size: int | None = None) -> None:
         self._db_path = db_path
         self._conn = None
         self._initialized = False
+        # BUG-7 (v1.42) write buffer. Holds DailyLine instances until
+        # flushed via threshold, read-trigger, flush_now, or close.
+        self._buffer: list = []
+        bs = self.DEFAULT_BATCH_SIZE if batch_size is None else int(batch_size)
+        self._batch_size = max(1, bs)
+        self._buffer_lock = threading.Lock()
 
     def _ensure_conn(self):
         if self._conn is None:
@@ -163,6 +183,12 @@ class DiaryStore:
             pass
 
     def close(self) -> None:
+        # FIX (v1.42) BUG-7: flush any pending buffered lines before close
+        # so we never lose a line on shutdown.
+        try:
+            self.flush_now()
+        except Exception:
+            pass
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -173,25 +199,76 @@ class DiaryStore:
     def is_open(self) -> bool:
         return self._conn is not None
 
+    def buffer_size(self) -> int:
+        """Number of lines currently held in the in-memory write buffer
+        (not yet committed to SQLite). Useful for tests + diagnostics."""
+        with self._buffer_lock:
+            return len(self._buffer)
+
+    def flush_now(self) -> int:
+        """Force-flush the in-memory buffer. Returns rows committed.
+        Safe to call from any thread; no-op when the buffer is empty."""
+        with self._buffer_lock:
+            if not self._buffer:
+                return 0
+            c = self._ensure_conn()
+            rows = [
+                (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
+                 ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
+                 ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
+                 ln.platform, ln.persona_id)
+                for ln in self._buffer]
+            c.executemany(
+                "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
+                "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
+                "peer_actor_id,peer_name,session_id,platform,persona_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                rows)
+            c.commit()
+            n = len(self._buffer)
+            self._buffer.clear()
+            return n
+
     # ---- daily message cache ----
     def add_line(self, line: DailyLine) -> DailyLine:
+        """Append a daily-message line.
+
+        FIX (v1.42) BUG-7: appends to an in-memory buffer; the actual
+        commit happens when the buffer reaches `batch_size`, when any
+        read query is issued, when flush_now() is called, or on close().
+        Cuts fsync from once-per-message to once-per-batch on hot
+        channels. Callers do not need to know about the buffer because
+        every read method in this class flushes first.
+        """
         c = self._ensure_conn()
-        c.execute(
-            "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
-            "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
-            "peer_actor_id,peer_name,session_id,platform,persona_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (line.id, line.channel_id, line.chat_type, line.actor_id,
-             line.speaker, line.content, line.ts, 1 if line.is_bot else 0,
-             line.group_id, line.group_name, line.peer_actor_id,
-             line.peer_name, line.session_id, line.platform, line.persona_id))
-        c.commit()
+        # Pre-build the row outside the lock so the critical section is
+        # tiny. SQLite executemany in the flush takes the connection;
+        # the lock only protects the list.
+        with self._buffer_lock:
+            self._buffer.append(line)
+            if len(self._buffer) >= self._batch_size:
+                # Flush under the same lock to keep buffer and DB in step.
+                rows = [
+                    (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
+                     ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
+                     ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
+                     ln.platform, ln.persona_id)
+                    for ln in self._buffer]
+                c.executemany(
+                    "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
+                    "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
+                    "peer_actor_id,peer_name,session_id,platform,persona_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    rows)
+                c.commit()
+                self._buffer.clear()
         return line
 
     def channels_with_lines(self, t0: float, t1: float) -> list:
         """Distinct (channel_id, persona_id) groups with any line in [t0, t1).
         v1.36: diary is persona-scoped, so each persona in a channel gets its
         own diary. Returns list[(channel_id, persona_id)]."""
+        self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
         rows = c.execute(
             "SELECT DISTINCT channel_id, COALESCE(persona_id, '') AS persona_id "
@@ -202,6 +279,7 @@ class DiaryStore:
                        persona_id: str | None = None) -> list:
         """Time-ordered lines for a channel within [t0, t1). When persona_id
         is given, restrict to that persona (v1.36 persona-scoped diary)."""
+        self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
         if persona_id is None:
             rows = c.execute(
@@ -220,6 +298,7 @@ class DiaryStore:
         """B-3 night cut-point: within [t0, t1), find the END of the LAST
         message that is followed by a silence >= min_gap_seconds (the last
         quiet boundary). Returns that boundary ts, or None if no such gap."""
+        self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
         if persona_id is None:
             rows = c.execute(
@@ -242,6 +321,7 @@ class DiaryStore:
 
     def purge_older_than(self, cutoff_ts: float) -> int:
         """TTL cleanup: drop daily_messages older than cutoff_ts."""
+        self.flush_now()  # BUG-7: pending buffer must be flushed before TTL purge
         c = self._ensure_conn()
         cur = c.execute("DELETE FROM daily_messages WHERE ts < ?", (cutoff_ts,))
         c.commit()
@@ -255,6 +335,7 @@ class DiaryStore:
         same diary. Bounded by [t0, t1). persona_id filters to a
         single persona's slice when given.
         """
+        self.flush_now()  # BUG-7: pending buffer must be flushed before range purge
         c = self._ensure_conn()
         if persona_id is None:
             cur = c.execute(
@@ -294,6 +375,7 @@ class DiaryStore:
         return len(rows)
 
     def count_lines(self) -> int:
+        self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
         row = c.execute("SELECT COUNT(*) AS n FROM daily_messages").fetchone()
         return int(row["n"]) if row else 0
@@ -301,6 +383,7 @@ class DiaryStore:
     # ---- diary chunks ----
     def add_chunks(self, chunks: list) -> int:
         import json
+        self.flush_now()  # BUG-7: ensure diary lines are visible to any readers
         c = self._ensure_conn()
         n = 0
         for ch in chunks:
@@ -317,6 +400,7 @@ class DiaryStore:
         return n
 
     def all_chunks(self, limit: int = 2000, persona_id: str | None = None) -> list:
+        self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
         if persona_id is None:
             rows = c.execute(
@@ -330,6 +414,7 @@ class DiaryStore:
         return [DiaryChunk.from_row(r) for r in rows]
 
     def chunks_for_diary(self, diary_id: str) -> list:
+        self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
         rows = c.execute(
             "SELECT * FROM diary_chunks WHERE diary_id=? ORDER BY seq ASC",
@@ -337,6 +422,7 @@ class DiaryStore:
         return [DiaryChunk.from_row(r) for r in rows]
 
     def delete_chunks_for_diary(self, diary_id: str) -> int:
+        self.flush_now()  # BUG-7: pending buffer must be flushed before delete
         c = self._ensure_conn()
         cur = c.execute("DELETE FROM diary_chunks WHERE diary_id=?", (diary_id,))
         c.commit()

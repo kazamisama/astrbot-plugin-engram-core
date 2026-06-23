@@ -77,7 +77,13 @@ class MemoryService:
         from .relation_store import RelationStore
         self.relation_store = RelationStore(self.cfg.sqlite_path)
         from .diary_store import DiaryStore
-        self.diary_store = DiaryStore(self.cfg.sqlite_path)
+        # FIX (v1.42) BUG-7: pass diary_message_batch_size so the in-memory
+        # write buffer is sized from config. When the key is absent we
+        # inherit DiaryStore.DEFAULT_BATCH_SIZE (50).
+        _diary_bs = int(getattr(self.cfg, "diary_message_batch_size",
+                                DiaryStore.DEFAULT_BATCH_SIZE) or DiaryStore.DEFAULT_BATCH_SIZE)
+        self.diary_store = DiaryStore(self.cfg.sqlite_path,
+                                      batch_size=max(1, _diary_bs))
         self.extractor = EntityExtractor(self.llm) if self.cfg.enable_semantic else None
         self.prospective_store = ProspectiveStore(self.cfg.sqlite_path) if self.cfg.enable_prospective else None
         self.prospective_scheduler = (
