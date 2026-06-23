@@ -240,3 +240,11 @@ select.edit-input { cursor: pointer; }
 .pager { display: flex; align-items: center; gap: 12px; justify-content: center; margin: 12px 0 4px; }
 .pager-info { color: var(--text-2); font-size: 13px; }
 .pager .btn[disabled] { opacity: .4; cursor: not-allowed; }
+
+/* v1.46: diary inline fold. Right-aligned action buttons next to the
+chips, and the fold body tucked under the summary within the same
+.mem-item card. */
+.diary-actions { margin-left: auto; display: flex; gap: 6px; }
+.diary-item { cursor: pointer; }
+.diary-item .diary-head { cursor: pointer; user-select: none; }
+.diary-item .diary-detail-body { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }

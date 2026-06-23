@@ -174,6 +174,9 @@ class PluginPageApi:
                  ["GET"], "Hippocampus diary list (filtered, paginated)")
         register(f"{PAGE_API_PREFIX}/diaries/detail", self._diary_detail,
                  ["GET"], "Hippocampus diary detail")
+        # FIX (v1.46): WebUI inline delete (mirrors /memories/delete).
+        register(f"{PAGE_API_PREFIX}/diaries/delete", self._delete_diary,
+                 ["POST"], "Hippocampus diary soft/hard delete")
 
     # ---------- async route handlers ----------
     async def _health(self) -> dict[str, Any]:
@@ -288,3 +291,10 @@ class PluginPageApi:
         args = await _query_args()
         return self.diary_handler.get_detail(
             self._service(), eid=str(args.get("eid", "")))
+
+    async def _delete_diary(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.diary_handler.delete_diary(
+            self._service(),
+            eid=str(body.get("eid", "")),
+            hard=_as_bool(body.get("hard"), False))

@@ -742,12 +742,20 @@
     });
   }
 
+  // Per-row cache of the rendered detail HTML so re-toggling is instant
+  // and we don't re-hit /diaries/detail every time.
+  var _diaryDetailCache = {};
+
   async function loadDiaries(keepOffset) {
     if (!_diaryState.optionsLoaded) { await loadDiaryOptions(); }
     if (!keepOffset) _diaryState.offset = 0;
+    _diaryDetailCache = {};  // page changed, drop the cache
     var f = _diaryFilters();
     var wrap = document.getElementById("diary-rows");
-    document.getElementById("diary-detail").innerHTML = "";
+    // v1.46: detail is now inline-folded under each row, so the legacy
+    // bottom panel stays empty (kept in the DOM for layout stability).
+    var legacy = document.getElementById("diary-detail");
+    if (legacy) legacy.innerHTML = "";
     wrap.innerHTML = emptyBox("\u52a0\u8f7d\u4e2d\u2026");
     try {
       var d = unwrap(await apiGet("page/diaries", {
@@ -759,19 +767,7 @@
       if (!items.length) { wrap.innerHTML = emptyBox("\u6682\u65e0\u65e5\u8bb0"); renderDiaryPager(); return; }
       wrap.innerHTML = "";
       items.forEach(function (it) {
-        var div = document.createElement("div");
-        div.className = "mem-item";
-        var ctype = it.chat_type === "group" ? "\u7fa4\u804a" : (it.chat_type === "private" ? "\u79c1\u804a" : "");
-        var head = '<div class="mem-head">' +
-          (it.day ? '<span class="chip">' + escapeHtml(it.day) + "</span>" : "") +
-          (ctype ? '<span class="chip chip-muted">' + ctype + "</span>" : "") +
-          (it.channel_label ? '<span class="chip chip-muted">' + escapeHtml(it.channel_label) + "</span>" : "") +
-          (it.persona_id ? '<span class="chip chip-muted">\u4eba\u683c ' + escapeHtml(it.persona_id) + "</span>" : "") +
-          "</div>";
-        div.innerHTML = head + '<div class="mem-summary">' +
-          escapeHtml(it.summary || "\uff08\u65e0\u6458\u8981\uff09") + "</div>";
-        div.addEventListener("click", function () { showDiaryDetail(it.id); });
-        wrap.appendChild(div);
+        wrap.appendChild(_buildDiaryRow(it));
       });
       renderDiaryPager();
     } catch (e) {
@@ -779,9 +775,68 @@
     }
   }
 
-  async function showDiaryDetail(eid) {
-    var box = document.getElementById("diary-detail");
-    box.innerHTML = emptyBox("\u52a0\u8f7d\u4e2d\u2026");
+  function _buildDiaryRow(it) {
+    var div = document.createElement("div");
+    div.className = "mem-item diary-item";
+    div.setAttribute("data-eid", it.id || "");
+    var ctype = it.chat_type === "group" ? "\u7fa4\u804a" : (it.chat_type === "private" ? "\u79c1\u804a" : "");
+    div.innerHTML =
+      '<div class="mem-head diary-head">' +
+        (it.day ? '<span class="chip">' + escapeHtml(it.day) + "</span>" : "") +
+        (ctype ? '<span class="chip chip-muted">' + ctype + "</span>" : "") +
+        (it.channel_label ? '<span class="chip chip-muted">' + escapeHtml(it.channel_label) + "</span>" : "") +
+        (it.persona_id ? '<span class="chip chip-muted">\u4eba\u683c ' + escapeHtml(it.persona_id) + "</span>" : "") +
+        '<div class="diary-actions">' +
+          '<button type="button" class="btn btn-ghost btn-sm diary-toggle">' +
+            "\u5c55\u5f00 \u25be" +
+          "</button>" +
+          '<button type="button" class="btn btn-danger btn-sm diary-delete" title="\u8f6f\u5220\u9664\uff08\u9ed8\u8ba4\uff09">' +
+            "\u5220\u9664" +
+          "</button>" +
+        "</div>" +
+      "</div>" +
+      '<div class="mem-summary">' +
+        escapeHtml(it.summary || "\uff08\u65e0\u6458\u8981\uff09") +
+      "</div>" +
+      '<div class="diary-detail-body" style="display:none;"></div>';
+    // Click anywhere on the head (but not on the action buttons)
+    // toggles the inline fold.
+    var head = div.querySelector(".mem-head");
+    head.addEventListener("click", function (ev) {
+      if (ev.target.closest(".diary-actions")) return;  // ignore btn clicks
+      _toggleDiaryRow(div, it.id);
+    });
+    // Delete button: confirm + soft delete by default (no accidental loss).
+    var delBtn = div.querySelector(".diary-delete");
+    delBtn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      _deleteDiaryRow(div, it.id, false);
+    });
+    return div;
+  }
+
+  function _toggleDiaryRow(rowDiv, eid) {
+    var body = rowDiv.querySelector(".diary-detail-body");
+    var btn = rowDiv.querySelector(".diary-toggle");
+    if (!body || !btn) return;
+    if (body.style.display !== "none") {
+      // fold
+      body.style.display = "none";
+      btn.textContent = "\u5c55\u5f00 \u25be";
+      return;
+    }
+    // expand
+    body.style.display = "block";
+    btn.textContent = "\u6536\u8d77 \u25b4";
+    if (_diaryDetailCache[eid]) {
+      body.innerHTML = _diaryDetailCache[eid];
+      return;
+    }
+    body.innerHTML = emptyBox("\u52a0\u8f7d\u4e2d\u2026");
+    _renderDiaryDetailInto(eid, body);
+  }
+
+  async function _renderDiaryDetailInto(eid, body) {
     try {
       var d = unwrap(await apiGet("page/diaries/detail", { eid: eid }));
       var meta = {};
@@ -792,12 +847,55 @@
       if (d.participants && d.participants.length) meta["\u53c2\u4e0e\u8005"] = d.participants.join("\u3001");
       if (d.topics && d.topics.length) meta["\u4e3b\u9898"] = d.topics.join("\u3001");
       if (d.created_at != null) meta["\u5199\u5165\u65f6\u95f4"] = fmtTime(d.created_at);
-      box.innerHTML = '<div class="section-title">\u65e5\u8bb0\u8be6\u60c5 #' + escapeHtml(d.id) + "</div>" +
+      var html = '<div class="detail">' +
+        '<div class="section-title">\u65e5\u8bb0\u8be6\u60c5 #' + escapeHtml(d.id) + "</div>" +
         kvRows(meta) +
-        '<div class="raw">' + escapeHtml(d.content || d.summary_full || "") + "</div>";
+        '<div class="raw">' + escapeHtml(d.content || d.summary_full || "") + "</div>" +
+        "</div>";
+      _diaryDetailCache[eid] = html;
+      body.innerHTML = html;
     } catch (e) {
-      box.innerHTML = errBox(e.message);
+      body.innerHTML = errBox(e.message);
     }
+  }
+
+  async function _deleteDiaryRow(rowDiv, eid, hard) {
+    if (hard) {
+      if (!confirm("\u786c\u5220\u9664\u65e5\u8bb0 #" + eid + "\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u9006\u3002")) return;
+    } else {
+      if (!confirm("\u8f6f\u5220\u9664\u65e5\u8bb0 #" + eid + "\uff1f\u4f1a\u9690\u85cf\u4f46\u4fdd\u7559\u5728\u5e93\u91cc\uff0c\u53ef\u4ee5 /mem forget \u6062\u590d\u3002")) return;
+    }
+    try {
+      unwrap(await apiPost("page/diaries/delete", { eid: eid, hard: !!hard }));
+      delete _diaryDetailCache[eid];
+      rowDiv.parentNode.removeChild(rowDiv);
+      _diaryState.total = Math.max(0, _diaryState.total - 1);
+      // If the page is now empty, show the empty-state again.
+      var wrap = document.getElementById("diary-rows");
+      if (wrap && !wrap.children.length) {
+        wrap.innerHTML = emptyBox("\u6682\u65e0\u65e5\u8bb0");
+      }
+      renderDiaryPager();
+    } catch (e) {
+      alert("\u5220\u9664\u5931\u8d25\uff1a" + e.message);
+    }
+  }
+
+  // Legacy export kept so any old callers don't 404; the new
+  // path uses inline folds via _toggleDiaryRow above.
+  async function showDiaryDetail(eid) {
+    var body = document.querySelector(
+      '.diary-item[data-eid="' + cssEscape(eid) + '"] .diary-detail-body');
+    if (body) { _toggleDiaryRow(body.parentNode, eid); return; }
+    var box = document.getElementById("diary-detail");
+    if (box) await _renderDiaryDetailInto(eid, box);
+  }
+
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) {
+      return "\\" + c.charCodeAt(0).toString(16) + " ";
+    });
   }
 
   document.getElementById("btn-refresh-stats").addEventListener("click", loadStats);

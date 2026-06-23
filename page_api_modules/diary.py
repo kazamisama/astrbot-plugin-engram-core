@@ -165,6 +165,38 @@ class DiaryHandler:
             "k": k_i,
         })
 
+    def delete_diary(self, service, eid: str,
+                     hard: bool = False) -> dict[str, Any]:
+        """FIX (v1.46): diary delete for the WebUI list. Mirrors
+        MemoryHandler.delete_memory - soft (sets forgotten_at, strength=0)
+        by default, hard (row removed) when hard=True. The diary engram
+        lives in the same HippocampalStore as regular memories, so
+        soft_forget / delete work the same way."""
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        eid = (eid or "").strip()
+        if not eid:
+            return self.utils.error("Missing eid.")
+        try:
+            row = service.store.get(eid)
+        except Exception as e:
+            return self.utils.error("get failed: " + repr(e))
+        if row is None:
+            return self.utils.error("unknown id: " + eid)
+        if (getattr(row, "memory_type", "") or "") != "diary":
+            return self.utils.error("not a diary: " + eid)
+        if hard:
+            try:
+                service.store.delete(eid)
+                return self.utils.ok({"id": eid, "mode": "hard"})
+            except Exception as e:
+                return self.utils.error("hard delete failed: " + repr(e))
+        try:
+            service.store.soft_forget(eid)
+            return self.utils.ok({"id": eid, "mode": "soft"})
+        except Exception as e:
+            return self.utils.error("soft forget failed: " + repr(e))
+
     def get_detail(self, service, eid: str) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
