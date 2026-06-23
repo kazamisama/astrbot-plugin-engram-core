@@ -159,6 +159,21 @@ class PluginPageApi:
                  ["GET"], "Hippocampus backup list")
         register(f"{PAGE_API_PREFIX}/backups/restore", self._restore_backup,
                  ["POST"], "Hippocampus backup restore")
+        # FIX (v1.43) WebUI diary routes. The async handlers
+        # (_list_diaries, _diary_options, _diary_detail) were already
+        # defined on this class but never wired up here, so the
+        # frontend `apiGet("page/diaries[/options|detail]")` calls
+        # returned "route not found". Frontend URLs (line 693/753/786
+        # of app.js) are:
+        #   page/diaries/options  -> filter dropdowns
+        #   page/diaries          -> paginated list
+        #   page/diaries/detail   -> full diary engram
+        register(f"{PAGE_API_PREFIX}/diaries/options", self._diary_options,
+                 ["GET"], "Hippocampus diary filter options")
+        register(f"{PAGE_API_PREFIX}/diaries", self._list_diaries,
+                 ["GET"], "Hippocampus diary list (filtered, paginated)")
+        register(f"{PAGE_API_PREFIX}/diaries/detail", self._diary_detail,
+                 ["GET"], "Hippocampus diary detail")
 
     # ---------- async route handlers ----------
     async def _health(self) -> dict[str, Any]:
