@@ -1086,16 +1086,41 @@
     if (e.key === "Enter") runRecall();
   });
 
+  // v1.51: race b.ready() against a 3s timeout so a stuck bridge
+  // can't block loadHealth/loadStats. Surface the ready-result
+  // (including timeout / error) inline so the operator can see
+  // exactly where init is hanging without DevTools.
+  function _withTimeout(promise, ms, label) {
+    var t = new Promise(function (resolve) { setTimeout(function () {
+      resolve({__timeout__: true, label: label});
+    }, ms); });
+    return Promise.race([promise, t]);
+  }
   async function init() {
+    var el = document.getElementById("health");
     var b = await waitForBridge(8000);
-    if (b && b.ready) {
-      try {
-        var ctx = await b.ready();
-        if (ctx && typeof ctx.isDark === "boolean") applyTheme(ctx.isDark);
-      } catch (e) { /* non-fatal */ }
+    if (!b) {
+      if (el) { el.textContent = "未连接 (桥未注入)"; el.className = "status err"; }
+      return;
     }
-    await loadHealth();
-    await loadStats();
+    if (b.ready) {
+      var r = await _withTimeout(Promise.resolve().then(function () {
+        return b.ready();
+      }), 3000, "bridge.ready");
+      if (r && r.__timeout__) {
+        // bridge.ready hung - still try to load health/stat.
+        if (el) el.textContent = "桥 ready 超时…"; el.className = "status";
+        console.warn("[engram] bridge.ready() did not resolve within 3s, continuing without theme");
+      } else if (r && typeof r.isDark === "boolean") {
+        applyTheme(r.isDark);
+      }
+    }
+    try {
+      await loadHealth();
+      await loadStats();
+    } catch (e) {
+      console.error("[engram] init post-bridge failure:", e);
+    }
   }
   init();
 })();
