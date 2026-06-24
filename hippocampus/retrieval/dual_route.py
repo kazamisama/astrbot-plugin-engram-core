@@ -1,6 +1,6 @@
 """Dual-route retrieval: document route + graph route + RRF merge.
 
-The v1.3 retrieval architecture for hippocampus:
+The v1.62 retrieval architecture for hippocampus:
 
     query ----+----------------------+
               |                      |
@@ -14,10 +14,10 @@ The v1.3 retrieval architecture for hippocampus:
               v                      v
         RankedCandidate         RankedCandidate
               |                      |
-              +-------+   +----------+
-                      v   v
-                    RRFFusion
-                       |
+              +-------+   +----------+   +----------+
+                      v   v           v
+                    RRFFusion   (spread route:
+                       |         activation-ranked)
                        v
                FusedCandidate list
 
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 class RouteKind(str, Enum):
     DOCUMENT = "document"
     GRAPH = "graph"
+    SPREAD = "spread"
 
 
 @dataclass
@@ -67,6 +68,11 @@ class DualRouteConfig:
     graph_relation_hops: int = 1
     # If the graph route returns no entity matches, skip it entirely
     skip_empty_graph_route: bool = True
+    # v1.62: spreading-activation route (pre-excitation + context spread).
+    # When enabled, the spread route contributes activation-ranked engrams
+    # as a third input to RRF fusion alongside document + graph routes.
+    spread_route_enabled: bool = True
+    spread_candidate_k: int = 16
     # RRF k constant (lower = more weight to top ranks)
     rrf_k: int = 60
 
@@ -96,19 +102,33 @@ class DualRouteRetriever:
         self.cfg = cfg or DualRouteConfig()
 
     def search(self, cue: Cue) -> RecallResult:
-        """Run both routes synchronously. Returns RecallResult sorted by rrf_score."""
+        """Run all routes synchronously. Returns RecallResult sorted by rrf_score."""
         doc_hits = self._document_route(cue)
         graph_hits = self._graph_route(cue)
-        if self.cfg.skip_empty_graph_route and not graph_hits:
-            routes = [("document", doc_hits)]
-        else:
-            routes = [("document", doc_hits), ("graph", graph_hits)]
+        spread_hits = self._spread_route(cue)
+        routes: list[tuple[str, list]] = [("document", doc_hits)]
+        if graph_hits or not self.cfg.skip_empty_graph_route:
+            routes.append(("graph", graph_hits))
+        if spread_hits:
+            routes.append(("spread", spread_hits))
         fusion = RRFFusion(k=self.cfg.rrf_k)
         fused = fusion.fuse(routes)
         # trim to k
         top = fused[: max(1, cue.k)]
         engrams = [fc.item for fc in top]
         scores = [fc.rrf_score for fc in top]
+        # v1.62: reconsolidation touch for all routes.
+        # Previously only PatternCompleter (document route) touched
+        # engrams. Graph/spread-route hits were invisible to the
+        # access stats / strength bump. Fix: touch every engram in
+        # the fused top-k regardless of which route surfaced it.
+        try:
+            recon = getattr(self._service, "reconsolidator", None)
+            if recon is not None:
+                for e in engrams:
+                    recon.touch(e)
+        except Exception:
+            pass
         return RecallResult(engrams=engrams, scores=scores, confidences=None)
 
     async def asearch(self, cue: Cue) -> RecallResult:
@@ -166,6 +186,38 @@ class DualRouteRetriever:
         return out
 
     # --- route implementations -----------------------------------------
+    def _spread_route(self, cue: Cue) -> list[RankedCandidate]:
+        """v1.62: build RankedCandidate list from pre-computed
+        spreading-activation map in cue.activation.
+
+        The activation map is populated upstream by
+        MemoryService.recall_with_activation() which seeds
+        SpreadingActivation from matched entities, recent-access
+        engrams, and high-importance priors. Here we translate that
+        map into ranked candidates for RRF fusion.
+
+        Returns empty list when spread_route_enabled=False or no
+        activation map is available.
+        """
+        if not self.cfg.spread_route_enabled:
+            return []
+        act_map = getattr(cue, "activation", None) or {}
+        if not act_map:
+            return []
+        items: list[tuple[Engram, float]] = []
+        store = self._service.store
+        for eid, act in act_map.items():
+            engram = store.get(eid)
+            if engram is None or engram.forgotten_at > 0:
+                continue
+            items.append((engram, float(act)))
+        items.sort(key=lambda x: x[1], reverse=True)
+        k = self.cfg.spread_candidate_k
+        return [
+            RankedCandidate(item=e, raw_score=s, rank=i + 1)
+            for i, (e, s) in enumerate(items[:k])
+        ]
+
     def _document_route(self, cue: Cue) -> list[RankedCandidate]:
         """Vector + FTS5 hybrid, RRF-merged into a single ranked list."""
         embedder = self._service.embedder
