@@ -323,7 +323,7 @@ def test_page_api_registers_11_endpoints():
             service=None, backup_manager=None))
     api = page_api.PluginPageApi(plugin)
     api.register_routes()
-    assert len(calls) == 15, "expected 15 endpoints, got " + str(len(calls))
+    assert len(calls) == 19, "expected 19 endpoints, got " + str(len(calls))
     paths = [c[0] for c in calls]
     for needed in ["/astrbot_plugin_engram_core/page/graph/data",
                    "/astrbot_plugin_engram_core/page/graph/entity/delete",
