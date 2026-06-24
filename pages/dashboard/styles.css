@@ -260,3 +260,28 @@ class is shared between diary and memory rows; the per-list
   border-top: 1px dashed var(--border);
 }
 .mem-mode-actions { display: flex; gap: 6px; margin: 6px 0 10px; }
+
+/* v1.55 BUG-14: in-DOM confirm modal (window.confirm() is suppressed
+   by the AstrBot plugin-page sandboxed iframe). */
+.confirm-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, .35);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+  animation: confirm-fade .12s ease-out;
+}
+.confirm-box {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  min-width: 280px; max-width: 480px;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.confirm-box.danger { border-color: var(--danger); }
+.confirm-msg { font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+@keyframes confirm-fade { from { opacity: 0; } to { opacity: 1; } }
+.toast.err { background: var(--danger); color: #fff; }

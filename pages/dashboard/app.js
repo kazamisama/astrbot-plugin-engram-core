@@ -28,6 +28,20 @@
     document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
   }
 
+  // FIX (v1.55) BUG-14: alert() is also suppressed by the sandboxed
+  // iframe. Route user-visible errors through the same toast() pipeline
+  // so they actually appear.
+  function _toastError(msg) {
+    var el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    el.classList.add("err");
+    setTimeout(function () {
+      el.classList.remove("show");
+      el.classList.remove("err");
+    }, 4000);
+  }
+
   function toast(msg) {
     var el = document.getElementById("toast");
     el.textContent = msg;
@@ -382,20 +396,70 @@
     }
   }
 
+  // FIX (v1.55) BUG-14: window.confirm() is suppressed by the AstrBot
+  // plugin-page sandboxed iframe ("allow-modals" not set, the browser
+  // silently drops confirm()/alert() calls and the user never sees a
+  // dialog). Replace every confirm() with an in-DOM modal so the
+  // sandboxing is no longer in the way. onYes() runs on confirm; onNo
+  // (or backdrop click / Esc) runs on cancel.
+  function _confirmInline(message, onYes, opts) {
+    opts = opts || {};
+    var yesLabel = opts.yesLabel || "确认";
+    var noLabel = opts.noLabel || "取消";
+    var danger = !!opts.danger;
+    var overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    var box = document.createElement("div");
+    box.className = "confirm-box" + (danger ? " danger" : "");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    var msg = document.createElement("div");
+    msg.className = "confirm-msg";
+    msg.textContent = message;
+    var actions = document.createElement("div");
+    actions.className = "confirm-actions";
+    var yesBtn = document.createElement("button");
+    yesBtn.type = "button";
+    yesBtn.className = "btn btn-sm" + (danger ? " btn-danger" : "");
+    yesBtn.textContent = yesLabel;
+    var noBtn = document.createElement("button");
+    noBtn.type = "button";
+    noBtn.className = "btn btn-ghost btn-sm";
+    noBtn.textContent = noLabel;
+    actions.appendChild(noBtn);
+    actions.appendChild(yesBtn);
+    box.appendChild(msg);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+    yesBtn.addEventListener("click", function () { close(); onYes && onYes(); });
+    noBtn.addEventListener("click", function () { close(); onNo && onNo(); });
+    overlay.addEventListener("click", function (ev) {
+      if (ev.target === overlay) { close(); onNo && onNo(); }
+    });
+    function _esc(e) {
+      if (e.key === "Escape") { close(); onNo && onNo(); document.removeEventListener("keydown", _esc); }
+    }
+    document.addEventListener("keydown", _esc);
+    setTimeout(function () { try { yesBtn.focus(); } catch (e) {} }, 0);
+  }
+
   async function _deleteMemoryRow(rowDiv, eid, hard) {
     var label = hard ? "永久删除" : "软删除";
     var msg = label + "记忆 #" + eid + "？"
             + (hard ? "此操作不可恢复。" : "软删除可被遗忘机制清理。");
-    if (!confirm(msg)) return;
-    try {
-      unwrap(await apiPost("page/memories/delete", { eid: eid, hard: !!hard }));
-      delete _memDetailCache[eid];
-      if (rowDiv && rowDiv.parentNode) rowDiv.parentNode.removeChild(rowDiv);
-      var wrap = document.getElementById("mem-rows");
-      if (wrap && !wrap.children.length) wrap.innerHTML = emptyBox("暂无记忆");
-    } catch (e) {
-      alert(label + "失败：" + e.message);
-    }
+    _confirmInline(msg, async function () {
+      try {
+        unwrap(await apiPost("page/memories/delete", { eid: eid, hard: !!hard }));
+        delete _memDetailCache[eid];
+        if (rowDiv && rowDiv.parentNode) rowDiv.parentNode.removeChild(rowDiv);
+        var wrap = document.getElementById("mem-rows");
+        if (wrap && !wrap.children.length) wrap.innerHTML = emptyBox("暂无记忆");
+      } catch (e) {
+        _toastError(label + "失败：" + e.message);
+      }
+    }, { danger: hard, yesLabel: hard ? "永久删除" : "软删除" });
   }
 
   function kvRows(obj) {
@@ -638,13 +702,14 @@
   }
 
   async function restoreBackup(bid) {
-    if (!confirm("确定用备份 " + bid + " 覆盖当前数据库吗？此操作不可逆。")) return;
-    try {
-      unwrap(await apiPost("page/backups/restore", { backup_id: bid }));
-      toast("恢复请求已提交：" + bid);
-    } catch (e) {
-      toast("恢复失败：" + e.message);
-    }
+    _confirmInline("确定用备份 " + bid + " 覆盖当前数据库吗？此操作不可逆。", async function () {
+      try {
+        unwrap(await apiPost("page/backups/restore", { backup_id: bid }));
+        toast("恢复请求已提交：" + bid);
+      } catch (e) {
+        toast("恢复失败：" + e.message);
+      }
+    }, { danger: true, yesLabel: "覆盖" });
   }
 
   // ---------- 关系图谱（canvas 力导向粒子网，EngramGraph2D） ----------
@@ -1036,25 +1101,25 @@
   }
 
   async function _deleteDiaryRow(rowDiv, eid, hard) {
-    if (hard) {
-      if (!confirm("\u786c\u5220\u9664\u65e5\u8bb0 #" + eid + "\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u9006\u3002")) return;
-    } else {
-      if (!confirm("\u8f6f\u5220\u9664\u65e5\u8bb0 #" + eid + "\uff1f\u4f1a\u9690\u85cf\u4f46\u4fdd\u7559\u5728\u5e93\u91cc\uff0c\u53ef\u4ee5 /mem forget \u6062\u590d\u3002")) return;
-    }
-    try {
-      unwrap(await apiPost("page/diaries/delete", { eid: eid, hard: !!hard }));
-      delete _diaryDetailCache[eid];
-      rowDiv.parentNode.removeChild(rowDiv);
-      _diaryState.total = Math.max(0, _diaryState.total - 1);
-      // If the page is now empty, show the empty-state again.
-      var wrap = document.getElementById("diary-rows");
-      if (wrap && !wrap.children.length) {
-        wrap.innerHTML = emptyBox("\u6682\u65e0\u65e5\u8bb0");
+    var label = hard ? "永久删除" : "软删除";
+    var msg = (hard ? "\u786c\u5220\u9664" : "\u8f6f\u5220\u9664") + "\u65e5\u8bb0 #" + eid + "\uff1f"
+            + (hard ? "\u6b64\u64cd\u4f5c\u4e0d\u53ef\u9006\u3002" : "\u4f1a\u9690\u85cf\u4f46\u4fdd\u7559\u5728\u5e93\u91cc\uff0c\u53ef\u4ee5 /mem forget \u6062\u590d\u3002");
+    _confirmInline(msg, async function () {
+      try {
+        unwrap(await apiPost("page/diaries/delete", { eid: eid, hard: !!hard }));
+        delete _diaryDetailCache[eid];
+        rowDiv.parentNode.removeChild(rowDiv);
+        _diaryState.total = Math.max(0, _diaryState.total - 1);
+        // If the page is now empty, show the empty-state again.
+        var wrap = document.getElementById("diary-rows");
+        if (wrap && !wrap.children.length) {
+          wrap.innerHTML = emptyBox("\u6682\u65e0\u65e5\u8bb0");
+        }
+        renderDiaryPager();
+      } catch (e) {
+        _toastError("\u5220\u9664\u5931\u8d25\uff1a" + e.message);
       }
-      renderDiaryPager();
-    } catch (e) {
-      alert("\u5220\u9664\u5931\u8d25\uff1a" + e.message);
-    }
+    }, { danger: hard, yesLabel: hard ? "永久删除" : "软删除" });
   }
 
   // Legacy export kept so any old callers don't 404; the new
