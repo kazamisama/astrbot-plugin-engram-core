@@ -194,11 +194,24 @@
   }
 
   // ---------- memories ----------
+  // v1.50: inline fold for memory list (mirrors the diary pattern).
+  // Each row holds its own collapsible body; clicking the head toggles
+  // the fold; the action buttons (展开 / 软删除) live on the right and
+  // stop propagation so they don't also trigger the fold. Editing still
+  // works - inside the fold body we render kvRows by default with a
+  // 查看 / 编辑 toggle, and "编辑" swaps in the same editForm() used
+  // before (with sliders, save, etc.).
+  var _memDetailCache = {};
+
   async function loadMemories() {
     var q = document.getElementById("mem-search").value.trim();
     var k = document.getElementById("mem-k").value || 50;
     var wrap = document.getElementById("mem-rows");
-    document.getElementById("mem-detail").innerHTML = "";
+    // v1.50: detail panel below the list is no longer used (folded
+    // inline). Empty it out, keep the DOM element for layout stability.
+    var legacy = document.getElementById("mem-detail");
+    if (legacy) legacy.innerHTML = "";
+    _memDetailCache = {};
     wrap.innerHTML = emptyBox("加载中…");
     try {
       var d = unwrap(await apiGet("page/memories", { q: q, k: k, offset: 0 }));
@@ -206,27 +219,178 @@
       if (!items.length) { wrap.innerHTML = emptyBox("暂无记忆"); return; }
       wrap.innerHTML = "";
       items.forEach(function (it) {
-        var div = document.createElement("div");
-        div.className = "mem-item";
-        var groupTxt = "";
-        if (it.group_name && it.group_id) groupTxt = it.group_name + " (" + it.group_id + ")";
-        else if (it.group_name) groupTxt = String(it.group_name);
-        else if (it.group_id) groupTxt = String(it.group_id);
-        else if (it.channel_id) groupTxt = String(it.channel_id);
-        var head = '<div class="mem-head">' +
-          '<span class="chip">#' + escapeHtml(it.id == null ? "?" : it.id) + "</span>" +
-          (it.actor_id ? '<span class="chip chip-muted">用户 ' + escapeHtml(it.actor_id) + "</span>" : "") +
-          (it.strength != null ? '<span class="chip chip-muted">强度 ' + Number(it.strength).toFixed(2) + "</span>" : "") +
-          (groupTxt ? '<span class="chip chip-muted">群 ' + escapeHtml(groupTxt) + "</span>" : "") +
-          (it.persona_id ? '<span class="chip chip-muted">人格 ' + escapeHtml(it.persona_id) + "</span>" : "") +
-          "</div>";
-        div.innerHTML = head + '<div class="mem-summary">' +
-          escapeHtml(it.summary || "（无摘要）") + "</div>";
-        div.addEventListener("click", function () { showDetail(it.id); });
-        wrap.appendChild(div);
+        wrap.appendChild(_buildMemoryRow(it));
       });
     } catch (e) {
       wrap.innerHTML = errBox(e.message);
+    }
+  }
+
+  function _buildMemoryRow(it) {
+    var div = document.createElement("div");
+    div.className = "mem-item memory-item";
+    div.setAttribute("data-eid", it.id || "");
+    var groupTxt = "";
+    if (it.group_name && it.group_id) groupTxt = it.group_name + " (" + it.group_id + ")";
+    else if (it.group_name) groupTxt = String(it.group_name);
+    else if (it.group_id) groupTxt = String(it.group_id);
+    else if (it.channel_id) groupTxt = String(it.channel_id);
+    div.innerHTML =
+      '<div class="mem-head memory-head">' +
+        '<span class="chip">#' + escapeHtml(it.id == null ? "?" : it.id) + "</span>" +
+        (it.actor_id ? '<span class="chip chip-muted">用户 ' + escapeHtml(it.actor_id) + "</span>" : "") +
+        (it.strength != null ? '<span class="chip chip-muted">强度 ' + Number(it.strength).toFixed(2) + "</span>" : "") +
+        (groupTxt ? '<span class="chip chip-muted">群 ' + escapeHtml(groupTxt) + "</span>" : "") +
+        (it.persona_id ? '<span class="chip chip-muted">人格 ' + escapeHtml(it.persona_id) + "</span>" : "") +
+        '<div class="row-actions">' +
+          '<button type="button" class="btn btn-ghost btn-sm mem-toggle">展开 ▾</button>' +
+          '<button type="button" class="btn btn-danger btn-sm mem-del">软删除</button>' +
+        "</div>" +
+      "</div>" +
+      '<div class="mem-summary">' +
+        escapeHtml(it.summary || "（无摘要）") +
+      "</div>" +
+      '<div class="mem-detail-body" style="display:none;"></div>';
+
+    var head = div.querySelector(".mem-head");
+    head.addEventListener("click", function (ev) {
+      if (ev.target.closest(".row-actions")) return;
+      _toggleMemoryRow(div, it.id);
+    });
+    div.querySelector(".mem-toggle").addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      _toggleMemoryRow(div, it.id);
+    });
+    div.querySelector(".mem-del").addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      _deleteMemoryRow(div, it.id, false);
+    });
+    return div;
+  }
+
+  function _toggleMemoryRow(rowDiv, eid) {
+    var body = rowDiv.querySelector(".mem-detail-body");
+    var btn = rowDiv.querySelector(".mem-toggle");
+    if (!body || !btn) return;
+    if (body.style.display !== "none") {
+      body.style.display = "none";
+      btn.textContent = "展开 ▾";
+      return;
+    }
+    body.style.display = "block";
+    btn.textContent = "收起 ▴";
+    if (_memDetailCache[eid]) {
+      body.innerHTML = _memDetailCache[eid];
+      _wireMemoryFoldButtons(rowDiv, eid);
+      return;
+    }
+    body.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + emptyBox("加载详情…");
+    _renderMemoryDetailInto(eid, body, rowDiv, "view");
+  }
+
+  async function _renderMemoryDetailInto(eid, body, rowDiv, mode) {
+    try {
+      var d = unwrap(await apiGet("page/memories/detail", { eid: eid }));
+      var modeBody = (mode === "edit")
+        ? editForm(d)
+        : "";
+      var html = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" +
+        '<div class="mem-mode-actions">' +
+          '<button type="button" class="btn btn-ghost btn-sm mem-mode-view"' +
+            (mode === "view" ? ' style="display:none;"' : "") + '>查看</button>' +
+          '<button type="button" class="btn btn-ghost btn-sm mem-mode-edit"' +
+            (mode === "edit" ? ' style="display:none;"' : "") + '>编辑</button>' +
+        "</div>" +
+        '<div class="mem-mode-body">' + modeBody + "</div>";
+      _memDetailCache[eid] = html;
+      body.innerHTML = html;
+      _wireMemoryFoldButtons(rowDiv, eid);
+    } catch (e) {
+      body.innerHTML = errBox(e.message);
+    }
+  }
+
+  function _wireMemoryFoldButtons(rowDiv, eid) {
+    var body = rowDiv.querySelector(".mem-detail-body");
+    var viewBtn = body.querySelector(".mem-mode-view");
+    var editBtn = body.querySelector(".mem-mode-edit");
+    if (viewBtn) viewBtn.addEventListener("click", function () {
+      delete _memDetailCache[eid];
+      _renderMemoryDetailInto(eid, body, rowDiv, "view");
+    });
+    if (editBtn) editBtn.addEventListener("click", function () {
+      delete _memDetailCache[eid];
+      _renderMemoryDetailInto(eid, body, rowDiv, "edit");
+    });
+    var saveBtn = body.querySelector("#ed-save");
+    if (saveBtn) saveBtn.addEventListener("click", function () {
+      _saveMemoryEdit(eid, body, rowDiv);
+    });
+    var delBtn = body.querySelector("#ed-del");
+    if (delBtn) delBtn.addEventListener("click", function () {
+      _deleteMemoryRow(rowDiv, eid, false);
+    });
+    var delHardBtn = body.querySelector("#ed-del-hard");
+    if (delHardBtn) delHardBtn.addEventListener("click", function () {
+      _deleteMemoryRow(rowDiv, eid, true);
+    });
+    ["ed-importance", "ed-strength"].forEach(function (sid) {
+      var sl = body.querySelector("#" + sid);
+      var lab = body.querySelector("#" + sid + "-val");
+      if (sl && lab) {
+        sl.addEventListener("input", function () {
+          lab.textContent = Number(sl.value).toFixed(2);
+        });
+      }
+    });
+  }
+
+  async function _saveMemoryEdit(eid, body, rowDiv) {
+    function _val(id) {
+      var el = body.querySelector("#" + id);
+      return el ? el.value : undefined;
+    }
+    var fields = {};
+    var summary = _val("ed-summary"); if (summary != null) fields.summary = summary;
+    var content = _val("ed-content"); if (content != null) fields.content = content;
+    var memtype = _val("ed-memtype"); if (memtype != null) fields.memory_type = memtype;
+    var importance = _val("ed-importance"); if (importance != null) fields.importance = importance;
+    var strength = _val("ed-strength"); if (strength != null) fields.strength = strength;
+    var topics = _val("ed-topics"); if (topics != null) fields.topics = topics;
+    var tags = _val("ed-tags"); if (tags != null) fields.tags = tags;
+    var persona = _val("ed-persona"); if (persona != null) fields.persona_id = persona;
+    var tier = _val("ed-tier"); if (tier != null) fields.tier = tier;
+    var msg = body.querySelector("#ed-msg");
+    try {
+      var r = unwrap(await apiPost("page/memories/update",
+                                  { eid: eid, fields: fields }));
+      var ch = (r && r.changed) || [];
+      var re = r && r.reembedded;
+      if (msg) {
+        msg.textContent = ch.length
+          ? ("已保存：" + ch.join("、") + (re ? "（已重算向量）" : ""))
+          : "无变更";
+        msg.className = "edit-msg ok";
+      }
+      delete _memDetailCache[eid];
+      await loadMemories();
+    } catch (e) {
+      if (msg) { msg.textContent = "保存失败：" + e.message; msg.className = "edit-msg err"; }
+    }
+  }
+
+  async function _deleteMemoryRow(rowDiv, eid, hard) {
+    var label = hard ? "永久删除" : "软删除";
+    if (!confirm(label + "记忆 #" + eid + "？"
+                + (hard ? "此操作不可恢复。" : "软删除可被遗忘机制清理。")) return;
+    try {
+      unwrap(await apiPost("page/memories/delete", { eid: eid, hard: !!hard }));
+      delete _memDetailCache[eid];
+      if (rowDiv && rowDiv.parentNode) rowDiv.parentNode.removeChild(rowDiv);
+      var wrap = document.getElementById("mem-rows");
+      if (wrap && !wrap.children.length) wrap.innerHTML = emptyBox("暂无记忆");
+    } catch (e) {
+      alert(label + "失败：" + e.message);
     }
   }
 
@@ -300,6 +464,15 @@
   }
 
   async function saveEdit(eid) {
+    // v1.50: legacy saveEdit - delegate to the inline-row path when
+    // the row exists in the new list, otherwise fall back to the
+    // legacy bottom-panel selectors.
+    var row = document.querySelector(
+      '.memory-item[data-eid="' + cssEscape(eid) + '"]');
+    if (row) {
+      var body = row.querySelector(".mem-detail-body");
+      if (body) return _saveMemoryEdit(eid, body, row);
+    }
     var msg = document.getElementById("ed-msg");
     if (msg) { msg.textContent = "保存中…"; msg.className = "edit-msg"; }
     var fields = {
@@ -330,30 +503,23 @@
     }
   }
 
+  // v1.50: legacy entry point kept for back-compat with any caller
+  // that still calls showDetail(eid). Routes to the new inline fold
+  // when a row is found; otherwise falls back to the (now empty)
+  // bottom panel.
   async function showDetail(eid) {
-    var el = document.getElementById("mem-detail");
-    el.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + emptyBox("加载详情…");
+    var row = document.querySelector(
+      '.memory-item[data-eid="' + cssEscape(eid) + '"]');
+    if (row) { _toggleMemoryRow(row, eid); return; }
+    var box = document.getElementById("mem-detail");
+    if (!box) return;
+    box.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + emptyBox("加载详情…");
     try {
       var d = unwrap(await apiGet("page/memories/detail", { eid: eid }));
-      var body = (d && typeof d === "object")
-        ? (kvRows(d) + editForm(d))
-        : '<div class="raw">' + escapeHtml(JSON.stringify(d, null, 2)) + "</div>";
-      el.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" + body;
-      var saveBtn = document.getElementById("ed-save");
-      if (saveBtn) { saveBtn.addEventListener("click", function () { saveEdit(eid); }); }
-      var delBtn = document.getElementById("ed-del");
-      if (delBtn) { delBtn.addEventListener("click", function () { deleteMem(eid, false); }); }
-      var delHardBtn = document.getElementById("ed-del-hard");
-      if (delHardBtn) { delHardBtn.addEventListener("click", function () { deleteMem(eid, true); }); }
-      ["ed-importance", "ed-strength"].forEach(function (sid) {
-        var sl = document.getElementById(sid);
-        var lab = document.getElementById(sid + "-val");
-        if (sl && lab) {
-          sl.addEventListener("input", function () { lab.textContent = Number(sl.value).toFixed(2); });
-        }
-      });
+      box.innerHTML = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" +
+        '<div class="mem-mode-body">' + kvRows(d) + "</div>";
     } catch (e) {
-      el.innerHTML = errBox(e.message);
+      box.innerHTML = errBox(e.message);
     }
   }
 
@@ -368,6 +534,12 @@
   }
 
   async function deleteMem(eid, hard) {
+    // v1.50: legacy deleteMem - delegate to the per-row path when the
+    // row exists in the new list, otherwise fall back to the legacy
+    // two-step arm/disarm flow on the bottom panel.
+    var row = document.querySelector(
+      '.memory-item[data-eid="' + cssEscape(eid) + '"]');
+    if (row) return _deleteMemoryRow(row, eid, hard);
     var msg = document.getElementById("ed-msg");
     var label = hard ? "永久删除" : "软删除";
     var btn = document.getElementById(hard ? "ed-del-hard" : "ed-del");

@@ -241,10 +241,22 @@ select.edit-input { cursor: pointer; }
 .pager-info { color: var(--text-2); font-size: 13px; }
 .pager .btn[disabled] { opacity: .4; cursor: not-allowed; }
 
-/* v1.46: diary inline fold. Right-aligned action buttons next to the
-chips, and the fold body tucked under the summary within the same
-.mem-item card. */
+/* v1.46 + v1.50: inline fold (diary + memory list).
+Right-aligned action buttons next to the chips, fold body tucked
+under the summary within the same .mem-item card. The .row-actions
+class is shared between diary and memory rows; the per-list
+.diary-item / .memory-item aliases keep existing references working.
+*/
+.row-actions,
 .diary-actions { margin-left: auto; display: flex; gap: 6px; }
-.diary-item { cursor: pointer; }
-.diary-item .diary-head { cursor: pointer; user-select: none; }
-.diary-item .diary-detail-body { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.diary-item,
+.memory-item { cursor: pointer; }
+.diary-item .diary-head,
+.memory-item .memory-head { cursor: pointer; user-select: none; }
+.diary-item .diary-detail-body,
+.memory-item .mem-detail-body {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.mem-mode-actions { display: flex; gap: 6px; margin: 6px 0 10px; }
