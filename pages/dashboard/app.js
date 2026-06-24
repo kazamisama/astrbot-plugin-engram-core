@@ -381,8 +381,9 @@
 
   async function _deleteMemoryRow(rowDiv, eid, hard) {
     var label = hard ? "永久删除" : "软删除";
-    if (!confirm(label + "记忆 #" + eid + "？"
-                + (hard ? "此操作不可恢复。" : "软删除可被遗忘机制清理。")) return;
+    var msg = label + "记忆 #" + eid + "？"
+            + (hard ? "此操作不可恢复。" : "软删除可被遗忘机制清理。");
+    if (!confirm(msg)) return;
     try {
       unwrap(await apiPost("page/memories/delete", { eid: eid, hard: !!hard }));
       delete _memDetailCache[eid];
