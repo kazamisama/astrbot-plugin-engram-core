@@ -104,7 +104,7 @@
       "persona_isolation_enabled": {
         "type": "bool",
         "default": true,
-        "description": "人格记忆隔离",
+        "description": "开启后不同人格（persona_id）之间的记忆互相隔离，召回时只返回当前会话人格对应的记忆",
         "hint": "启用后，不同人格的 bot 在同一会话/群的记忆互相隔离，召回与日记都按当前人格过滤，避免跨人格记忆污染。默认开启；关闭后所有人格共享同一会话的记忆。"
       },
       "session_aggregate_enabled": {
@@ -134,19 +134,19 @@
       "enable_persona": {
         "type": "bool",
         "default": false,
-        "description": "启用用户画像",
+        "description": "启用后 Dashboard 可查看/编辑用户画像，/mem persona 命令可用。画像基于该用户最近的 engram 摘要，由 LLM 总结为一段自然语言描述 + 3~5 个标签。注入需单独开启（见「启用画像注入」）",
         "hint": "开启后可用 /mem persona 为某个用户生成一段自然语言画像（基于其历史消息由 LLM 总结），与结构化用户事实互补。默认关闭。"
       },
       "persona_inject_enabled": {
         "type": "bool",
         "default": false,
-        "description": "启用画像注入",
+        "description": "开启后每次 LLM 调用前自动将该用户的画像作为稳定背景注入上下文，让 bot 自然记住用户偏好/身份/行为。需先开启「启用用户画像」",
         "hint": "开启后（且记忆自动注入已开），调用对话模型前会把该用户的画像作为稳定背景拼进上下文。默认关闭。"
       },
       "persona_max_source": {
         "type": "int",
         "default": 20,
-        "description": "画像取样条数",
+        "description": "每次构建画像时取该用户最近多少条记忆作为 LLM 总结的素材。值越大越全面但 token 消耗更多，建议 20~50",
         "hint": "生成画像时，最多取该用户最近多少条记忆作为输入。"
       },
       "tokenizer_mode": {
