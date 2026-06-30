@@ -12,6 +12,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from ..format import _extract
 from hippocampus.reltime import relative_label
+try:
+    from astrbot.core.agent.message import TextPart
+except ImportError:
+    TextPart = None  # pre-v4 AstrBot: fallback to string concat
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 
@@ -120,10 +124,35 @@ class InjectHandler:
                     print("[hippocampus] diary inject skipped: " + repr(dex))
 
             # Persona (background) -> relations -> recent conversation -> diary.
-            parts = [b for b in (persona_block, relation_block, memory_block, diary_block) if b]
-            if not parts:
+            blocks: list[tuple[str, str]] = []
+            if persona_block:
+                blocks.append(("persona", persona_block))
+            if relation_block:
+                blocks.append(("relation", relation_block))
+            if memory_block:
+                blocks.append(("memory", memory_block))
+            if diary_block:
+                blocks.append(("diary", diary_block))
+            if not blocks:
                 return
-            block = "\n\n".join(parts)
+            # v1.66: use structured TextPart instead of raw prompt concatenation.
+            # Each block becomes its own TextPart (marked temp so it never
+            # enters conversation history). This follows the social_context /
+            # ESM v0.9.x pattern: static rules in prompt=, dynamic data in
+            # extra_user_content_parts as independent TextPart blocks.
+            if TextPart is not None and hasattr(req, "extra_user_content_parts"):
+                position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
+                parts_list = getattr(req, "extra_user_content_parts", None)
+                if parts_list is not None:
+                    for _kind, text in blocks:
+                        part = TextPart(text=text, type="text").mark_as_temp()
+                        if position == "after":
+                            parts_list.append(part)
+                        else:
+                            parts_list.insert(0, part)
+                    return
+            # Fallback: pre-v4 AstrBot without TextPart support — raw concat.
+            block = "\n\n".join(b for _, b in blocks)
             position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
             prompt = getattr(req, "prompt", "") or ""
             if position == "after":
