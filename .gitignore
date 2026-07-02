@@ -53,6 +53,4 @@ data/
 config/
 *.local.yaml
 *.local.json
-HANDOFF_webui.md
 _ob.py
-_msg.txt
