@@ -1,168 +1,208 @@
-# TODO / 待办候选
+# TODO / 待办候选（合并版 · 2026-07-02 重整）
 
-> 候选改进项，均为「已讨论、未实现」。动手前需确认范围与最小 diff。
+> 将原本分散在 ROADMAP.md / TODO.md / TODO_summarization_B.md 的所有候选项
+> 整合到本文件。每项标注：状态（shipped / not started / declined）+ 版本 / commit
+> + 备注（现状/原因/下次评估点）。新候选请追加在末尾"持续观察"段。
 
-## 1. 召回结果自动注入（可选）
+## 1. 已完成的所有里程碑
 
-**现状**：召回结果只通过 `recall_long_term_memory` function tool 暴露给 LLM，由 LLM 自行决定是否调用（`hippocampus/tools.py`、`handlers/init.py:_register_agent_tools`）。不自动注入，因此 LLM 不主动调时记忆用不上。
+按版本顺序列出，每个里程碑列出实质改动，避免展开内部细节（细看 ROADMAP/CHANGELOG）。
 
-**目标**：参考 livingmemory，加一个可配置的「自动注入」路径，把召回结果（摘要 + 置信度）直接拼进 system prompt / 对话上下文，与现有 function-tool 路径并存。
+### v1.3 — 双路召回 + Agent Tool（commit b7e0xxx 之前，详见 git log）
 
-**要点**：
-- 新增配置开关（默认关，保持现有行为），放进 `_conf_schema.json` 的 `memory_settings` 分组 + `MemoryConfig` + `ConfigManager._FIELDS`。
-- 注入方式可选（system prompt / 上下文），注入条数上限、是否随近期上下文一起注入。
-- 监听 AstrBot 的 LLM 请求钩子（需确认 AstrBot 是否暴露 on_llm_request / 等价 hook）做注入。
-- 注意 token 预算，避免上下文爆炸。
+| ID | 项 | 备注 |
+|----|----|----|
+| A1 | 双路召回 (document + graph) + RRF 融合 | `hippocampus/retrieval/` |
+| A2 | `/mem search --mode=dual` 路由 + 渲染 | 已稳定多年 |
+| A3 | LLM Agent Tool (`recall_long_term_memory` / `memorize_long_term_memory`) | `hippocampus/tools.py` |
+| A4 | RRF 业务 ID 去重（修 vec+fts 同 engram 不合并） | |
+| A5 | 版本三方对齐（metadata / __init__ / _registered_version） | |
+| A6 | smoke v08–v09 (7→9) | |
 
-## 2. 硬回收（GC）条件改用「有效强度 / 上次访问时长」
+### v1.4 — 文本质量 + 会话策略 + 记忆原子 + 图存储 + 工程化
 
-**现状**：`HippocampalStore.gc_pass()`（`hippocampus/storage.py:290`）硬删条件为
-`strength < floor` 且 `access_count == 0` 且 `够老`。
-`access_count` 单调递增、永不衰减（`hippocampus/recall.py:13` touch 时 +1，仅对 top-k 生效）。
-后果：只要历史上进过一次召回 top-k，`access_count` 永久 ≥1，永远无法被硬回收——只有「自创建起从未进过任何 top-k」的纯冷记忆才会被删。偏保守。
+| ID | 项 | 备注 |
+|----|----|----|
+| B1 | TextProcessor (jieba + 停用词 + 否定词) | `hippocampus/processors/text_processor.py` |
+| B2 | 群聊被动捕获 + session 过滤 | `hippocampus/session_filter.py`，`/mem session` 命令 |
+| B3 | MemoryAtom 数据层 + store + lifecycle | `hippocampus/atom_store.py` |
+| B4 | GraphStore + GraphRetriever（reverse-index 走 SQL） | `hippocampus/graph_store.py` |
+| B5 | 补 3 个 Agent Tool (forget / list_recent / search_by_entity) | `hippocampus/tools.py` 5 个 tool |
+| B6 | handlers/event/{observe,recall,manage}.py 拆分 + CommandRouter | ~44% main.py 瘦身 |
+| B7 | ConfigManager 类（替代裸 dict）+ LABELS（67 字段 i18n 预抽） | `hippocampus/config_manager.py` |
+| B8 | i18n 框架（zh + en） | `hippocampus/i18n_backend.py` + `i18n/*.json` |
+| B9 | AstrBot Dashboard WebUI（PluginPageApi + 8 endpoints） | `page_api.py` + `page_api_modules/*` |
+| B10 | BackupManager + db_migration | `hippocampus/managers/backup_manager.py` + `db_migration.py` |
 
-**目标**：让「曾被召回过但早已冷却」的旧记忆也能被回收，更贴近艾宾浩斯「长期不用就忘」。
+### v1.4.x — B3/B4 wire + 异步维护循环
 
-**候选改法**：GC 条件从 `access_count == 0` 改为基于
-- 衰减后的有效强度（已随 decay 降到 floor 以下），和/或
-- 距 `last_accessed` 的时长超过阈值（如 N 天没再被召回）。
-保留软忘记审计（`forgotten_at`），仍只硬删「弱 + 长期未访问 + 够老」。
+| ID | 项 | 备注 |
+|----|----|----|
+| - | B3 数据层接进 service | `MemoryService._post_ingest` wire atom + graph 块 |
+| - | 异步维护循环（start/stop/run_decay/run_gc） | 参考 livingmemory，sync 退化到独立线程 |
+| - | spread_activation facade 修 kwargs 转发 | commit 14187ec |
 
-**要点**：
-- 改 `gc_pass()` 判据；新增阈值配置（默认值需保守，避免误删）。
-- 同步 atom 层 `atom_lifecycle_manager.run_gc()` 是否要一致改。
-- GC 自动循环目前默认关闭（`atom_gc_interval_seconds=0.0`），改判据不改变「默认不自动跑」的前提。
-- 需补烟测：构造一条「曾召回、已冷却」的 engram，断言新判据下可被回收、未冷却的不被回收。
+### v1.5 — auto-inject（commit 84d2xxx，TODO#1 兑现）
 
-## 3. 会话聚合：同一人/同一会话连续消息统一存储
+| ID | 项 | 备注 |
+|----|----|----|
+| - | `InjectHandler` + `@filter.on_llm_request()` | `handlers/event/inject.py` |
+| - | auto_inject_enabled 默认开；top_k 默认 3 | configurable |
 
-**现状**：`MemoryService.observe()`（`hippocampus/service.py:159`）来一条消息立即 encode 落库。存在 merge/link/new 三动作，但触发判据是**向量相似度**（`pattern_similar_threshold`），**不看 actor_id**——不是按「同一人连续消息」聚合。副作用：群聊里不同人说相似内容也会被 merge 到同一条。
+### v1.6.x — 扩散激活接入主召回（commit 918efea +）
 
-**目标**：参考 livingmemory 的 `conversation_manager` + `memory_reflection`，加会话缓冲层，按 `(channel_id, actor_id)`（或整会话）攒够 N 条/N 轮/停顿超时后，再总结成一条记忆落库，而非逐条入库。
+| ID | 项 | 备注 |
+|----|----|----|
+| v1.61 | `engrams_for_batch` + `recent_for_actor` + `top_by_importance` | graph 路由主路径 O(度数) |
+| v1.62 | spread 路由独立 RRF 融合 + reconsolidation 全路由触发 | `RouteKind.SPREAD` |
+| v1.63 | session-context 种子 + MMR 多样性重排 | `Cue.session_id` + `_mmr_rerank` |
 
-**要点**：
-- 引入会话状态管理（缓冲、TTL、容量上限、轮次计数）。
-- 触发条件：攒够 N 轮 / 停顿超 N 秒 / 话题切换。
-- 落库时用 LLM 总结成一条（engram 已有 encoder LLM 通路）。
-- merge 是否应改为「先按发言人聚合，再按相似度去重」，避免跨发言人误并。
-- 结构性改动较大，等价于移植 livingmemory 的 session_manager + reflection_engine。
+### v1.65 / v1.66 / v1.67 — Persona + 注入重构 + Bug 修复（本次窗口）
 
-## 4. 其他可借鉴自 livingmemory 的点（候选，未评估优先级）
+| ID | 项 | 备注 |
+|----|----|----|
+| v1.65 | Dashboard 用户画像 tab（list / detail / update / delete / build） | commit faad2f9，`page_api_modules/persona.py` 新 133 行 |
+| v1.65 | `_conf_schema.json` persona 字段描述丰富化 | commit f4b18ac |
+| v1.66 | 注入改结构化 TextPart 块（mark_as_temp + extra_user_content_parts） | commit 8abc052；借鉴 social_context/ESM v0.9.x 模式 |
+| v1.67 | handle_poke 读 persona_id 修复双日记 bug | commit 4a19e77 |
+| B14 | `/mem debug` 命令 + 修 explain() spread 路由 latent bug | commit 7a69b57 |
+| B12 | CHANGELOG.md（Keep a Changelog 风格，人工维护） | commit c044023 + c4a1c60 |
 
-- **检索器拆分 + BM25**：livingmemory 把检索拆成 vector / bm25 / graph_keyword / graph_vector / dual_route 多个独立 retriever（`core/retrieval/`）。engram 目前 FTS 用 unicode61 字符级分词，可考虑引入 BM25 + 停用词（`stopwords_manager`）提升中文检索质量。
-- **注入策略适配器**（`core/utils/injection_adapter.py`）：按 provider/模型自动选择注入方式并降级（如 gemini 不支持 fake_tool_call 时回退）。配合 TODO#1 自动注入一起做。
-- **实体消解 entity_resolver**（`core/processors/entity_resolver.py`）：把指代/别名归一到同一实体，减少实体图碎片。engram 当前实体抽取较朴素。
-- **chatroom_parser / 群聊解析**（`core/processors/chatroom_parser.py`）：群聊多人消息的结构化解析（区分发言人、@、引用）。
-- **decay_scheduler 独立调度器**（`core/schedulers/decay_scheduler.py`）：livingmemory 把衰减做成独立调度器并默认运行；engram 的 decay/GC 默认关闭（见 TODO#2）。
-- **index_validator**（`core/validators/index_validator.py`）：启动时校验向量索引与库一致性，自动修复/重建。engram 切换 embedding 维度后无一致性校验。
+### B 方案完成状态（v1.17-v1.21）— TODO_summarization_B.md 兑现
 
+| ID | 项 | 备注 |
+|----|----|----|
+| B-1 | 会话总结（per-channel 缓冲 + idle/timer 双触发 + LLM 总结） | v1.17/v1.18 |
+| B-2 | 关系层（relations + supersedes + confidence 推翻更新） | v1.19 |
+| B-3 | 日记层（per-channel 日记 + 12:00 触发 + 0-6点裁断 + 分块召回 + 独立配额 + 来源标签） | v1.20 |
+| B-4 | WebUI 编辑（`/memories/update` 端点 + 前端表单 + 改文本重嵌） | v1.21，附带 ON CONFLICT 漏字段 bug 修复 |
+| - | bot 自身消息入库（`@filter.on_llm_response()`） | v1.56/bot 视角日记 | 
 
-## 5. 架构对比与借鉴优先级（engram vs livingmemory）
+### TODO.md 候选兑现（v1.10 前后已 ship）
 
-> 评估自用户提供的 livingmemory 架构图 + 已读源码。结论：livingmemory 是工业级 RAG 范式，engram 同范式但更轻量。差距集中在「会话处理 / 检索多样性 / 自动注入 / 默认调度」四块。
+| ID | 项 | 备注 |
+|----|----|----|
+| TODO#1 | 召回自动注入 | ✅ v1.5（见 v1.5 段） |
+| TODO#3 | 会话聚合 | ✅ v1.6（SessionAggregator） |
+| TODO#4 | BM25 / 可配置分词器 / 写入去重 | ✅ v1.10/v1.11 |
+| 6.2 | Persona 画像引擎 | ✅ v1.8 + v1.9（tags + LLM 总结） |
+| 6.3 | SQLite WAL | ✅ v1.7 |
+| 6.4 | 聊天内管理命令 | ✅ 全套 `/mem *` |
+| 7.1 | persona tags | ✅ v1.9 |
+| 7.2 | 泛化词质量校验 | ✅ v1.9 |
+| 7.3 | FTS 分词器可配 (char/bigram/jieba) | ✅ v1.10 |
+| 7.4 | Jaccard 词级去重 | ✅ v1.11 |
 
-**范式对照**
-- 捕获：两者都是事件捕获。engram 逐条立即 encode（`hippocampus/service.py:159`）；livingmemory 有 `conversation_manager` 会话缓冲 + `memory_reflection` 反思总结后落库。→ 见 TODO#3。
-- 处理：livingmemory 有 graph_extractor / entity_resolver / atom_classifier / chatroom_parser 流水线；engram 实体抽取较朴素，无群聊结构化解析。→ 见 TODO#4。
-- 存储：两者都是多维标签 + 向量 + FTS。engram 70 字段正交标签已较完整。
-- 检索：livingmemory 5 路（vector/bm25/graph_keyword/graph_vector/dual_route）+ RRF；engram 2 路（vector + 字符级 FTS）+ RRF + 多因子重排。→ 见 TODO#4 BM25。
-- 注入：livingmemory 有 injection_adapter 自动注入 + 降级；engram 仅 function-tool 被动暴露。→ 见 TODO#1。
-- 调度：livingmemory decay/lifecycle/backup 默认运行；engram decay/GC 默认关闭。→ 见 TODO#2。
+---
 
-**推荐落地优先级**（投入产出比，从高到低）
-1. **会话聚合（TODO#3）** — 直接解决「逐条入库 + 跨发言人误并」，对群聊质量影响最大，是当前最痛点。
-2. **BM25 检索（TODO#4）** — 中文检索质量提升明显，改动相对自包含，风险可控。
-3. **召回自动注入（TODO#1）** — 让记忆真正参与对话而非等 LLM 主动调；依赖确认 AstrBot LLM 请求钩子。
-4. **GC 判据（TODO#2）** — 价值在长期库健康；当前 decay/GC 默认关，非紧急。
-5. **其余（entity_resolver / chatroom_parser / decay_scheduler / index_validator）** — 按需补，非核心路径。
+## 2. 未完成（评估后仍可能值得做的）
 
-**风险提示**
-- 1 与 3 都是结构性改动，动手前先各自给方案 + 确认 AstrBot 钩子能力，再写代码。
-- 任何一项都需：改完同步运行副本 + bump 版本（`metadata.yaml` + `hippocampus/__init__.py`）+ 跑烟测 + 推送。
+### 2.1 GC 判据改 `access_count` 逻辑 — declined (confirmed 2026-07-02)
 
+**来源**：TODO.md#2
 
-## 6. 借鉴自 atom.txt 架构解读的增量点
+**现状**：`hippocampus/storage.py:455`
+```python
+and e.access_count == 0   # 永不衰减的 access_count 锁死 GC
+```
 
-> 来源：用户提供的 `atom.txt`（某 Agent 记忆系统架构文字解读，DDD/Clean 风格）。与 livingmemory 同范式，去重后对 engram 真正有增量的为以下几项。BM25 / Graph检索 / index_validator / Prompts分层已在前文 TODO，不重复。
+**为什么 declined**：
+- 已知副作用："曾经进过 top-k 即永不回收" → engram 实际只删"自创建起从未召回过"的纯冷记忆
+- 改判据影响范围大（atom + 主 engram 两层都要对齐），实际影响小（0 engram 测试库无观测对象；当前 dev 部署也跑不到 10K+ 量级）
+- 用户评估（2026-07-02）："TODO.md 中未完成项仅剩 GC 判据，已确认有修复方案，但 ROI 不高"
+- 下次评估点：dev 库 engram > 1000 且 P99 GC > 0ms（持续观察）
 
-### 6.1 质量校验 + Warm 后台处理（并入 TODO#3 会话聚合）
+### 2.2 write_ops 断电恢复 — not started
 
-**对照**：atom.txt 落库前有 `quality_validator`（过滤低质量/噪声）+ `warm_processor`（后台异步加工）。engram `observe()`（`hippocampus/service.py:159`）逐条同步入库，仅过滤空内容与合成事件，无质量门、无后台加工。
+**来源**：ROADMAP 借鉴参考段第 3 条；README/todo 历史
 
-**目标**：在 TODO#3 会话缓冲层之上加「质量门」——聚合后、落库前判断是否值得记（长度/信息量/是否纯寒暄/是否重复），低质量丢弃；耗时的 LLM 总结放后台异步，避免阻塞消息处理。
+**现状**：`hippocampus/` 下 0 个 write_op 命名的文件/类
 
-**价值**：与当前最痛点（逐条入库噪声多）同源，建议与 TODO#3 一起做。
+**重复建设的负担**：
+- 用户评估（2026-07-02）："low priority; memory write ops 通常 1-10ms，crash window 极窄"
+- 当前 dev 部署单用户测试，crash 风险本就低
+- 真实生产部署（多 bot、多 session）才需要
 
-### 6.2 Persona 用户画像引擎（全新能力，engram 当前没有）
+**下次评估点**：第一个生产部署出现 / 实测到 1 条不一致 engram
 
-**对照**：atom.txt 有 `persona_engine` + `persona_store`，按用户长期沉淀偏好/行为画像。engram 有 `actor_id` 维度但只用于检索过滤，未做画像沉淀。
+### 2.3 Persona 定时重建（scheduler）— not started
 
-**目标**：新增按 `actor_id` 的画像表，定期（或攒够 N 条记忆后）用 LLM 总结该用户的稳定偏好/身份/行为，召回时作为稳定背景注入（配合 TODO#1 自动注入）。
+**来源**：TODO.md#6.2（数据已落地，scheduler 缺）
 
-**要点**：
-- 新表 `personas(actor_id, platform, summary, updated_at, source_count)`。
-- 触发：定时 / 攒够 N 条新记忆 / 手动命令。
-- 与 episodic 记忆解耦：画像是「稳定背景」，不参与衰减 GC。
-- 这是 atom.txt 相对 engram 的最大增量能力。
+**现状**：0 个 persona_rebuild_* 命名的函数 / 方法 / 后台线程
 
-### 6.3 WAL + 崩溃恢复（低成本健壮性，建议优先）
+**为什么 declined**：
+- `persona_store` + `build_persona` + `/mem persona` 命令三件套已完整
+- 手动 `/mem persona` 触发；Dashboard 也能点"↻生成"
+- 自动化收益：单用户场景下，攒够 20 条 engram 的周期可能数周到数月，等不到几小时一次的扫描
+- 多用户场景下价值上升
 
-**对照**：atom.txt 存储层用 `SQLite + FTS5 + WAL` + `write_op_log`（崩溃恢复日志）。engram 已用 SQLite+FTS5，需确认是否已开 WAL。
+**下次评估点**：dev 库 actor_id distinct > 2 + 画像改动频率 > 1/月
 
-**目标**：
-- 先上 `PRAGMA journal_mode=WAL`（近零成本，提升并发读写 + 崩溃恢复）——动手前先 grep 确认 `hippocampus/storage.py` 是否已设置，避免重复。
-- `write_op_log`（写操作日志做崩溃恢复）成本高、收益边际，**暂不做**，仅记录。
+### 2.4 B11 graph route 全 SQL 下推 — deferred (有条件)
 
-**价值**：WAL 改动极小、风险极低，可作为最先落地项。
+**来源**：ROADMAP P2 段
 
-### 6.4 聊天内管理命令 /memory /forget /summary（易用性）
+**现状**：`graph_engram_refs` reverse index + `engrams_for_batch` SQL JOIN 已落地（B4 + v1.61）。残留位置：`tools.py:_list_recent_handler` / `_search_by_entity_handler` 走 Python 端 `store.list_active(k*20)` + 内存过滤，注释里写 "B11 concern"
 
-**对照**：atom.txt 有 `command_handler` 暴露 `/memory` `/forget` `/summary`。engram 目前只能用 WebUI 管理记忆，无聊天内命令。
+**为什么 deferred**：dev 库 0 engram，被 `k*20` cap 限制在 O(1000) 内，实测不影响体验
 
-**目标**：用 AstrBot 指令机制加少量命令：查询最近记忆 / 主动遗忘指定记忆 / 触发一次会话总结。改动自包含，不触碰检索与存储核心逻辑。
+**下次评估点**：dev 库 engram > 5K 且 `_list_recent` / `_search_by_entity` 实测 > 200ms
 
-**要点**：需确认 AstrBot 指令注册 API（`@filter.command` 等），命令仅做读/标记，不直接硬删（走现有 soft_forget）。
+### 2.5 B13 GitHub Actions CI — declined (重评估 2026-07-02)
 
-### 落地优先级（综合 TODO#1–6）
-1. **WAL（6.3）** — 最便宜，先做。
-2. **会话聚合 + 质量门（TODO#3 + 6.1）** — 最痛点。
-3. **Persona 画像（6.2）** — 最大增量能力。
-4. **BM25 检索（TODO#4）** — 中文检索质量。
-5. **自动注入（TODO#1）** — 让记忆真正进对话。
-6. **管理命令（6.4）／ GC 判据（TODO#2）／ 其余** — 按需补。
+**来源**：ROADMAP P2 段
 
+**现状**：`.github/` 目录不存在
 
-## 7. 借鉴自 memori（HakoHana/memori）的增量点
+**为什么 declined**：
+- 用户是单人开发者，已有手工 sweep 习惯（commit v1.60 "test: full sweep v08-v63"）
+- 当前 dev DB 0 engram，跨平台/multi-py 有意义但跨度过大
+- 当前手工 workflow：`python tests/_smoke_v65.py && python tests/_smoke_v66.py && python tests/_smoke_v68.py` 已成习惯
 
-> 来源：用户提供的 https://github.com/HakoHana/memori 源码（atom.txt 架构的真实实现，~15k 行、225 测试、MIT）。逐项与 engram 现状比对去重后，真正有增量且不与已做项重复的为以下几项。BM25(已有)/WAL(v1.7)/会话聚合(v1.6)/persona(v1.8) 不重复。
+**下次评估点**：引入第二个开发者 / 准备公开发布到 AstrBot 市场
 
-### 7.1 persona 标签化（小、零依赖、纯增强 v1.8）— ✅ v1.9.0
-**对照**：memori `features/persona_engine.py` 的画像 = 一句话摘要 + 3~5 个标签（tags），更省 token、更结构化。engram v1.8 的 persona 只有自然语言 summary。
-**目标**：给 `PersonaStore`/`Persona` 加 `tags`（字符串列表），`build_persona` 让 LLM 同时产出 summary + tags；注入与 `/mem persona` 展示带上标签。
-**要点**：表加一列、向后兼容（旧行无 tags）；prompt 要求输出 JSON `{summary, tags}`，解析失败回退纯 summary。
+### 2.6 合并 LLM 调用 (TODO#7.5) — declined
 
-### 7.2 质量校验：泛化词检测（小）— ✅ v1.9.0
-**对照**：memori `pipeline/quality_validator.py` 检测「用户」「对方」等泛化词与空摘要，**告警不拒写**。engram 会话聚合质量门只看长度/重复。
-**目标**：新增轻量校验：summary/persona 含泛化词或为空时打 warn 日志（不拒写），便于发现 LLM 没用真实昵称。
-**要点**：纯函数 + 调用点埋点；不改变写入决策。
+**来源**：TODO.md 第 7.5 节
 
-### 7.3 可配置分词器 char|bigram|jieba（中，解决中文检索质量）— ✅ v1.10.0
-**对照**：memori 用 jieba 词级分词 + 短文本字符二元组降级（`retrieval/bm25_retriever.py`、`storage/atom_store.py`、`lifecycle/dedup.py`）。engram FTS 现为 unicode61 **字符级**（单字 token），中文 IDF 区分度低。
-**目标**：把 FTS 分词做成可配置 `tokenizer_mode = char(默认,现状) | bigram | jieba`。索引侧与查询侧分词保持一致；`jieba` 缺失自动降级 `bigram`，守住「零硬依赖」。切换非 char 时触发 FTS 重建（复用现有 rebuild 通路）。
-**要点**：默认 char 不动存量库；bigram=纯 Python 字符二元组，jieba=可选依赖；需迁移/重建 FTS 索引；补烟测验证三模式分词一致性。
+**为什么 declined**：
+- 当前调用点：encode（每条消息）/ summarise（per burst）/ persona（手动）/ diary（每天 1 次）/ consolidate（手动）
+- 单用户场景：LLM 调用总量本身小，合并主要省 token
+- encode 走同步路径无法合（必须立即返回）；persona + consolidate 都默认关闭，没合的对象
+- 真要省 token，`encode max_tokens=600 → 400` 一步就能省
 
-### 7.4 写入去重：词级 Jaccard（中）— ✅ v1.11.0
-**对照**：memori `lifecycle/dedup.py` 三层去重：写入前 jieba/bigram 词级 Jaccard、写入语义去重（FTS 粗召回→Jaccard→余弦精排）、定时低阈值兜底。engram 现仅靠向量相似度 merge。
-**目标**：入库前增加文本层 Jaccard 去重作为向量 merge 的补充，减少近似重复记忆。
-**要点**：与现有 separator merge/link 协调，避免双重合并；阈值可配置；与 7.3 的分词器共用 tokenize。属结构性改动，先评估再做。
+**下次评估点**：DAU > 10 或接到多用户生产部署
 
-### 7.5 其他（候选，未排期）
-- **合并 LLM 调用**：memori 一次调用同时产出日记+原子，省 ~50% 调用。engram encode 与 persona/consolidation 分散调用，可考虑合并热点路径。
-- **JSON 自动修复**：memori 修复未闭合引号/括号/尾逗号。engram 若有 LLM JSON 解析点可借鉴（需先确认解析点）。
-- **统一 LifecycleManager**：memori 把去重→强化→衰减→遗忘→归档→清理统一调度。engram 这些分散在 decay/gc/soft_forget，可考虑统一（大改动，低优先）。
+### 2.7 B12 CHANGELOG.md — ✅ 已 ship
 
-### 落地顺序（本批）
-1. 7.1 persona 标签化（零依赖增强）
-2. 7.2 泛化词质量校验（小）
-3. 7.3 可配置分词器（中文检索质量，本批重点）
-4. 7.4 写入去重（评估后决定是否纳入本批）
+**已 ship**，等下一次版本发布时直接加段进 `CHANGELOG.md`。
+
+---
+
+## 3. 持续观察（暂未评级）
+
+- format.py 工程债（700+ 行，可拆；不影响功能；不阻塞任何东西）
+- 中间版本 smoke（v27-v42、v44、v46-v62 共 33 个）不在 ROADMAP 的"当前绿点"基线里 —— 这些是已通过的中间版本快照，按用户工作流会随每次发版自动清理（下一个 release 起点就把中间版本跳过即可）
+- AstrBot plugin 路由 reload 失效问题（v0.8.x AstrBot 框架 bug）：用"卸载重装"绕，框架侧 fix 后自动恢复
+
+---
+
+## 4. 借鉴参考（不复述代码，只记落点）
+
+- `astrbot_plugin_livingmemory` 本地路径：`C:\Users\chiriu\.astrbot\data\plugins\astrbot_plugin_livingmemory`
+- 已借鉴且 ship：MemoryEngine 中央 facade → MemoryService（局部）/ write_ops 表 → 未 ship（见 §2.2）/ BM25 retriever → ship（v1.10）/ EventHandler 拆分 → ship（B6）/ i18n_backend → ship（B8）/ db_migration → ship（B10）/ page_api_modules → ship（B9）
+- `astrbot_plugin_social_context` 本地路径：`C:\Users\chiriu\.astrbot\data\plugins\astrbot_plugin_social_context`
+- 已借鉴且 ship：TextPart 块注入模式 → ship（v1.66）
+
+---
+
+## 5. 来源索引
+
+本合并版的合并来源：
+- `ROADMAP.md` — v1.3 / v1.4 / v1.4.x / v1.6.x 已完成段、B11/B13 deferred、借鉴参考段
+- `TODO_summarization_B.md` — B-1/B-2/B-3/B-4 已 ship，记忆三层架构草图，B 实施细节（已沉淀进代码）
+- `TODO.md` — TODOs 1-7 大部分已 ship
+
+旧文件状态：建议删除 `ROADMAP.md` 和 `TODO_summarization_B.md`（已合并），保留 `TODO.md`。
+`CHANGELOG.md` 独立保留（格式不同，功能不同）。
