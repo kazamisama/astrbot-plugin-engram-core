@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.67.2] - 2026-07-03
+
+### Fixed
+- `InjectHandler.handle_inject()` (TextPart path) now strips its own
+  previously-injected `<engram-context>` blocks from
+  `req.extra_user_content_parts` before appending the fresh set, so
+  the parts list does not grow unboundedly across multiple
+  `on_llm_request` firings in the same conversation (retries, or
+  multi-turn sessions where the list is not reset between turns).
+  Mirrors the find-and-replace pattern used by
+  `astrbot_plugin_emotion_state_machine` (HTML-comment sentinels:
+  `<!-- esm:emotion-block:start/end -->`), adapted to our XML-tag
+  marker (`<engram-context>`) so the visual/structural separation
+  from v1.67.1 is preserved.
+- Triple-match (open tag + close tag + at least one known inner
+  label `[用户画像]` / `[人物关系]` / `[近期对话]` / `[今日回顾]`)
+  is used to identify prior engram blocks; other plugins' TextParts
+  (e.g. `RAG-Faiss-Memory` from livingmemory, `esm:emotion-block`
+  from emotion_state_machine) are left untouched.
+
+### Smoke
+- `tests/_smoke_v71.py`: 4 new tests covering
+  `_strip_prior_engram_blocks` triple-match, empty/None safety, the
+  strip+re-inject round-trip (two consecutive `handle_inject` calls
+  leave exactly 1 engram block, not 2), and the cross-plugin
+  preservation guarantee (emotion + livingmemory blocks survive a
+  re-injection round).
+
 ## [1.67.1] - 2026-07-03
 
 ### Fixed

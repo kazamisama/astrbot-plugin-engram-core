@@ -37,6 +37,49 @@ class InjectHandler:
         """
         return f"<engram-context>\n{body}\n</engram-context>"
 
+    # v1.67.2 (re-injection defense): triple match used to identify
+    # our own previously-injected blocks. All three must be present
+    # to count as one of ours — open tag, close tag, and at least
+    # one of the four known inner labels. This makes false-positive
+    # removal of another plugin's TextPart extremely unlikely.
+    _ENGRAM_OPEN = "<engram-context>"
+    _ENGRAM_CLOSE = "</engram-context>"
+    _ENGRAM_INNER_LABELS = (
+        "[用户画像]", "[人物关系]", "[近期对话]", "[今日回顾]",
+    )
+
+    @classmethod
+    def _strip_prior_engram_blocks(cls, parts_list) -> int:
+        """Remove any prior engram TextParts from the parts list in place.
+
+        Returns the number of parts removed.  Mirrors
+        emotion_state_machine's find-and-replace pattern (HTML comment
+        sentinels) but uses the XML tag we already emit (v1.67.1).  The
+        goal is the same: prevent unbounded accumulation of our own
+        blocks across multiple ``on_llm_request`` firings within the
+        same conversation (e.g. retries, multi-turn sessions where
+        ``extra_user_content_parts`` is not reset between turns).
+        """
+        if not parts_list:
+            return 0
+        kept = []
+        removed = 0
+        for p in parts_list:
+            text = getattr(p, "text", None)
+            if not isinstance(text, str):
+                kept.append(p)
+                continue
+            stripped = text.strip()
+            if (stripped.startswith(cls._ENGRAM_OPEN)
+                    and stripped.endswith(cls._ENGRAM_CLOSE)
+                    and any(lab in stripped for lab in cls._ENGRAM_INNER_LABELS)):
+                removed += 1
+                continue
+            kept.append(p)
+        if removed:
+            parts_list[:] = kept
+        return removed
+
     async def handle_inject(self, event, req) -> None:
         svc = self.service
         if svc is None or req is None:
@@ -168,6 +211,13 @@ class InjectHandler:
                 position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
                 parts_list = getattr(req, "extra_user_content_parts", None)
                 if parts_list is not None:
+                    # v1.67.2 (re-injection defense): strip any of our
+                    # own engram blocks that were left over from a
+                    # prior on_llm_request firing (retries, multi-turn
+                    # sessions where parts_list is not reset). Without
+                    # this, the list grows by 4 per turn and eventually
+                    # dominates the LLM context window.
+                    self._strip_prior_engram_blocks(parts_list)
                     new_parts = [TextPart(text=text, type="text").mark_as_temp()
                                  for _kind, text in blocks]
                     if position == "after":
