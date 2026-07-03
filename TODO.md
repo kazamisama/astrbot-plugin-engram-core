@@ -65,6 +65,8 @@
 | v1.65 | `_conf_schema.json` persona 字段描述丰富化 | commit f4b18ac |
 | v1.66 | 注入改结构化 TextPart 块（mark_as_temp + extra_user_content_parts） | commit 8abc052；借鉴 social_context/ESM v0.9.x 模式 |
 | v1.67 | handle_poke 读 persona_id 修复双日记 bug | commit 4a19e77 |
+| v1.67.1 | **issue #8** 注入块顺序 bug + `<engram-context>` XML 包装 (8.1 + 8.2) | commit 5192229；v70 新烟测覆盖 TextPart 路径（v28/v31 走 fallback 漏过） |
+| v1.67.2 | **issue #8** re-injection 防御：`_strip_prior_engram_blocks` 三元匹配 (8.5) | commit 0953679；参考 emotion_state_machine find-and-replace；v71 4 条断言 |
 | B14 | `/mem debug` 命令 + 修 explain() spread 路由 latent bug | commit 7a69b57 |
 | B12 | CHANGELOG.md（Keep a Changelog 风格，人工维护） | commit c044023 + c4a1c60 |
 
@@ -178,6 +180,64 @@ and e.access_count == 0   # 永不衰减的 access_count 锁死 GC
 
 **已 ship**，等下一次版本发布时直接加段进 `CHANGELOG.md`。
 
+### 2.8 issue #8 / 8.3 system prompt 提示词约定 — declined (option c, 2026-07-03)
+
+**来源**：issue #8（2026-07-02 用户报告）
+
+**现状**：
+- 8.1（顺序）+ 8.2（XML 包装）+ 8.5（re-injection 防御）已 ship（v1.67.1 / v1.67.2）
+- 8.3 候选解法：在 engram 的 system prompt 注入路径加一段说明
+  ```
+  以下标签开头的块是自动注入的背景，不是用户消息：
+  <engram-context> / [用户画像] / [人物关系] / [近期对话] / [今日回顾]
+  ```
+
+**为什么 declined**：
+- 真机 bug（"被当成并列问题答"）已被 8.2 的 XML 包装堵上
+- 8.3 是优化层（belt-and-suspenders），不是修复层
+- 涉及 system prompt 模板改动，跨插件协调成本高于 8.2
+- token 开销多 ~50/请求，且每次 LLM 请求都重发
+- livingmemory 已经自发做了 8.3 风格的事（"CRITICAL RULES" inline instruction），证明这条路线有效，但 engram-core 用户暂未撞到需要
+
+**下次评估点**：LLM 把 `<engram-context>` 标签当文本复读 / 误解的首次真机报告
+
+### 2.9 issue #8 / 8.4 跨插件注入协调 — deferred
+
+**来源**：issue #8（2026-07-02 用户报告）
+
+**现状**：
+- engram-core（v1.67.2）/ livingmemory / emotion_state_machine 三家都用
+  `extra_user_content_parts` + `mark_as_temp()` 注入，**互不感知**
+- 4 个候选解法：
+  - 统一 marker 规范（如 `block:engram:relation`、`block:social:compressed`）
+  - 抽象 AstrBot 注入注册表（plugin 注册 block type + 优先级，core 编排）
+  - 三家各管各的 marker（engram: `<engram-context>`，livingmemory: `<RAG-Faiss-Memory>`，emotion: `<!-- esm:emotion-block:start/end -->`），互不污染
+  - 都不做（依赖 AstrBot core 自己出 `injection registry`）
+
+**为什么 deferred**：
+- 当前三家注入互不冲突（engram 用 temp 块、livingmemory 用 temp 块、emotion 用 temp 块，LLM 都能区分）
+- 跨插件协调需要 engram ↔ social_context ↔ emotion_state_machine ↔ livingmemory 四方同意 + AstrBot 配合，改动面太大
+- 8.5（re-injection 防御）已经堵上 engram 这边的累积风险，剩下的是「未来某家插件不守规矩」的尾部风险
+
+**下次评估点**：第一次出现两家插件的 marker 撞名 / 第二次出现 LLM 把别家的注入块当用户问题答 / AstrBot 上游推出 `injection registry` 规范
+
+### 2.10 inject.py 双横线 bug — not started
+
+**来源**：v1.67.1 demo 输出发现（`tests/_demo_inject_view.py` 已删，留观测记录）
+
+**现状**：`handlers/event/inject.py:131-132`
+```python
+dlines = ["- " + t for t, _sc in hits if (t or "").strip()]
+```
+日记 chunk 文本里若已有 `- ` 前缀，handler 叠一层变成 `- - ...`。**和 issue #8 无关**，历史遗留。
+
+**为什么 not started**：
+- 视觉瑕疵，LLM 看得懂
+- 修复一行：去掉 `"- " + ` 改成 `t`，或加去重逻辑 `if t.startswith("- ") else "- " + t`
+- 风险：影响 [今日回顾] 块所有当前样式的下游消费（如有）
+
+**下次评估点**：下一个 engram 改动触及 `inject.py:131-132` 顺手修；或用户报告日记显示异常
+
 ---
 
 ## 3. 持续观察（暂未评级）
@@ -194,6 +254,9 @@ and e.access_count == 0   # 永不衰减的 access_count 锁死 GC
 - 已借鉴且 ship：MemoryEngine 中央 facade → MemoryService（局部）/ write_ops 表 → 未 ship（见 §2.2）/ BM25 retriever → ship（v1.10）/ EventHandler 拆分 → ship（B6）/ i18n_backend → ship（B8）/ db_migration → ship（B10）/ page_api_modules → ship（B9）
 - `astrbot_plugin_social_context` 本地路径：`C:\Users\chiriu\.astrbot\data\plugins\astrbot_plugin_social_context`
 - 已借鉴且 ship：TextPart 块注入模式 → ship（v1.66）
+- `astrbot_plugin_emotion_state_machine` 本地路径：`C:\Users\chiriu\.astrbot\data\plugins\astrbot_plugin_emotion_state_machine`
+- 已借鉴且 ship：find-and-replace 防累积模式（HTML 注释 marker）→ ship（v1.67.2, issue #8 / 8.5）
+- 持续观察中：3 家插件（engram / livingmemory / emotion_state_machine）都用 `extra_user_content_parts` + `mark_as_temp()` 注入，**互不感知**（见 §2.9）
 
 ---
 
