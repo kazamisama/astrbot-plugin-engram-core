@@ -142,7 +142,9 @@ def test_enabled_before():
     h = InjectHandler(svc)
     req = _FakeReq("我刚才说到哪了")
     asyncio.run(h.handle_inject(_FakeEvent("我刚才说到哪了"), req))
-    assert req.prompt.startswith("[近期对话]"), req.prompt  # v1.20 B-3 relabel
+    # v1.67.1 (issue #8): block is wrapped in <engram-context>...</engram-context>
+    assert req.prompt.startswith("<engram-context>"), req.prompt
+    assert "[近期对话]" in req.prompt  # inner label preserved
     assert "用户喜欢侦探小说" in req.prompt
     assert "用户在做 AstrBot 插件" in req.prompt
     assert "第三条不该出现" not in req.prompt  # top_k=2 cap
@@ -161,7 +163,9 @@ def test_enabled_after():
     req = _FakeReq("继续")
     asyncio.run(h.handle_inject(_FakeEvent("继续"), req))
     assert req.prompt.startswith("继续"), req.prompt
-    assert req.prompt.rstrip().endswith("用户喜欢侦探小说"), req.prompt
+    # v1.67.1 (issue #8): block now ends with </engram-context>
+    assert "用户喜欢侦探小说" in req.prompt
+    assert req.prompt.rstrip().endswith("</engram-context>"), req.prompt
     print("  injected after prompt: OK")
 
 

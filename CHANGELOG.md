@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.67.1] - 2026-07-03
+
+### Fixed
+- `InjectHandler.handle_inject()` (v1.66+ TextPart path) had two
+  bugs that together caused the LLM to treat injected background
+  blocks as parallel user questions (issue #8, reported 2026-07-02):
+  1. **Order bug**: the loop used `parts_list.insert(0, part)` for
+     the `position="before"` branch, which is LIFO and reversed the
+     declared order `persona -> relation -> memory -> diary` into
+     `diary -> memory -> relation -> persona`.  Fixed by building
+     the part list first, then splicing it in with
+     `parts_list[0:0] = new_parts` (or `extend()` for `after`).
+  2. **No visual separation**: injected TextPart blocks and the real
+     user message landed in the same user-content segment with no
+     structural marker, so the LLM pattern-matched on the inner
+     `[用户画像]` / `[人物关系]` / `[近期对话]` / `[今日回顾]` label
+     alone and answered each block as a separate question.  Fixed
+     by wrapping every injected block in
+     `<engram-context>...</engram-context>` (inner `[xxx]` label
+     preserved for backward compat).  Applies to both the TextPart
+     path and the fallback string-concat path.
+- Also fixed `inject.py:144-151` smoke coverage gap: existing
+  `_smoke_v28.py` and `_smoke_v31.py` use a `_Req` without
+  `extra_user_content_parts`, so they exercise the fallback path
+  only and would never have caught the TextPart order bug.  A new
+  `tests/_smoke_v70.py` now stubs `astrbot.core.agent.message`
+  with a real-ish `TextPart` class and asserts declared order,
+  wrap presence, and `mark_as_temp` on every engram block.
+
+### Smoke
+- `tests/_smoke_v70.py`: 3 new tests covering the TextPart path
+  (4-block declared order + `<engram-context>` wrap +
+  `mark_as_temp`, `position="after"` does not mutate prior parts,
+  selective gating by per-type config is respected).  v28 and v31
+  assertions updated to expect the new wrapped format.
+
 ## [1.67.0] - 2026-07-01
 
 ### Fixed

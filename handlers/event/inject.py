@@ -26,6 +26,17 @@ class InjectHandler:
     def __init__(self, service: "MemoryService | None") -> None:
         self.service = service
 
+    @staticmethod
+    def _wrap_engram(body: str) -> str:
+        """Wrap an injected block in <engram-context> for LLM-side distinction.
+
+        v1.67.1 (issue #8): the XML tag signals to the LLM that the
+        content is injected background, not part of the user's actual
+        message. Without it, the LLM was treating each TextPart block
+        as a parallel user question and answering them all.
+        """
+        return f"<engram-context>\n{body}\n</engram-context>"
+
     async def handle_inject(self, event, req) -> None:
         svc = self.service
         if svc is None or req is None:
@@ -124,15 +135,21 @@ class InjectHandler:
                     print("[hippocampus] diary inject skipped: " + repr(dex))
 
             # Persona (background) -> relations -> recent conversation -> diary.
+            # v1.67.1 (issue #8): each block is wrapped in
+            # <engram-context>...</engram-context> so the LLM can
+            # pattern-match injected background separately from the
+            # real user message; the inner [xxx] label is preserved
+            # for backward compatibility with anyone pattern-matching
+            # on it.
             blocks: list[tuple[str, str]] = []
             if persona_block:
-                blocks.append(("persona", persona_block))
+                blocks.append(("persona", self._wrap_engram(persona_block)))
             if relation_block:
-                blocks.append(("relation", relation_block))
+                blocks.append(("relation", self._wrap_engram(relation_block)))
             if memory_block:
-                blocks.append(("memory", memory_block))
+                blocks.append(("memory", self._wrap_engram(memory_block)))
             if diary_block:
-                blocks.append(("diary", diary_block))
+                blocks.append(("diary", self._wrap_engram(diary_block)))
             if not blocks:
                 return
             # v1.66: use structured TextPart instead of raw prompt concatenation.
@@ -140,18 +157,27 @@ class InjectHandler:
             # enters conversation history). This follows the social_context /
             # ESM v0.9.x pattern: static rules in prompt=, dynamic data in
             # extra_user_content_parts as independent TextPart blocks.
+            #
+            # v1.67.1 (issue #8): the previous loop used
+            # `parts_list.insert(0, part)` in the "before" branch,
+            # which is LIFO and reversed the declared order
+            # persona->relation->memory->diary. Build the new parts
+            # first, then splice them in one shot so the order is
+            # preserved.
             if TextPart is not None and hasattr(req, "extra_user_content_parts"):
                 position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
                 parts_list = getattr(req, "extra_user_content_parts", None)
                 if parts_list is not None:
-                    for _kind, text in blocks:
-                        part = TextPart(text=text, type="text").mark_as_temp()
-                        if position == "after":
-                            parts_list.append(part)
-                        else:
-                            parts_list.insert(0, part)
+                    new_parts = [TextPart(text=text, type="text").mark_as_temp()
+                                 for _kind, text in blocks]
+                    if position == "after":
+                        parts_list.extend(new_parts)
+                    else:
+                        parts_list[0:0] = new_parts
                     return
             # Fallback: pre-v4 AstrBot without TextPart support — raw concat.
+            # Each block is already wrapped by _wrap_engram above, so the
+            # joined string carries the <engram-context> tags directly.
             block = "\n\n".join(b for _, b in blocks)
             position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
             prompt = getattr(req, "prompt", "") or ""

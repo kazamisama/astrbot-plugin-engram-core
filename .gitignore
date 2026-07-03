@@ -54,3 +54,6 @@ config/
 *.local.yaml
 *.local.json
 _ob.py
+
+# Local code index (built by irmia devkit code_index tool)
+.codegraph/
