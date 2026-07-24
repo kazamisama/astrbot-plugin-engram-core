@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.67.3] - 2026-07-25
+
+### Fixed
+- **WAL explosion**: `hippocampus.db-wal` could grow to 17GB+ and fill the disk.
+  Root cause: `decay_pass` issued one upsert (implicit transaction) per engram,
+  generating N independent write transactions per decay sweep against 9+ concurrent
+  connections. Combined with no explicit `wal_autocheckpoint` and no manual
+  `wal_checkpoint(TRUNCATE)`, the WAL accumulated indefinitely when any reader
+  (e.g. dashboard polling) blocked auto-checkpoint.
+  - `sqlite_util.py`: added `PRAGMA wal_autocheckpoint=1000` on every connection.
+  - `storage.py`: `decay_pass` now uses `executemany` batch UPDATE — N engrams
+    produce 1 fsync instead of N.
+  - `service.py`: `run_memory_decay` forces `PRAGMA wal_checkpoint(TRUNCATE)`
+    after each decay sweep.
+
 ## [1.67.2] - 2026-07-03
 
 ### Fixed
