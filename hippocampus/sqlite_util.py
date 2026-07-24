@@ -31,3 +31,7 @@ def apply_pragmas(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
     except Exception as e:
         print("[hippocampus] PRAGMA synchronous=NORMAL skipped: " + repr(e))
+    try:
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+    except Exception as e:
+        print("[hippocampus] PRAGMA wal_autocheckpoint skipped: " + repr(e))

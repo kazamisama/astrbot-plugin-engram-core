@@ -426,10 +426,15 @@ class HippocampalStore:
 
     def decay_pass(self, tau_base: float, floor: float,
                    importance_modulator: float = 4.0) -> int:
-        """Bulk Ebbinghaus decay. Returns count that fell below floor."""
+        """Bulk Ebbinghaus decay. Returns count that fell below floor.
+
+        v1.72: batch UPDATE via executemany instead of per-engram upsert.
+        A single pass with N engrams now produces 1 fsync instead of N,
+        preventing WAL explosion from N independent write transactions."""
         import math, time
         now = time.time()
         below = 0
+        updates = []
         for e in self.all(limit=10_000_000):
             if e.forgotten_at > 0:
                 continue
@@ -439,8 +444,11 @@ class HippocampalStore:
             new_strength = e.strength * math.exp(-dt / max(tau, 1.0))
             if new_strength < floor:
                 below += 1
-            e.strength = max(0.0, new_strength)
-            self.upsert(e)
+            updates.append((max(0.0, new_strength), e.id))
+        if updates:
+            with self._lock, self._conn:
+                self._conn.executemany(
+                    "UPDATE engrams SET strength=? WHERE id=?", updates)
         return below
 
     def gc_pass(self, floor: float, min_age_seconds: float = 86400.0) -> int:

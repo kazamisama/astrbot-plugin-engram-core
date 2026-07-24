@@ -1162,6 +1162,12 @@ class MemoryService:
                 out["profile_facts"] = self.decay_profile()
         except Exception as ex:
             print("[hippocampus] profile decay error: " + repr(ex))
+        # v1.72: force WAL checkpoint after decay sweep to prevent
+        # unbounded WAL growth when multiple connections block auto-checkpoint.
+        try:
+            self.store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         return out
 
     def _start_decay_loop(self) -> None:
