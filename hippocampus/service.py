@@ -923,10 +923,34 @@ class MemoryService:
         wm = self.working.snapshot(wm_key)
         if wm:
             head = wm[-cue.k:]
-            result.engrams = head + result.engrams
-            result.scores = [1.0] * len(head) + result.scores
-            if result.confidences is not None:
-                result.confidences = [1.0] * len(head) + result.confidences
+            # v1.72 (issue 2026-07-29 #1): dedup against completer
+            # result by engram.id. Without this, an engram present
+            # in BOTH working memory AND the completer top-k (very
+            # common - Reconsolidator.touch() bumps recently-accessed
+            # engrams into hot tier, which the completer then
+            # re-ranks into top-k) appears twice in the injected
+            # [near-term dialog] block. Livingmemory handles the
+            # analogous problem in RRFFusion.fuse() via
+            # `all_doc_ids = set()`; engram hits the same problem
+            # at a different merge point (working-memory prepend),
+            # so we apply the same set-based dedup here.
+            head_ids = {e.id for e in head}
+            old_engrams = result.engrams
+            old_scores = result.scores
+            old_confs = result.confidences
+            cm_engrams, cm_scores, cm_confs = [], [], []
+            for i, e in enumerate(old_engrams):
+                if e.id in head_ids:
+                    continue
+                cm_engrams.append(e)
+                cm_scores.append(old_scores[i] if i < len(old_scores) else 0.0)
+                if old_confs is not None and i < len(old_confs):
+                    cm_confs.append(old_confs[i])
+            head_n = len(head)
+            result.engrams = list(head) + cm_engrams
+            result.scores = [1.0] * head_n + cm_scores
+            if old_confs is not None:
+                result.confidences = [1.0] * head_n + cm_confs
         return result
 
     def recall_semantic(self, query: str, *, actor_id: str | None = None,

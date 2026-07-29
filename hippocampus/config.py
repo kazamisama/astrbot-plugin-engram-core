@@ -180,6 +180,9 @@ class MemoryConfig:
     diary_chunk_max_chars: int = 400              # chunk size for chunk-level recall
     diary_inject_top_n: int = 1                   # diary entries injected per LLM request (own quota)
     diary_inject_min_score: float = 0.0           # drop diary chunks below this recall score
+    # v1.72: operator overrides for diary prompts (empty = use built-in)
+    diary_system_prompt_override: str = ""        # DiaryWriter._system_prompt; empty = _SYS_BASE
+    diary_user_prompt_head_override: str = ""     # DiaryWriter._build_prompt head; empty = _DEFAULT_USER_HEAD
     # --- v1.8: natural-language user persona (narrative profile) ---
     enable_persona: bool = False
     persona_inject_enabled: bool = False

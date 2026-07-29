@@ -345,6 +345,18 @@
         "default": 30.0,
         "description": "日记 buffer 时间触发 flush 间隔 (v1.42)",
         "hint": "除了批量阈值和读触发外，后台循环每这么多秒强制 flush 一次 buffer，确保低流量时段也不会让消息在内存里停留太久。"
+      },
+      "diary_system_prompt_override": {
+        "type": "string",
+        "default": "",
+        "description": "日记系统提示词覆盖",
+        "hint": "覆盖 DiaryWriter 的内置散文式系统提示词（见 _SYS_BASE）。留空使用内置；填写后会作为 LLM 的 system_prompt 基础传入。修改后下次日记触发（手动 /mem diary 或每日 12:00）生效。"
+      },
+      "diary_user_prompt_head_override": {
+        "type": "string",
+        "default": "",
+        "description": "日记用户提示词头部覆盖",
+        "hint": "覆盖 DiaryWriter._build_prompt 的头部文本（含字数目标 + JSON 键说明 + 格式约束）。留空使用内置 _DEFAULT_USER_HEAD；填写后替换整段 head，支持 {day_label} / {target} 占位符。"
       }
     }
   },

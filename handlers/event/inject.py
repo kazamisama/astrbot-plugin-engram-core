@@ -9,6 +9,7 @@ Errors here must never abort the LLM request, so the whole body is
 guarded; on any failure we simply skip injection.
 """
 from __future__ import annotations
+from collections import deque
 from typing import TYPE_CHECKING
 from ..format import _extract
 from hippocampus.reltime import relative_label
@@ -25,6 +26,20 @@ class InjectHandler:
 
     def __init__(self, service: "MemoryService | None") -> None:
         self.service = service
+        # v1.72 (issue 2026-07-29 #3): cross-turn dedup of diary chunks
+        # to break the same-chunk-reappears-every-on_llm_request loop.
+        # Content-hash set bounded by a deque so long sessions do not leak.
+        self._seen_diary: "deque[str]" = deque(maxlen=64)
+        # v1.72b: loud version banner. Operator should see this in
+        # AstrBot logs after plugin reload. If absent, Python is still
+        # serving cached module - hard-kill AstrBot process + restart,
+        # not just /plugin reload.
+        try:
+            print("[hippocampus] v1.72b loaded: diary-label=\xe6\x9c\x80\xe8\xbf\x91\xe6\x97\xa5\xe8\xae\xb0, "
+                  "LRU dedup=enabled, recent-dialog engram.id dedup=enabled, "
+                  "_fallback=return None", flush=True)
+        except Exception:
+            pass
 
     @staticmethod
     def _wrap_engram(body: str) -> str:
@@ -45,7 +60,9 @@ class InjectHandler:
     _ENGRAM_OPEN = "<engram-context>"
     _ENGRAM_CLOSE = "</engram-context>"
     _ENGRAM_INNER_LABELS = (
-        "[用户画像]", "[人物关系]", "[近期对话]", "[今日回顾]",
+        "[用户画像]", "[人物关系]", "[近期对话]",
+        "[今日回顾]",  # legacy v1.72 keep-strip label
+        "[最近日记]",   # v1.72+: truthful label (diary is for prev day)
     )
 
     @classmethod
@@ -171,9 +188,24 @@ class InjectHandler:
                     if dtop > 0:
                         dmin = float(getattr(cfg, "diary_inject_min_score", 0.0) or 0.0)
                         hits = svc.recall_diary_chunks(query, top_n=dtop, min_score=dmin, persona_id=persona_scope)
-                        dlines = ["- " + t for t, _sc in hits if (t or "").strip()]
+                        # v1.72 (issue 2026-07-29 #3): skip chunks whose text
+                        # we already injected recently (LRU via
+                        # self._seen_diary). Diary recall has no time filter
+                        # (deeper root of #3), so the same chunk can
+                        # resurface every on_llm_request firing.
+                        # Label also renamed (jinri huigu -> zuijin riji)
+                        # since the diary generator runs at noon for the
+                        # PREVIOUS day (diary_trigger_hour=12); the old
+                        # label was structurally a misnomer.
+                        seen = self._seen_diary
+                        fresh = [(t, sc) for t, sc in hits
+                                 if (t or "").strip() and t not in seen]
+                        # Update LRU (deque(maxlen=64) auto-evicts oldest).
+                        for t, _sc in fresh:
+                            seen.append(t)
+                        dlines = ["- " + t for t, _sc in fresh]
                         if dlines:
-                            diary_block = "[\u4eca\u65e5\u56de\u987e]\n" + "\n".join(dlines)
+                            diary_block = "[最近日记]\n" + "\n".join(dlines)
                 except Exception as dex:
                     print("[hippocampus] diary inject skipped: " + repr(dex))
 
