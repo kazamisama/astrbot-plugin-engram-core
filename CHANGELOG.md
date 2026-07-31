@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.73] - 2026-07-31
+
+### Added
+- **Public cross-plugin coordination helper** `engram_core_helpers.py`
+  (repo root, importable next to `hippocampus`):
+  `strip_injected_blocks(parts_list, *, root_tag, inner_labels=())`
+  generalises the v1.67.2 re-injection defense so external plugins
+  writing to `req.extra_user_content_parts` can strip their own prior
+  blocks before appending fresh ones.  Requested by
+  xml_structured_output (engram-core-extra-user-content-coordination
+  doc): their `<xml-extra>` memo blocks had no re-injection defense
+  and accumulated linearly across turns.
+  - Attribute-bearing open tags matched (`<xml-extra scope="...">`).
+  - Empty `inner_labels` -> root-tag-only match; non-empty -> at
+    least one inner label required (avoids false positives on other
+    plugins' parts).
+- **README: 多插件注入协调 section** documenting the
+  `extra_user_content_parts` protocol: unique XML root-tag namespace,
+  priority convention (0 = engram-core, 5-9 system-level, >=10
+  user-behaviour-driven), and parts_list position semantics
+  (`auto_inject_position` only governs engram's own 4 blocks;
+  `append` lands after engram blocks; prepend must use
+  `parts_list[0:0] = [...]`, not `insert(0, ...)`).
+- **Config whitelist** `external_plugin_root_tags` (default
+  `["xml-extra"]`) in `_conf_schema.json` for operator auditing of
+  known external root tags.  Registration-only, does not affect
+  injection behaviour.  Unknown keys land in `MemoryConfig.extra`
+  (config_manager extras path), so no loader change needed.
+
+### Changed
+- `InjectHandler._strip_prior_engram_blocks` now delegates to
+  `strip_injected_blocks` with `root_tag="engram-context"` and the
+  existing `_ENGRAM_INNER_LABELS` (legacy `[今日回顾]` label still
+  stripped).  `_ENGRAM_OPEN` / `_ENGRAM_CLOSE` constants replaced by
+  `_ENGRAM_ROOT_TAG`.  Behaviour unchanged (v1.67.2 smoke passes).
+- Version banner updated to v1.73.
+
+### Tests
+- `tests/_smoke_v72.py`: 7 cases covering attribute-bearing tags,
+  inner-labels semantics, cross-plugin isolation, root-tag
+  normalisation, handler delegation, 5-turn bounded simulation
+  (engram=1, memo=1, memo last for both positions), and
+  auto-inject-disabled external injection.
+
+
+
 ## [1.72c] - 2026-07-29
 
 ### Fixed

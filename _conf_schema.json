@@ -95,6 +95,12 @@
         "description": "自动注入位置",
         "hint": "before=把记忆拼在用户消息之前，after=拼在之后。默认 before。"
       },
+      "external_plugin_root_tags": {
+        "type": "list",
+        "default": ["xml-extra"],
+        "description": "外部插件注入根标签白名单（审计用）",
+        "hint": "多插件协调约定：其它插件写入 extra_user_content_parts 时应使用各自的唯一 XML 根标签包裹注入块（见 README「多插件注入协调」一节）。在此登记已知的外部根标签便于审计，例如 xml_structured_output 插件的 xml-extra。仅作登记用途，不影响注入行为。"
+      },
       "auto_inject_relative_time": {
         "type": "bool",
         "default": true,

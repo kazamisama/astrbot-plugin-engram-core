@@ -30,10 +30,63 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   _conf_schema.json             # 配置 schema(给 AstrBot 配置 UI 用)
   requirements.txt              # 零依赖
   main.py                       # 插件入口
+  engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
   tests/                        # 烟测(_smoke_v08~v63,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
+
+## 多插件注入协调（extra_user_content_parts）
+
+v1.66+ engram-core 在 `on_llm_request` 钩子里把召回的记忆作为独立 TextPart 写入 `req.extra_user_content_parts`（每块包在 `<engram-context>` 里，v1.67.1+）。其它插件（xml_structured_output、heartflow、proactive_chat 等）也会写同一个 list。为避免**累加**与**命名空间冲突**两类问题，约定如下：
+
+### 命名空间约定
+
+所有外部插件写入 `extra_user_content_parts` 时应：
+
+1. 用一个**唯一 XML 根标签**包裹自己的注入块（不要复用 `<engram-context>`）；
+2. 根标签内保持稳定的内部子标签（供 re-injection defense 匹配）；
+3. 根标签可携带 `scope` / `plugin` / `version` 属性，用于反重复与审计。
+
+示例（xml_structured_output 插件的待办备忘块）：
+
+```xml
+<xml-extra scope="shirley" plugin="xml_structured_output" version="0.2.0">
+  <memo-block>
+    <item>- 周三 14:00 提醒开会</item>
+  </memo-block>
+</xml-extra>
+```
+
+已知的外部根标签请登记到配置项 `external_plugin_root_tags`（默认含 `xml-extra`；仅审计登记用途，不影响注入行为）。
+
+### 公开 re-injection 工具
+
+v1.73 起，engram-core 把 v1.67.2 的内部防御逻辑抽为公开函数（仓库根目录 `engram_core_helpers.py`，与 `hippocampus` 同级、可直接 import）：
+
+```python
+from engram_core_helpers import strip_injected_blocks
+
+# 每次 on_llm_request 写入前，先剥掉上一轮自己的旧块，
+# 否则多轮对话后注入块会线性累加、污染 LLM context window
+strip_injected_blocks(parts_list, root_tag="xml-extra", inner_labels=("memo-block",))
+parts_list.append(TextPart(text=block, type="text").mark_as_temp())
+```
+
+匹配规则：`.text` 去除首尾空白后，以 `<root_tag>` 或 `<root_tag ...>`（允许属性）开头、以 `</root_tag>` 结尾，且（当 `inner_labels` 非空时）至少含一个内部标签。`inner_labels` 传空表示只按根标签匹配——根标签对本插件唯一时这是安全的。engram-core 自身走同一个函数（`root_tag="engram-context"` + 内部 `[用户画像]` / `[人物关系]` / `[近期对话]` / `[最近日记]` 标签），不会动其它插件的 TextPart。
+
+### priority 约定
+
+- `priority = 0`（`filter.on_llm_request()` 默认）：engram-core 自身，最先跑；
+- `priority = 5~9`：系统级注入插件（不依赖、也不读取 LLM 输出）；
+- `priority >= 10`：用户行为驱动注入插件（如 xml_structured_output 的 memo 块）；
+- 数字越小越靠前；相同 priority 由加载顺序决定（不可依赖）。
+
+### parts_list 位置语义
+
+- `auto_inject_position` 只控制 engram 自身 4 块（persona / relation / memory / diary）相对用户消息的位置，**不感知外部插件**；
+- 外部插件用 `parts_list.append(...)` 追加会自然落在所有 engram 块之后——只要遵守上面的 priority 约定，无论 `auto_inject_position` 是 before 还是 after 都成立；
+- 外部插件若需"前置"插入，必须用 `parts_list[0:0] = [...]`，不要用 `insert(0, ...)`（后者是 v1.67.1 修过的 LIFO 反序 bug 的成因）。
 
 ## 启动 banner
 

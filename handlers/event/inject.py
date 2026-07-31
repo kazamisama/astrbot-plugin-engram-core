@@ -17,6 +17,7 @@ try:
     from astrbot.core.agent.message import TextPart
 except ImportError:
     TextPart = None  # pre-v4 AstrBot: fallback to string concat
+from engram_core_helpers import strip_injected_blocks  # v1.73: public re-injection defense
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 
@@ -35,9 +36,9 @@ class InjectHandler:
         # serving cached module - hard-kill AstrBot process + restart,
         # not just /plugin reload.
         try:
-            print("[hippocampus] v1.72b loaded: diary-label=\xe6\x9c\x80\xe8\xbf\x91\xe6\x97\xa5\xe8\xae\xb0, "
+            print("[hippocampus] v1.73 loaded: diary-label=\xe6\x9c\x80\xe8\xbf\x91\xe6\x97\xa5\xe8\xae\xb0, "
                   "LRU dedup=enabled, recent-dialog engram.id dedup=enabled, "
-                  "_fallback=return None", flush=True)
+                  "_fallback=return None, strip_injected_blocks=public", flush=True)
         except Exception:
             pass
 
@@ -57,8 +58,10 @@ class InjectHandler:
     # to count as one of ours — open tag, close tag, and at least
     # one of the four known inner labels. This makes false-positive
     # removal of another plugin's TextPart extremely unlikely.
-    _ENGRAM_OPEN = "<engram-context>"
-    _ENGRAM_CLOSE = "</engram-context>"
+    # v1.73: matching logic extracted to the public
+    # engram_core_helpers.strip_injected_blocks; this class only keeps
+    # its own root tag + inner labels and delegates.
+    _ENGRAM_ROOT_TAG = "engram-context"
     _ENGRAM_INNER_LABELS = (
         "[用户画像]", "[人物关系]", "[近期对话]",
         "[今日回顾]",  # legacy v1.72 keep-strip label
@@ -76,26 +79,17 @@ class InjectHandler:
         blocks across multiple ``on_llm_request`` firings within the
         same conversation (e.g. retries, multi-turn sessions where
         ``extra_user_content_parts`` is not reset between turns).
+
+        v1.73: delegates to the public
+        ``engram_core_helpers.strip_injected_blocks`` so external
+        plugins writing to ``extra_user_content_parts`` can run the
+        same re-injection defense under their own root tag.
         """
-        if not parts_list:
-            return 0
-        kept = []
-        removed = 0
-        for p in parts_list:
-            text = getattr(p, "text", None)
-            if not isinstance(text, str):
-                kept.append(p)
-                continue
-            stripped = text.strip()
-            if (stripped.startswith(cls._ENGRAM_OPEN)
-                    and stripped.endswith(cls._ENGRAM_CLOSE)
-                    and any(lab in stripped for lab in cls._ENGRAM_INNER_LABELS)):
-                removed += 1
-                continue
-            kept.append(p)
-        if removed:
-            parts_list[:] = kept
-        return removed
+        return strip_injected_blocks(
+            parts_list,
+            root_tag=cls._ENGRAM_ROOT_TAG,
+            inner_labels=cls._ENGRAM_INNER_LABELS,
+        )
 
     async def handle_inject(self, event, req) -> None:
         svc = self.service
