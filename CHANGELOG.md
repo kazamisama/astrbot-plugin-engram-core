@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.73.1] - 2026-08-08
+
+### Fixed
+- **Diary block double-dash overlay**: `handlers/event/inject.py` diary-block
+  rendering prepended `- ` unconditionally, so a diary chunk already starting
+  with `- ` became `- - ...`.  Changed to dedup logic
+  (`t if t.startswith("- ") else "- " + t`); no behavioural change for
+  chunks without a leading `- `.
+
+### Changed
+- README "Known Leftovers" section synced: removed already-shipped items
+  (BM25 / EventHandler split / i18n / db_migration / page_api), marked
+  write_ops as unimplemented (see `docs/TODO.md` §2.2), progress pointer
+  changed from deleted ROADMAP.md to `docs/TODO.md`.
+- `docs/TODO.md` §2.10 status updated to fixed (2026-08-08).
+
 ## [1.73] - 2026-07-31
 
 ### Added

@@ -221,9 +221,11 @@ and e.access_count == 0   # 永不衰减的 access_count 锁死 GC
 
 **下次评估点**：第一次出现两家插件的 marker 撞名 / 第二次出现 LLM 把别家的注入块当用户问题答 / AstrBot 上游推出 `injection registry` 规范
 
-### 2.10 inject.py 双横线 bug — not started
+### 2.10 inject.py 双横线 bug — 已修复 (2026-08-08)
 
 **来源**：v1.67.1 demo 输出发现（`tests/_demo_inject_view.py` 已删，留观测记录）
+
+**修复 (2026-08-08)**：`handlers/event/inject.py:200` 改为去重逻辑（`t if t.startswith("- ") else "- " + t`），日记 chunk 已有 `- ` 前缀时不再叠加。
 
 **现状**：`handlers/event/inject.py:131-132`
 ```python

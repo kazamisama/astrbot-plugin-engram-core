@@ -197,7 +197,7 @@ class InjectHandler:
                         # Update LRU (deque(maxlen=64) auto-evicts oldest).
                         for t, _sc in fresh:
                             seen.append(t)
-                        dlines = ["- " + t for t, _sc in fresh]
+                        dlines = [t if t.startswith("- ") else "- " + t for t, _sc in fresh]
                         if dlines:
                             diary_block = "[最近日记]\n" + "\n".join(dlines)
                 except Exception as dex:
