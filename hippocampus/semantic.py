@@ -110,6 +110,27 @@ class SemanticStore:
                 (r.id, r.subject_id, r.predicate, r.object_id,
                  r.source_engram_id, r.confidence, r.created_at))
 
+    def relation_exists(self, subject_id: str, predicate: str, object_id: str,
+                        source_engram_id: str | None = None) -> bool:
+        """True when a relation with the same triple already exists.
+
+        P1 (2026-08-11): used by write-op replay so a replayed
+        post-ingest cannot insert duplicate relations (Relation.id is
+        random, so INSERT OR REPLACE by id would not dedupe).
+        """
+        with self._lock, self._conn:
+            if source_engram_id:
+                cur = self._conn.execute(
+                    "SELECT 1 FROM relations WHERE subject_id=? AND predicate=?"
+                    " AND object_id=? AND source_engram_id=? LIMIT 1",
+                    (subject_id, predicate, object_id, source_engram_id))
+            else:
+                cur = self._conn.execute(
+                    "SELECT 1 FROM relations WHERE subject_id=? AND predicate=?"
+                    " AND object_id=? LIMIT 1",
+                    (subject_id, predicate, object_id))
+            return cur.fetchone() is not None
+
     def relations_of(self, entity_id: str) -> list[Relation]:
         with self._lock, self._conn:
             cur = self._conn.execute(

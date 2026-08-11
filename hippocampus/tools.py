@@ -92,16 +92,14 @@ def _list_recent_handler(service, *, actor_id: str, k: int = 10) -> str:
     """
     if not (actor_id or "").strip():
         return json.dumps({"ok": False, "error": "actor_id is required"}, ensure_ascii=False)
+    aid = actor_id.strip()
     pool_size = max(50, int(k) * 20)
     try:
-        pool = service.store.list_active(limit=pool_size)
+        pool = service.store.list_active(limit=pool_size, actor_id=aid)
     except Exception as exc:
         return json.dumps({"ok": False, "error": "store list failed: " + str(exc)}, ensure_ascii=False)
-    aid = actor_id.strip()
     out = []
     for e in pool:
-        if e.actor_id != aid:
-            continue
         out.append({
             "id": e.id,
             "summary": e.summary or e.content or "",
@@ -150,20 +148,19 @@ def _search_by_entity_handler(service, *, entity_name: str, k: int = 10) -> str:
     eid_target = ent.id
     pool_size = max(50, int(k) * 20)
     try:
-        pool = service.store.list_active(limit=pool_size)
+        pool = service.store.list_active_by_entity_ref(eid_target, limit=pool_size)
     except Exception as exc:
         return json.dumps({"ok": False, "error": "store list failed: " + str(exc)}, ensure_ascii=False)
     out = []
     for e in pool:
-        if eid_target in (e.entity_refs or []):
-            out.append({
-                "id": e.id,
-                "summary": e.summary or e.content or "",
-                "created_at": e.created_at,
-                "importance": e.importance,
-                "memory_type": e.memory_type,
-            })
-            if len(out) >= int(k):
+        out.append({
+            "id": e.id,
+            "summary": e.summary or e.content or "",
+            "created_at": e.created_at,
+            "importance": e.importance,
+            "memory_type": e.memory_type,
+        })
+        if len(out) >= int(k):
                 break
     return json.dumps({
         "entity_name": name,

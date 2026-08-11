@@ -114,6 +114,34 @@ class MemoryService:
         self._decay_thread = None
         self._decay_loop = None
         self._decay_stop = None
+        # P2 (2026-08-11): recall result cache (LRU + TTL). The injection
+        # path calls recall() once per on_llm_request firing; caching avoids
+        # re-running the full vector+FTS+graph pipeline for identical cues.
+        # Invalidated on every memory write (see _invalidate_search_cache).
+        from collections import OrderedDict as _OrderedDict
+        self._recall_cache: _OrderedDict = _OrderedDict()
+        self._recall_cache_enabled = bool(getattr(self.cfg, "search_cache_enabled", True))
+        self._recall_cache_ttl = float(getattr(self.cfg, "search_cache_ttl_seconds", 60.0) or 60.0)
+        self._recall_cache_max = int(getattr(self.cfg, "search_cache_max_entries", 128) or 128)
+        # P1 (2026-08-11): replay any post-ingest write ops left incomplete
+        # by a crash. Idempotent by design (see _repair_incomplete_write_ops).
+        try:
+            self._repair_incomplete_write_ops()
+        except Exception as _rex:
+            print("[hippocampus] write-op repair init failed: " + repr(_rex))
+        # P1b (2026-08-11): index consistency check. engrams_fts is an
+        # external-content FTS5 table; drift roots in missing sync triggers.
+        # When any trigger is gone, recreate the schema and rebuild FTS.
+        try:
+            _st = self.store.check_index_consistency()
+            if not _st["triggers_ok"]:
+                print("[hippocampus] FTS sync triggers missing: "
+                      + ",".join(_st["missing_triggers"]) + "; recreating + reindexing")
+                self.store._init_schema()
+                _n = self.store.reindex_fts()
+                print("[hippocampus] FTS reindexed " + str(_n) + " rows after trigger repair")
+        except Exception as _ix:
+            print("[hippocampus] index consistency check skipped: " + repr(_ix))
 
     def _ensure_atom_layer(self) -> bool:
         # v1.4 B3/B4: lazy-create AtomStore + GraphStore + AtomLifecycleManager
@@ -221,6 +249,7 @@ class MemoryService:
                 # FIX (v1.57): accepted-but-unused kwargs from the event
                 # ingest path so the LLM extractor can use them later.
                 channel_label: str = "", chat_type: str = "") -> Engram:
+        self._invalidate_search_cache()
         from .session_filter import SessionFilter, FilterContext, FilterVerdict
         decision = SessionFilter(self.cfg).decide(FilterContext(
             platform=platform, channel_id=channel_id,
@@ -296,6 +325,7 @@ class MemoryService:
         return e
 
     def store_summary(self, summary: dict, identity: dict) -> "Engram | None":
+        self._invalidate_search_cache()
         """Store ONE conversation/diary summary as an engram (v1.17 B-1).
 
         `summary` is the ConversationSummarizer output (summary/key_facts/
@@ -439,6 +469,7 @@ class MemoryService:
             print("[hippocampus] cache_daily_line error: " + repr(ex))
 
     def store_diary(self, diary: dict, identity: dict) -> "Engram | None":
+        self._invalidate_search_cache()
         """Persist ONE diary as an engram (memory_type=diary) + chunk-level
         embeddings for chunk recall. Mirrors store_summary persistence."""
         from .types import Engram
@@ -588,6 +619,7 @@ class MemoryService:
         return scored[:max(0, top_n)]
 
     def run_daily_diary(self, *, now: float | None = None) -> "tuple[int, list]":
+        self._invalidate_search_cache()
         """Build diaries for the just-finished logical day across all cached
         channels, then TTL-purge old daily messages.
 
@@ -811,6 +843,10 @@ class MemoryService:
         mtype = (getattr(e, "memory_type", "") or "").lower()
         if mtype in ("diary", "summary", "conversation"):
             return
+        # P1: record this multi-store fan-out as a resumable write op so a
+        # crash mid-pipeline can be detected and replayed at next startup.
+        op_id = self.store.start_write_op(
+            "post_ingest", {"engram_id": e.id}, memory_id=e.id)
         if self.semantic is not None and self.extractor is not None:
             from .semantic import _classify
             ents = self.extractor.extract_entities(e)
@@ -846,6 +882,12 @@ class MemoryService:
                 e, stored_entities, actor_id=e.actor_id, resolve=_resolve)
             ref_ids = list(stored_ids)
             for r in rels:
+                # P1: skip triples already persisted (write-op replay is
+                # idempotent; Relation.id is random so plain INSERT would dup).
+                if self.semantic.relation_exists(
+                        r.subject_id, r.predicate, r.object_id,
+                        r.source_engram_id):
+                    continue
                 self.semantic.add_relation(r)
                 ref_ids.append(r.subject_id)
                 ref_ids.append(r.object_id)
@@ -915,9 +957,104 @@ class MemoryService:
                     pass
         if self.prospective_scheduler is not None:
             self.prospective_scheduler.create_from_engram(e)
+        if op_id is not None:
+            self.store.advance_write_op(op_id, "complete", status="completed")
+
+    def _repair_incomplete_write_ops(self) -> int:
+        """P1: replay post-ingest write ops that never reached 'completed'.
+
+        A crash between the multi-store fan-out steps (semantic entities /
+        relations, atoms, graph refs) leaves derived indexes incomplete.
+        Replay is idempotent: entity / atom / graph-ref upserts merge, and
+        relations are skipped when the same triple already exists.
+        Returns the number of ops replayed.
+        """
+        if self.store is None:
+            return 0
+        import json
+        try:
+            ops = self.store.list_incomplete_write_ops()
+        except Exception as _wex:
+            print("[hippocampus] write-op repair scan failed: " + repr(_wex))
+            return 0
+        repaired = 0
+        for op in ops:
+            op_id = op.get("id")
+            payload = op.get("payload") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+            eid = (payload.get("engram_id") if isinstance(payload, dict) else None) or op.get("memory_id")
+            if not eid:
+                self.store.advance_write_op(op_id, "skip", status="error",
+                                            error="no engram_id in payload")
+                continue
+            e = self.store.get(eid)
+            if e is None:
+                self.store.advance_write_op(op_id, "skip", status="error",
+                                            error="engram missing")
+                continue
+            try:
+                self._post_ingest(e)
+                self.store.advance_write_op(op_id, "replayed", status="completed")
+                repaired += 1
+            except Exception as _rex:
+                print("[hippocampus] write-op replay failed for " + eid + ": " + repr(_rex))
+                self.store.advance_write_op(op_id, "replay-failed", status="error",
+                                            error=repr(_rex)[:500])
+        if repaired:
+            print("[hippocampus] write-op repair replayed " + str(repaired) + " op(s)")
+        return repaired
 
     # ---------- recall ----------
+    def _recall_cache_key(self, cue: Cue) -> tuple:
+        """Build a hashable cache key covering every cue field that can
+        change the retrieval result, plus the active embedding model."""
+        return (
+            cue.text, cue.actor_id, cue.channel_id, cue.persona_id,
+            cue.time_range,
+            tuple(cue.topics) if cue.topics else None,
+            cue.k,
+            tuple(cue.memory_types) if cue.memory_types else None,
+            cue.mode,
+            cue.session_id,
+            self._current_embedding_name,
+        )
+
+    def _recall_cache_get(self, key: tuple) -> "RecallResult | None":
+        if not self._recall_cache_enabled or self._recall_cache_ttl <= 0:
+            return None
+        import time as _t, copy as _copy
+        entry = self._recall_cache.get(key)
+        if entry is None:
+            return None
+        cached_at, result = entry
+        if _t.time() - cached_at > self._recall_cache_ttl:
+            self._recall_cache.pop(key, None)
+            return None
+        self._recall_cache.move_to_end(key)
+        return _copy.deepcopy(result)
+
+    def _recall_cache_set(self, key: tuple, result: "RecallResult") -> None:
+        if not self._recall_cache_enabled or self._recall_cache_max <= 0:
+            return
+        import time as _t, copy as _copy
+        self._recall_cache[key] = (_t.time(), _copy.deepcopy(result))
+        self._recall_cache.move_to_end(key)
+        while len(self._recall_cache) > self._recall_cache_max:
+            self._recall_cache.popitem(last=False)
+
+    def _invalidate_search_cache(self) -> None:
+        """Drop cached recall results after any memory write."""
+        self._recall_cache.clear()
+
     def recall(self, cue: Cue) -> RecallResult:
+        _ckey = self._recall_cache_key(cue)
+        _cached = self._recall_cache_get(_ckey)
+        if _cached is not None:
+            return _cached
         result = self.completer.recall(cue, embedding_model=self._current_embedding_name)
         wm_key = cue.channel_id or cue.actor_id or ""
         wm = self.working.snapshot(wm_key)
@@ -951,6 +1088,7 @@ class MemoryService:
             result.scores = [1.0] * head_n + cm_scores
             if old_confs is not None:
                 result.confidences = [1.0] * head_n + cm_confs
+        self._recall_cache_set(_ckey, result)
         return result
 
     def recall_semantic(self, query: str, *, actor_id: str | None = None,
@@ -1434,6 +1572,7 @@ class MemoryService:
         return self.recall(cue)
 
     def force_consolidate(self):
+        self._invalidate_search_cache()
         try:
             return self.consolidator.step()
         except Exception:

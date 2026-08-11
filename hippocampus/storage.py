@@ -159,6 +159,29 @@ class HippocampalStore:
                     "CREATE INDEX IF NOT EXISTS idx_persona ON engrams(persona_id)")
         except Exception as _ix:
             print("[hippocampus] idx_persona create skipped: " + repr(_ix))
+        # P1 (2026-08-11): resumable write-operation log. The post-ingest
+        # pipeline fans out across semantic / atom / graph stores, which
+        # cannot be covered by one SQLite transaction (separate
+        # connections). A crash mid-pipeline leaves derived indexes
+        # incomplete; this table lets startup detect and replay them.
+        with self._lock, self._conn:
+            self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_write_ops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                op_type TEXT NOT NULL,
+                memory_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                step TEXT NOT NULL DEFAULT 'started',
+                payload TEXT DEFAULT '{}',
+                error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """)
+            self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_write_ops_status
+            ON memory_write_ops(status, updated_at)
+            """)
 
     def _meta_get(self, key: str):
         try:
@@ -281,6 +304,24 @@ class HippocampalStore:
               confidence=excluded.confidence,
               tier=excluded.tier
             """, row)
+
+    def check_index_consistency(self) -> dict:
+        """P1b (2026-08-11): verify the FTS sync triggers exist.
+
+        engrams_fts is an external-content FTS5 table (content='engrams'),
+        so COUNT()/ integrity-check cannot detect missing index rows. The
+        root cause of drift is a missing AFTER INSERT/UPDATE/DELETE
+        trigger, which is what we check here.
+        """
+        with self._lock, self._conn:
+            names = {r[0] for r in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN "
+                "('engrams_ai','engrams_au','engrams_ad')")}
+        expected = {"engrams_ai", "engrams_au", "engrams_ad"}
+        missing = sorted(expected - names)
+        return {"triggers_ok": len(missing) == 0,
+                "missing_triggers": missing,
+                "repairable": True}
 
     def get(self, eid: str) -> Engram | None:
         with self._lock, self._conn:
@@ -479,18 +520,50 @@ class HippocampalStore:
         self.upsert(e)
         return True
 
-    def list_active(self, limit: int = 10_000, *, memory_type: str | None = None) -> list:
-        """FIX (v1.41) BUG-8: optional memory_type kwarg lets the WebUI
-        diary view filter at Python-list level on a single attribute.
-        The underlying `all()` already takes a limit, so the cost is
-        bounded; we still post-filter forgotten_at. Old callers passing
-        only `limit` keep working unchanged.
+    def list_active(self, limit: int = 10_000, *,
+                    memory_type: str | None = None,
+                    actor_id: str | None = None) -> list:
+        """Active (not soft-forgotten) engrams, newest first.
+
+        P2b (2026-08-11): filters are pushed into the WHERE clause instead
+        of post-filtering a Python list. Old callers passing only `limit`
+        keep working unchanged.
         """
-        rows = self.all(limit=limit)
+        where: list[str] = []
+        params: list[object] = []
+        if actor_id:
+            where.append("actor_id = ?")
+            params.append(actor_id)
         if memory_type:
-            mt = str(memory_type)
-            rows = [e for e in rows if (getattr(e, "memory_type", "") or "") == mt]
-        return [e for e in rows if e.forgotten_at == 0.0]
+            where.append("memory_type = ?")
+            params.append(str(memory_type))
+        sql = "SELECT * FROM engrams"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock, self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [Engram.from_row(dict(r)) for r in rows if r["forgotten_at"] == 0.0]
+
+    def list_active_by_entity_ref(self, entity_id: str, limit: int = 200) -> list:
+        """Active engrams referencing an entity id, newest first.
+
+        P2b (2026-08-11): SQL-level filter via json_each over the
+        entity_refs JSON column instead of Python-list filtering.
+        """
+        sql = """SELECT * FROM engrams
+                 WHERE EXISTS (
+                   SELECT 1 FROM json_each(engrams.entity_refs)
+                   WHERE json_each.value = ?
+                 ) AND forgotten_at = 0
+                 ORDER BY created_at DESC LIMIT ?"""
+        try:
+            with self._lock, self._conn:
+                rows = self._conn.execute(sql, (entity_id, limit)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [Engram.from_row(dict(r)) for r in rows]
 
     def valence_histogram(self) -> dict:
         b = {"positive": 0, "neutral": 0, "negative": 0, "unscored": 0}
@@ -526,15 +599,64 @@ class HippocampalStore:
                       persona_id: str | None = None,
                       memory_types: list[str] | None = None,
                       embedding_model: str | None = None):
-        items = self.all(limit=10_000_000)
-        if actor_id: items = [e for e in items if e.actor_id == actor_id]
-        if channel_id: items = [e for e in items if e.channel_id == channel_id]
-        if persona_id is not None: items = [e for e in items if (e.persona_id or '') == persona_id]
-        if memory_types: items = [e for e in items if e.memory_type in memory_types]
-        if embedding_model: items = [e for e in items if e.embedding_model == embedding_model]
-        scored = [(e, _cos(query_vec, e.embedding)) for e in items]
+        """Vector similarity search with SQL-side filter pushdown.
+
+        Previously this loaded the entire engrams table (SELECT *) and
+        filtered in Python on every recall. Now the filters are pushed
+        into the WHERE clause and only lightweight columns (id +
+        embedding_json) are loaded; the top-k ids are re-fetched as full
+        rows. Semantics preserved except: rows without an embedding are
+        skipped instead of scoring 0.0 (they were meaningless in vector
+        recall and pollute RRF fusion).
+        """
+        where: list[str] = []
+        params: list[object] = []
+        if actor_id:
+            where.append("actor_id = ?")
+            params.append(actor_id)
+        if channel_id:
+            where.append("channel_id = ?")
+            params.append(channel_id)
+        if persona_id is not None:
+            # Original Python filter normalised NULL to ''; keep that.
+            where.append("(persona_id IS NULL OR persona_id = ?)")
+            params.append(persona_id)
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            where.append(f"memory_type IN ({placeholders})")
+            params.extend(memory_types)
+        if embedding_model:
+            where.append("embedding_model = ?")
+            params.append(embedding_model)
+        sql = "SELECT id, embedding_json FROM engrams"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        with self._lock, self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        scored: list[tuple[str, float]] = []
+        for r in rows:
+            try:
+                emb = json.loads(r["embedding_json"]) if r["embedding_json"] else None
+            except (json.JSONDecodeError, TypeError):
+                emb = None
+            if not emb:
+                continue
+            scored.append((r["id"], _cos(query_vec, emb)))
         scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:k]
+        top_ids = [rid for rid, _s in scored[:k]]
+        if not top_ids:
+            return []
+        placeholders = ",".join("?" for _ in top_ids)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"SELECT * FROM engrams WHERE id IN ({placeholders})", top_ids)
+            by_id = {row["id"]: Engram.from_row(dict(row)) for row in cur.fetchall()}
+        out: list[tuple[Engram, float]] = []
+        for rid, score in scored[:k]:
+            e = by_id.get(rid)
+            if e is not None:
+                out.append((e, score))
+        return out
 
     def fts_search(self, query: str, k: int = 50, *,
                    actor_id: str | None = None, channel_id: str | None = None,
@@ -630,6 +752,55 @@ class HippocampalStore:
                      "member_count": r["member_count"],
                      "last_refreshed": r["last_refreshed"],
                      "source": r["source"]} for r in cur.fetchall()]
+
+    def start_write_op(self, op_type: str, payload: dict | None = None,
+                        memory_id: str | None = None) -> int | None:
+        """Record the beginning of a multi-store write operation."""
+        import time as _t
+        now = _t.time()
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO memory_write_ops("
+                    "op_type, memory_id, status, step, payload, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (op_type, memory_id, "pending", "started",
+                     json.dumps(payload or {}, ensure_ascii=False), now, now))
+                return int(cur.lastrowid)
+        except Exception as _wex:
+            print("[hippocampus] write_op start failed: " + repr(_wex))
+            return None
+
+    def advance_write_op(self, op_id: int | None, step: str, *,
+                         status: str = "pending",
+                         error: str | None = None) -> None:
+        """Advance a write-operation log entry."""
+        if op_id is None:
+            return
+        import time as _t
+        try:
+            with self._lock, self._conn:
+                if status == "completed":
+                    self._conn.execute(
+                        "UPDATE memory_write_ops SET status=?, step=?,"
+                        " updated_at=?, error=NULL WHERE id=?",
+                        (status, step, _t.time(), op_id))
+                else:
+                    self._conn.execute(
+                        "UPDATE memory_write_ops SET status=?, step=?,"
+                        " updated_at=?, error=? WHERE id=?",
+                        (status, step, _t.time(), (error or "")[:1000], op_id))
+        except Exception as _wex:
+            print("[hippocampus] write_op advance failed: " + repr(_wex))
+
+    def list_incomplete_write_ops(self, limit: int = 200) -> list[dict]:
+        """Return write ops that never reached 'completed'."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "SELECT * FROM memory_write_ops"
+                " WHERE status != 'completed'"
+                " ORDER BY id LIMIT ?", (limit,))
+            return [dict(r) for r in cur.fetchall()]
 
     def close(self) -> None:
         with self._lock:
