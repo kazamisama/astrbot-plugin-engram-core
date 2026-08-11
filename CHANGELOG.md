@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.74.0] - 2026-08-11
+
+### Added
+- **write-ops recovery (P1)**: `memory_write_ops` journal table plus
+  `MemoryService._repair_incomplete_write_ops()` startup replay. The
+  post-ingest pipeline fans out across semantic / atom / graph stores on
+  separate connections, so a crash mid-pipeline left derived indexes
+  incomplete. Ops are now journaled (start/advance), and startup replays
+  unfinished ops idempotently (entity/atom/graph-ref upserts merge;
+  relations skip triples that already exist).
+- **Recall cache (P2)**: LRU + TTL (60s, max 128) over `recall()` results,
+  invalidated on every memory write. The injection path no longer re-runs
+  the full vector + FTS + graph pipeline for identical cues within one
+  request window.
+- **Index-consistency guard (P1b)**: startup check that the FTS sync
+  triggers (`engrams_ai/au/ad`) exist; when missing, schema is recreated
+  and FTS reindexed. `engrams_fts` is an external-content FTS5 table, so
+  COUNT / integrity-check cannot detect drift - the triggers are the root
+  cause and the check targets them.
+
+### Changed
+- **Vector search SQL pushdown (P0)**: `HippocampalStore.vector_search`
+  no longer loads the whole table (`SELECT *`) and filters in Python.
+  Filters are pushed into the WHERE clause and only lightweight columns
+  (id + embedding_json) are loaded; top-k ids are re-fetched as full
+  rows. Rows without an embedding are skipped instead of scoring 0.0.
+- **Tool retrieval SQL pushdown (P2b)**: `list_active` gains an
+  `actor_id` filter; new `list_active_by_entity_ref()` uses `json_each`
+  over `entity_refs`; the `list_recent_memories` / `search_by_entity_memory`
+  tools now filter in SQL instead of Python-list post-filtering.
+
 ## [1.73.1] - 2026-08-08
 
 ### Fixed
