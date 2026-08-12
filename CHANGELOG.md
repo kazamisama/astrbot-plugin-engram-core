@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.76.0] - 2026-08-12
+
+### Added
+- **Full L2-01 memory surface**: `store_event` (life events as
+  `memory_type=event` engrams), `add_note` (life notes as
+  `memory_type=note` engrams), `query_memory` / `search` (persona-scoped
+  recall with optional `memory_types` filter), all exposed on
+  `HippocampusStar` and `MemoryService`.
+- **Life entity graph (L2-02 primitives)**: new `LifeGraphStore`
+  (same `hippocampus.db`) with `life_entities` /
+  `life_entity_links`; `upsert_entity`, `link_entities`,
+  `list_entities`, `list_links` public API. Entities carry the layered
+  `dimension` model (`platform / url / person / project / community /
+  topic`) and edges keep `weight / seen_count / first_seen_at /
+  last_seen_at`.
+
+### Notes
+- `_PUBLIC_API.md` updated for both v1.75 and v1.76 methods.
+- New smoke `tests/_smoke_v76.py`.
+
 ## [1.75.0] - 2026-08-12
 
 ### Added

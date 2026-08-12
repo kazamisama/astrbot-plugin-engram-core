@@ -565,6 +565,97 @@ class HippocampusStar(Star):
             print("[hippocampus] task_lease_owner failed: " + repr(exc))
             return ""
 
+    def store_event(self, persona_id: str, platform: str, session_id: str,
+                    ts: float, kind: str, payload: dict | None = None,
+                    source: str = "external") -> str:
+        """Stable cross-plugin API: persist one life event."""
+        if self.service is None:
+            return ""
+        try:
+            return self.service.store_event(
+                persona_id, platform, session_id, ts, kind,
+                payload=payload, source=source)
+        except Exception as exc:
+            print("[hippocampus] store_event failed: " + repr(exc))
+            return ""
+
+    def add_note(self, persona_id: str, note: dict,
+                 source: str = "external") -> str:
+        """Stable cross-plugin API: persist one life note."""
+        if self.service is None:
+            return ""
+        try:
+            return self.service.add_note(persona_id, note, source=source)
+        except Exception as exc:
+            print("[hippocampus] add_note failed: " + repr(exc))
+            return ""
+
+    def query_memory(self, persona_id: str, query: str, k: int = 5,
+                     memory_types: list | None = None) -> list:
+        """Stable cross-plugin API: persona-scoped memory query."""
+        if self.service is None:
+            return []
+        try:
+            return self.service.query_memory(
+                persona_id, query, k=k, memory_types=memory_types)
+        except Exception as exc:
+            print("[hippocampus] query_memory failed: " + repr(exc))
+            return []
+
+    def search(self, persona_id: str, query: str, k: int = 5,
+               memory_types: list | None = None) -> list:
+        """Stable cross-plugin API: persona-scoped memory search."""
+        if self.service is None:
+            return []
+        try:
+            return self.service.search(
+                persona_id, query, k=k, memory_types=memory_types)
+        except Exception as exc:
+            print("[hippocampus] search failed: " + repr(exc))
+            return []
+
+    def upsert_entity(self, persona_id: str, entity: dict) -> str:
+        """Stable cross-plugin API: upsert one entity."""
+        if self.service is None:
+            return ""
+        try:
+            return self.service.upsert_entity(persona_id, entity)
+        except Exception as exc:
+            print("[hippocampus] upsert_entity failed: " + repr(exc))
+            return ""
+
+    def link_entities(self, persona_id: str, src_entity_id: str,
+                      relation: str, dst_entity_id: str,
+                      weight: float = 1.0) -> bool:
+        """Stable cross-plugin API: upsert one typed edge."""
+        if self.service is None:
+            return False
+        try:
+            return self.service.link_entities(
+                persona_id, src_entity_id, relation, dst_entity_id,
+                weight=weight)
+        except Exception as exc:
+            print("[hippocampus] link_entities failed: " + repr(exc))
+            return False
+
+    def list_entities(self, persona_id: str, limit: int = 500) -> list:
+        if self.service is None:
+            return []
+        try:
+            return self.service.list_entities(persona_id, limit=limit)
+        except Exception as exc:
+            print("[hippocampus] list_entities failed: " + repr(exc))
+            return []
+
+    def list_links(self, persona_id: str, limit: int = 1000) -> list:
+        if self.service is None:
+            return []
+        try:
+            return self.service.list_links(persona_id, limit=limit)
+        except Exception as exc:
+            print("[hippocampus] list_links failed: " + repr(exc))
+            return []
+
     # ---------- lifecycle ----------
     async def terminate(self):
         # Drain any buffered session-aggregate bursts before shutdown so

@@ -1,6 +1,6 @@
 # Engram Core 跨插件公开契约（Public API · v1）
 
-本文档是 `astrbot_plugin_engram_core` 对外部 AstrBot 插件的稳定互操作契约（v1.75.0+）。只有本文件列出的方法属于公开 API；其余 `hippocampus` 内部对象与方法不承诺兼容。
+本文档是 `astrbot_plugin_engram_core` 对外部 AstrBot 插件的稳定互操作契约（v1.75.0+；v1.76.0 扩展事件/短记/实体图）。只有本文件列出的方法属于公开 API；其余 `hippocampus` 内部对象与方法不承诺兼容。
 
 ## 获取宿主
 
@@ -46,6 +46,40 @@ eid = star.store_diary_line(
 - `k` 为返回条数上限；`since` 为 Unix 时间戳下限（0 = 不过滤）。
 - 返回列表元素为稳定 dict：`id / persona_id / memory_type / content / summary / tags / created_at / importance / confidence`。
 - 宿主不可用时返回 `[]`，由下游按硬依赖策略报 error，不静默降级。
+
+### `query_memory(persona_id, query, k=5, memory_types=None) -> list[dict]`
+
+稳定（v1.76.0+）。persona 限定的语义/向量/混合召回，`memory_types` 可过滤 `episodic / semantic / note / diary / event` 等；返回结构与 `query_recent_memory` 相同。
+
+### `search(persona_id, query, k=5, memory_types=None) -> list[dict]`
+
+稳定（v1.76.0+）。`query_memory` 的等价别名，供下游语义化调用。
+
+## 事件与短记写入
+
+### `store_event(persona_id, platform, session_id, ts, kind, payload=None, source="external") -> str`
+
+稳定（v1.76.0+）。把一条生活事件（`kind` 如 `observe / change / think / express / recall / rollback`）持久化为 `memory_type="event"` 的 engram，payload 以 JSON 存入 content，标签含 `kind:` 与 `source:`。返回 engram id；失败返回 `""`。
+
+### `add_note(persona_id, note, source="external") -> str`
+
+稳定（v1.76.0+）。持久化一条生活短记（`memory_type="note"`）。`note` 支持 `summary / opinion / url / url_hash / category / tags / entities / importance`；标签含 `source:`、`url:`、`category:`、`hash:`。返回 engram id；失败返回 `""`。
+
+## 实体图（分层维度模型）
+
+实体与边按 `persona_id` 分区，`dimension` 取 `platform / url / person / project / community / topic`；`platform/url` 节点只能由系统写入，`same_as` 为身份合并候选（下游 owner 确认后生效）。
+
+### `upsert_entity(persona_id, entity) -> str`
+
+稳定（v1.76.0+）。`entity` 支持 `dimension / entity_id / name / canonical_url`；同维度同 `entity_id` 幂等累加 `seen_count`。返回实体行 id；参数缺失返回 `""`。
+
+### `link_entities(persona_id, src_entity_id, relation, dst_entity_id, weight=1.0) -> bool`
+
+稳定（v1.76.0+）。写入一条有向类型边（关系词表见下游 `docs/features.md` L2-02）；首次创建返回 `True`，重复出现更新权重与 `seen_count` 并返回 `False`。
+
+### `list_entities(persona_id, limit=500) -> list[dict]` / `list_links(persona_id, limit=1000) -> list[dict]`
+
+稳定（v1.76.0+）。只读列出 persona 的实体与边，供 WebUI 实体图与“我在哪见过 X”查询。
 
 ## 任务租约（多实例单写者）
 

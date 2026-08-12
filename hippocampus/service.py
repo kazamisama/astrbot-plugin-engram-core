@@ -87,6 +87,8 @@ class MemoryService:
                                       batch_size=max(1, _diary_bs))
         from .lease_store import TaskLeaseStore
         self.lease_store = TaskLeaseStore(self.cfg.sqlite_path)
+        from .life_graph_store import LifeGraphStore
+        self.life_graph = LifeGraphStore(self.cfg.sqlite_path)
         self.extractor = EntityExtractor(self.llm) if self.cfg.enable_semantic else None
         self.prospective_store = ProspectiveStore(self.cfg.sqlite_path) if self.cfg.enable_prospective else None
         self.prospective_scheduler = (
@@ -1204,6 +1206,144 @@ class MemoryService:
             "confidence": float(getattr(e, "confidence", 0.0) or 0.0),
         }
 
+    def store_event(self, persona_id: str, platform: str, session_id: str,
+                    ts: float, kind: str, payload: dict | None = None,
+                    source: str = "external") -> str:
+        """Cross-plugin event write (v1.76 public API).
+
+        Persists one append-only-style event as an engram
+        (memory_type='event'). Returns the engram id or ''.
+        """
+        import json as _json
+        import time as _time
+        if not persona_id or not str(kind or "").strip():
+            return ""
+        try:
+            body = _json.dumps(payload or {}, ensure_ascii=False)
+        except Exception:
+            body = str(payload or "")
+        from .types import Engram
+        e = Engram(
+            session_id=str(session_id or ""),
+            actor_id=persona_id,
+            platform=str(platform or source or "external"),
+            channel_id="life:" + str(persona_id),
+            persona_id=persona_id,
+            content=body,
+            summary=str(kind),
+            memory_type="event",
+            created_at=float(ts or 0.0) or _time.time(),
+            embedding_model=self._current_embedding_name,
+        )
+        e.tags = ["kind:" + str(kind), "source:" + str(source or "external")]
+        try:
+            self.store.upsert(e)
+            self._post_ingest(e)
+            self._invalidate_search_cache()
+            return e.id
+        except Exception as exc:
+            print("[hippocampus] store_event error: " + repr(exc))
+            return ""
+
+    def add_note(self, persona_id: str, note: dict,
+                 source: str = "external") -> str:
+        """Cross-plugin note write (v1.76 public API).
+
+        Persists one life note as an engram (memory_type='note') with
+        source/url/category tags. Returns the engram id or ''.
+        """
+        if not persona_id or not isinstance(note, dict):
+            return ""
+        summary = str(note.get("summary") or note.get("title") or "").strip()
+        if not summary:
+            return ""
+        opinion = str(note.get("opinion") or "").strip()
+        content = summary + (("\n" + opinion) if opinion else "")
+        from .types import Engram
+        e = Engram(
+            actor_id=persona_id,
+            persona_id=persona_id,
+            channel_id="life:" + str(persona_id),
+            platform=str(source or "external"),
+            content=content,
+            summary=summary,
+            topics=list(note.get("tags") or []),
+            entities=list(note.get("entities") or []),
+            importance=float(note.get("importance", 0.5) or 0.5),
+            memory_type="note",
+            embedding_model=self._current_embedding_name,
+        )
+        tags = ["source:" + str(source or "external")]
+        if note.get("url"):
+            tags.append("url:" + str(note["url"]))
+        if note.get("category"):
+            tags.append("category:" + str(note["category"]))
+        if note.get("url_hash"):
+            tags.append("hash:" + str(note["url_hash"]))
+        e.tags = tags
+        try:
+            e.embedding = self.embedder.embed(content)
+        except Exception:
+            e.embedding = []
+        try:
+            self.store.upsert(e)
+            self._post_ingest(e)
+            self._invalidate_search_cache()
+            return e.id
+        except Exception as exc:
+            print("[hippocampus] add_note error: " + repr(exc))
+            return ""
+
+    def query_memory(self, persona_id: str, query: str, k: int = 5,
+                     memory_types: list | None = None) -> list[dict]:
+        """Cross-plugin memory query (v1.76 public API)."""
+        k = max(1, int(k))
+        try:
+            result = self.recall(Cue(
+                text=str(query or "").strip(),
+                actor_id=persona_id,
+                persona_id=persona_id,
+                channel_id="life:" + str(persona_id),
+                k=k,
+                memory_types=memory_types or None,
+            ))
+            return [self._public_memory_dict(e)
+                    for e in (result.engrams or [])[:k]]
+        except Exception as exc:
+            print("[hippocampus] query_memory error: " + repr(exc))
+            return []
+
+    def search(self, persona_id: str, query: str, k: int = 5,
+               memory_types: list | None = None) -> list[dict]:
+        """Cross-plugin search alias (v1.76 public API)."""
+        return self.query_memory(persona_id, query, k=k,
+                                 memory_types=memory_types)
+
+    def upsert_entity(self, persona_id: str, entity: dict) -> str:
+        """Cross-plugin entity upsert (v1.76 public API)."""
+        g = getattr(self, "life_graph", None)
+        if g is None:
+            return ""
+        return g.upsert_entity(persona_id, entity)
+
+    def link_entities(self, persona_id: str, src_entity_id: str,
+                      relation: str, dst_entity_id: str,
+                      weight: float = 1.0) -> bool:
+        """Cross-plugin typed edge write (v1.76 public API)."""
+        g = getattr(self, "life_graph", None)
+        if g is None:
+            return False
+        return g.link_entities(persona_id, src_entity_id, relation,
+                               dst_entity_id, weight=weight)
+
+    def list_entities(self, persona_id: str, limit: int = 500) -> list[dict]:
+        g = getattr(self, "life_graph", None)
+        return g.list_entities(persona_id, limit=limit) if g else []
+
+    def list_links(self, persona_id: str, limit: int = 1000) -> list[dict]:
+        g = getattr(self, "life_graph", None)
+        return g.list_links(persona_id, limit=limit) if g else []
+
     def claim_task(self, persona_id: str, task_kind: str,
                    holder: str = "", ttl_seconds: int = 300) -> bool:
         ls = getattr(self, "lease_store", None)
@@ -1709,7 +1849,8 @@ class MemoryService:
             pass
         for name in ("store", "semantic", "atom_store", "graph_store",
                      "prospective_store", "profile", "persona_store",
-                     "relation_store", "diary_store", "lease_store"):
+                     "relation_store", "diary_store", "lease_store",
+                     "life_graph"):
             obj = getattr(self, name, None)
             if obj is None:
                 continue
