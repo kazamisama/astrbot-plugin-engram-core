@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.75.0] - 2026-08-12
+
+### Added
+- **Cross-plugin public API (`_PUBLIC_API.md`)**: stable contracts for
+  `store_diary_line`, `query_recent_memory`, `claim_task`, `renew_task`,
+  `release_task` and `task_lease_owner`, exposed on `HippocampusStar`
+  and `MemoryService`. Diary lines persist as persona-scoped engrams
+  with `source: / day: / mood: / signature: / ref:` tags; recent-memory
+  query supports both persona-scoped recall (query) and deterministic
+  newest-first listing.
+- **Task leases**: new `TaskLeaseStore` (same `hippocampus.db`) with
+  `claim / renew / release / owner / cleanup_expired`; expired leases
+  can be reclaimed immediately. This is the v2 multi-instance single
+  writer primitive for downstream plugins (L2-09).
+
+### Notes
+- Backward compatible: existing `store_diary(diary, identity)` callers
+  are unaffected (`extra_tags` is optional); all prior smoke tests keep
+  passing.
+
 ## [1.74.0] - 2026-08-11
 
 ### Added

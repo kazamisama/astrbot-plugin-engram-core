@@ -492,6 +492,79 @@ class HippocampusStar(Star):
             self._page_api = None
             print(f"[hippocampus] page_api register failed: {e!r}")
 
+    # ---------- v1.75 public cross-plugin API ----------
+    def store_diary_line(self, persona_id: str, date: str, content: str, *,
+                         mood: str = "", signature: str = "",
+                         source_refs: list | None = None,
+                         source: str = "external") -> str:
+        """Stable cross-plugin API: persist one life diary line."""
+        if self.service is None:
+            return ""
+        try:
+            return self.service.store_diary_line(
+                persona_id, date, content, mood=mood, signature=signature,
+                source_refs=source_refs, source=source)
+        except Exception as exc:
+            print("[hippocampus] store_diary_line failed: " + repr(exc))
+            return ""
+
+    def query_recent_memory(self, persona_id: str, query: str = "",
+                            k: int = 5, since: float = 0.0) -> list:
+        """Stable cross-plugin API: recent memory / recall for a persona."""
+        if self.service is None:
+            return []
+        try:
+            return self.service.query_recent_memory(
+                persona_id, query=query, k=k, since=since)
+        except Exception as exc:
+            print("[hippocampus] query_recent_memory failed: " + repr(exc))
+            return []
+
+    def claim_task(self, persona_id: str, task_kind: str,
+                   holder: str = "", ttl_seconds: int = 300) -> bool:
+        """Stable cross-plugin API: claim a per-persona task lease."""
+        if self.service is None:
+            return False
+        try:
+            return self.service.claim_task(
+                persona_id, task_kind, holder=holder, ttl_seconds=ttl_seconds)
+        except Exception as exc:
+            print("[hippocampus] claim_task failed: " + repr(exc))
+            return False
+
+    def renew_task(self, persona_id: str, task_kind: str,
+                   holder: str = "", ttl_seconds: int = 300) -> bool:
+        """Stable cross-plugin API: renew a held task lease."""
+        if self.service is None:
+            return False
+        try:
+            return self.service.renew_task(
+                persona_id, task_kind, holder=holder, ttl_seconds=ttl_seconds)
+        except Exception as exc:
+            print("[hippocampus] renew_task failed: " + repr(exc))
+            return False
+
+    def release_task(self, persona_id: str, task_kind: str,
+                     holder: str = "") -> bool:
+        """Stable cross-plugin API: release a held task lease."""
+        if self.service is None:
+            return False
+        try:
+            return self.service.release_task(persona_id, task_kind, holder=holder)
+        except Exception as exc:
+            print("[hippocampus] release_task failed: " + repr(exc))
+            return False
+
+    def task_lease_owner(self, persona_id: str, task_kind: str) -> str:
+        """Stable cross-plugin API: current lease holder ('' when free)."""
+        if self.service is None:
+            return ""
+        try:
+            return self.service.task_lease_owner(persona_id, task_kind)
+        except Exception as exc:
+            print("[hippocampus] task_lease_owner failed: " + repr(exc))
+            return ""
+
     # ---------- lifecycle ----------
     async def terminate(self):
         # Drain any buffered session-aggregate bursts before shutdown so

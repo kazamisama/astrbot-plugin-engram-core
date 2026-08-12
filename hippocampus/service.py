@@ -85,6 +85,8 @@ class MemoryService:
                                 DiaryStore.DEFAULT_BATCH_SIZE) or DiaryStore.DEFAULT_BATCH_SIZE)
         self.diary_store = DiaryStore(self.cfg.sqlite_path,
                                       batch_size=max(1, _diary_bs))
+        from .lease_store import TaskLeaseStore
+        self.lease_store = TaskLeaseStore(self.cfg.sqlite_path)
         self.extractor = EntityExtractor(self.llm) if self.cfg.enable_semantic else None
         self.prospective_store = ProspectiveStore(self.cfg.sqlite_path) if self.cfg.enable_prospective else None
         self.prospective_scheduler = (
@@ -468,7 +470,8 @@ class MemoryService:
         except Exception as ex:
             print("[hippocampus] cache_daily_line error: " + repr(ex))
 
-    def store_diary(self, diary: dict, identity: dict) -> "Engram | None":
+    def store_diary(self, diary: dict, identity: dict,
+                    extra_tags: list | None = None) -> "Engram | None":
         self._invalidate_search_cache()
         """Persist ONE diary as an engram (memory_type=diary) + chunk-level
         embeddings for chunk recall. Mirrors store_summary persistence."""
@@ -511,7 +514,7 @@ class MemoryService:
             stamps.append("peer:" + str(identity["peer_name"]))
         if identity.get("day_label"):
             stamps.append("day:" + str(identity["day_label"]))
-        e.tags = list(e.tags) + stamps
+        e.tags = list(e.tags) + stamps + list(extra_tags or [])
         try:
             self.store.upsert(e)
             self._post_ingest(e)
@@ -1113,6 +1116,126 @@ class MemoryService:
         return SemanticRecallResult(entities=entities, relations=uniq_rels,
                                        engrams=engrams, scores=scores)
 
+    # ---------- v1.75 cross-plugin public API ----------
+    def store_diary_line(self, persona_id: str, date: str, content: str, *,
+                         mood: str = "", signature: str = "",
+                         source_refs: list | None = None,
+                         source: str = "external") -> str:
+        """Cross-plugin diary line write (v1.75 public API).
+
+        Persists one bot-first-person diary engram under the persona
+        partition. Returns the engram id, or '' when the write failed.
+        """
+        if not persona_id or not str(content or "").strip():
+            return ""
+        extra_tags = ["source:" + str(source or "external"),
+                      "day:" + str(date)]
+        if mood:
+            extra_tags.append("mood:" + str(mood))
+        if signature:
+            extra_tags.append("signature:" + str(signature))
+        for ref in (source_refs or []):
+            extra_tags.append("ref:" + str(ref))
+        identity = {
+            "actor_id": persona_id,
+            "persona_id": persona_id,
+            "channel_id": "life:" + str(persona_id),
+            "platform": str(source or "external"),
+            "day_label": str(date),
+            "chat_type": "life",
+        }
+        diary = {
+            "summary": str(content).strip(),
+            "key_facts": [],
+            "topics": [],
+            "participants": [],
+            "importance": 0.7,
+        }
+        e = self.store_diary(diary, identity, extra_tags=extra_tags)
+        return e.id if e is not None else ""
+
+    def query_recent_memory(self, persona_id: str, query: str = "",
+                            k: int = 5, since: float = 0.0) -> list[dict]:
+        """Cross-plugin recent-memory query (v1.75 public API).
+
+        With a non-empty query, uses persona-scoped recall; otherwise
+        returns the persona's newest engrams. Items are dicts with stable
+        keys for downstream serialization.
+        """
+        k = max(1, int(k))
+        q = str(query or "").strip()
+        if q:
+            try:
+                result = self.recall(Cue(
+                    text=q,
+                    actor_id=persona_id,
+                    persona_id=persona_id,
+                    channel_id="life:" + str(persona_id),
+                    k=k,
+                ))
+                return [self._public_memory_dict(e)
+                        for e in (result.engrams or [])[:k]]
+            except Exception as exc:
+                print("[hippocampus] query_recent_memory recall error: " + repr(exc))
+                return []
+        rows = self.store.all(limit=2000)
+        since_ts = max(0.0, float(since or 0.0))
+        out: list = []
+        for e in rows:
+            if e.persona_id and e.persona_id != persona_id:
+                continue
+            if since_ts > 0 and (e.created_at or 0.0) < since_ts:
+                continue
+            out.append(e)
+            if len(out) >= k:
+                break
+        return [self._public_memory_dict(e) for e in out]
+
+    def _public_memory_dict(self, e) -> dict:
+        return {
+            "id": getattr(e, "id", ""),
+            "persona_id": getattr(e, "persona_id", "") or "",
+            "memory_type": getattr(e, "memory_type", ""),
+            "content": getattr(e, "content", ""),
+            "summary": getattr(e, "summary", ""),
+            "tags": list(getattr(e, "tags", []) or []),
+            "created_at": float(getattr(e, "created_at", 0.0) or 0.0),
+            "importance": float(getattr(e, "importance", 0.0) or 0.0),
+            "confidence": float(getattr(e, "confidence", 0.0) or 0.0),
+        }
+
+    def claim_task(self, persona_id: str, task_kind: str,
+                   holder: str = "", ttl_seconds: int = 300) -> bool:
+        ls = getattr(self, "lease_store", None)
+        if ls is None:
+            return False
+        return ls.claim(persona_id, task_kind,
+                        holder or "engram:" + str(persona_id),
+                        ttl_seconds)
+
+    def renew_task(self, persona_id: str, task_kind: str,
+                   holder: str = "", ttl_seconds: int = 300) -> bool:
+        ls = getattr(self, "lease_store", None)
+        if ls is None:
+            return False
+        return ls.renew(persona_id, task_kind,
+                        holder or "engram:" + str(persona_id),
+                        ttl_seconds)
+
+    def release_task(self, persona_id: str, task_kind: str,
+                     holder: str = "") -> bool:
+        ls = getattr(self, "lease_store", None)
+        if ls is None:
+            return False
+        return ls.release(persona_id, task_kind,
+                          holder or "engram:" + str(persona_id))
+
+    def task_lease_owner(self, persona_id: str, task_kind: str) -> str:
+        ls = getattr(self, "lease_store", None)
+        if ls is None:
+            return ""
+        return ls.owner(persona_id, task_kind)
+
     def recall_dual_route(self, cue: Cue) -> RecallResult:
         # v1.3 dual route lives in retrieval.dual_route. We delegate.
         from .retrieval.dual_route import DualRouteRetriever, DualRouteConfig
@@ -1586,7 +1709,7 @@ class MemoryService:
             pass
         for name in ("store", "semantic", "atom_store", "graph_store",
                      "prospective_store", "profile", "persona_store",
-                     "relation_store", "diary_store"):
+                     "relation_store", "diary_store", "lease_store"):
             obj = getattr(self, name, None)
             if obj is None:
                 continue
