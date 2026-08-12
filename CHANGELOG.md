@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.76.1] - 2026-08-13
+
+### Fixed
+- **Persona isolation in public recall**: `query_recent_memory()` no longer
+  leaks engrams with an empty `persona_id` into a named persona partition,
+  and the `since` timestamp floor now applies to the semantic/query path as
+  well as the empty-query path.
+- **Vector persona filter regression**: `vector_search()` now uses
+  `COALESCE(persona_id, '') = ?`, matching the previous Python filter and
+  excluding `NULL` persona rows from non-empty persona queries.
+- **Task lease expiry semantics**: `task_lease_owner()` treats expired leases
+  as free, and `renew_task()` no longer extends an expired lease.
+- **Life entity graph contract**: `link_entities()` now rejects missing
+  endpoints, `upsert_entity()` preserves existing `name`/`canonical_url`
+  when omitted, and `weight=0.0` is no longer coerced to `1.0`.
+- **Thread safety**: `LifeGraphStore.get_entity()` now uses the same lock as
+  the other read/write methods.
+- **Diary tags**: `store_diary_line()` no longer emits a duplicate `day:`
+  tag.
+
+### Notes
+- `_PUBLIC_API.md` clarifies the `link_entities()` endpoint contract and
+  lease expiry behavior.
+- Smoke v75/v76 assertions extended for the above regressions.
+
 ## [1.76.0] - 2026-08-12
 
 ### Added

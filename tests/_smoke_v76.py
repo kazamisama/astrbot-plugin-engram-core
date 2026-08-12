@@ -151,9 +151,16 @@ def test_entity_graph_roundtrip():
     assert hn and tokio and hn != tokio
     assert svc.link_entities("shelly", tokio, "appears_on", hn, weight=1.0) is True
     assert svc.link_entities("shelly", tokio, "appears_on", hn, weight=0.9) is False
+    assert svc.link_entities("shelly", tokio, "appears_on", "missing", weight=1.0) is False
     entities = {e["entity_id"]: e for e in svc.list_entities("shelly")}
     assert set(entities) == {"hacker-news", "tokio-rs/tokio"}
     assert entities["tokio-rs/tokio"]["seen_count"] == 1
+    # Partial upsert should preserve existing canonical_url and name.
+    svc.upsert_entity("shelly", {"dimension": "project", "entity_id": "tokio-rs/tokio"})
+    preserved = svc.list_entities("shelly")
+    tokio_row = next(e for e in preserved if e["entity_id"] == "tokio-rs/tokio")
+    assert tokio_row["canonical_url"] == "https://github.com/tokio-rs/tokio"
+    assert tokio_row["name"] == "Tokio"
     links = svc.list_links("shelly")
     assert len(links) == 1
     assert links[0]["relation"] == "appears_on"

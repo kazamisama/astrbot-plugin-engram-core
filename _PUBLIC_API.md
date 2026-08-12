@@ -75,7 +75,7 @@ eid = star.store_diary_line(
 
 ### `link_entities(persona_id, src_entity_id, relation, dst_entity_id, weight=1.0) -> bool`
 
-稳定（v1.76.0+）。写入一条有向类型边（关系词表见下游 `docs/features.md` L2-02）；首次创建返回 `True`，重复出现更新权重与 `seen_count` 并返回 `False`。
+稳定（v1.76.0+）。写入一条有向类型边（关系词表见下游 `docs/features.md` L2-02）；`src_entity_id` 与 `dst_entity_id` 必须使用 `upsert_entity()` 返回的实体行 id，而不是 `entity_id` 字段。首次创建返回 `True`，重复出现更新权重与 `seen_count` 并返回 `False`；任一端实体不存在时返回 `False`，不会创建悬空边。
 
 ### `list_entities(persona_id, limit=500) -> list[dict]` / `list_links(persona_id, limit=1000) -> list[dict]`
 
@@ -91,7 +91,7 @@ eid = star.store_diary_line(
 
 ### `renew_task(persona_id, task_kind, holder="", ttl_seconds=300) -> bool`
 
-稳定（v1.75.0+）。仅当前 holder 可续期；不是 holder 返回 `False`。
+稳定（v1.75.0+）。仅当前 holder 可续期，且租约尚未过期；不是 holder 或已过期返回 `False`。
 
 ### `release_task(persona_id, task_kind, holder="") -> bool`
 
@@ -99,7 +99,7 @@ eid = star.store_diary_line(
 
 ### `task_lease_owner(persona_id, task_kind) -> str`
 
-稳定（v1.75.0+）。返回当前 holder（空串 = 空闲）。
+稳定（v1.75.0+）。返回当前有效 holder（空串 = 空闲或已过期）。
 
 ```python
 if not star.claim_task("shelly", "diary", holder="instance-a", ttl_seconds=300):

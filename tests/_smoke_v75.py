@@ -135,6 +135,13 @@ def test_query_recent_memory_persona_scoped():
     assert svc.query_recent_memory("shelly", k=10, since=future) == []
     assert len(svc.query_recent_memory("shelly", k=10, since=0.0)) == 2
     assert isinstance(svc.query_recent_memory("shelly", query="RAG", k=3), list)
+    # Empty-persona rows must not leak into a named persona partition.
+    svc.observe(session_id="leak", actor_id="shelly", platform="test",
+                channel_id="c", content="no persona")
+    assert all((r["persona_id"] or "") == "shelly"
+               for r in svc.query_recent_memory("shelly", k=10))
+    # since applies on the query path too.
+    assert svc.query_recent_memory("shelly", query="RAG", k=3, since=future) == []
     svc.close()
 
 
@@ -157,6 +164,8 @@ def test_task_lease_exclusivity_and_ttl():
         (time.time() - 10.0, "shelly", "diary"),
     )
     svc.lease_store._conn.commit()
+    assert svc.task_lease_owner("shelly", "diary") == ""
+    assert not svc.renew_task("shelly", "diary", holder="instance-b", ttl_seconds=60)
     assert svc.claim_task("shelly", "diary", holder="instance-c", ttl_seconds=60)
     assert svc.task_lease_owner("shelly", "diary") == "instance-c"
     assert svc.lease_store.cleanup_expired() == 0

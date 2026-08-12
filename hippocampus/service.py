@@ -1130,8 +1130,7 @@ class MemoryService:
         """
         if not persona_id or not str(content or "").strip():
             return ""
-        extra_tags = ["source:" + str(source or "external"),
-                      "day:" + str(date)]
+        extra_tags = ["source:" + str(source or "external")]
         if mood:
             extra_tags.append("mood:" + str(mood))
         if signature:
@@ -1166,6 +1165,7 @@ class MemoryService:
         """
         k = max(1, int(k))
         q = str(query or "").strip()
+        since_ts = max(0.0, float(since or 0.0))
         if q:
             try:
                 result = self.recall(Cue(
@@ -1176,15 +1176,15 @@ class MemoryService:
                     k=k,
                 ))
                 return [self._public_memory_dict(e)
-                        for e in (result.engrams or [])[:k]]
+                        for e in (result.engrams or [])[:k]
+                        if not (since_ts > 0 and (e.created_at or 0.0) < since_ts)]
             except Exception as exc:
                 print("[hippocampus] query_recent_memory recall error: " + repr(exc))
                 return []
         rows = self.store.all(limit=2000)
-        since_ts = max(0.0, float(since or 0.0))
         out: list = []
         for e in rows:
-            if e.persona_id and e.persona_id != persona_id:
+            if (e.persona_id or "") != persona_id:
                 continue
             if since_ts > 0 and (e.created_at or 0.0) < since_ts:
                 continue

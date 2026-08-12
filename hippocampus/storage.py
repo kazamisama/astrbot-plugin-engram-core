@@ -618,8 +618,8 @@ class HippocampalStore:
             where.append("channel_id = ?")
             params.append(channel_id)
         if persona_id is not None:
-            # Original Python filter normalised NULL to ''; keep that.
-            where.append("(persona_id IS NULL OR persona_id = ?)")
+            # Original Python filter normalised NULL/empty to ''; keep that.
+            where.append("(COALESCE(persona_id, '') = ?)")
             params.append(persona_id)
         if memory_types:
             placeholders = ",".join("?" for _ in memory_types)

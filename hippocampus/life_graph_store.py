@@ -65,31 +65,36 @@ class LifeGraphStore:
         entity_key = str(entity.get("entity_id") or "").strip()
         if not persona_id or not dimension or not entity_key:
             return ""
-        name = str(entity.get("name") or entity_key).strip()
+        requested_name = str(entity.get("name") or "").strip()
+        requested_url = str(entity.get("canonical_url") or "").strip()
         now = _now()
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, seen_count FROM life_entities "
+                "SELECT id, name, canonical_url, seen_count FROM life_entities "
                 "WHERE persona_id = ? AND dimension = ? AND entity_id = ?",
                 (persona_id, dimension, entity_key),
             ).fetchone()
             if row is None:
                 rid = _new_id()
+                name = requested_name or entity_key
+                url = requested_url
                 self._conn.execute(
                     "INSERT INTO life_entities "
                     "(id, persona_id, dimension, entity_id, name, canonical_url, "
                     "first_seen_at, last_seen_at, seen_count) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
                     (rid, persona_id, dimension, entity_key, name,
-                     str(entity.get("canonical_url") or ""), now, now),
+                     url, now, now),
                 )
             else:
                 rid = str(row["id"])
+                name = requested_name or str(row["name"] or "")
+                url = requested_url if requested_url else str(row["canonical_url"] or "")
                 self._conn.execute(
                     "UPDATE life_entities SET name = ?, canonical_url = ?, "
                     "last_seen_at = ?, seen_count = seen_count + 1 "
                     "WHERE id = ?",
-                    (name, str(entity.get("canonical_url") or ""), now, rid),
+                    (name, url, now, rid),
                 )
             self._conn.commit()
             return rid
@@ -105,6 +110,16 @@ class LifeGraphStore:
             return False
         now = _now()
         with self._lock:
+            src_row = self._conn.execute(
+                "SELECT 1 FROM life_entities WHERE persona_id = ? AND id = ?",
+                (persona_id, src),
+            ).fetchone()
+            dst_row = self._conn.execute(
+                "SELECT 1 FROM life_entities WHERE persona_id = ? AND id = ?",
+                (persona_id, dst),
+            ).fetchone()
+            if src_row is None or dst_row is None:
+                return False
             row = self._conn.execute(
                 "SELECT id FROM life_entity_links "
                 "WHERE persona_id = ? AND src_entity_id = ? "
@@ -118,26 +133,27 @@ class LifeGraphStore:
                     "weight, first_seen_at, last_seen_at, seen_count) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
                     (_new_id(), persona_id, src, rel, dst,
-                     max(0.0, float(weight or 1.0)), now, now),
+                     max(0.0, float(weight if weight is not None else 1.0)), now, now),
                 )
                 self._conn.commit()
                 return True
             self._conn.execute(
                 "UPDATE life_entity_links SET weight = ?, last_seen_at = ?, "
                 "seen_count = seen_count + 1 WHERE id = ?",
-                (max(0.0, float(weight or 1.0)), now, str(row["id"])),
+                (max(0.0, float(weight if weight is not None else 1.0)), now, str(row["id"])),
             )
             self._conn.commit()
             return False
 
     def get_entity(self, persona_id: str, dimension: str,
                    entity_id: str) -> dict | None:
-        row = self._conn.execute(
-            "SELECT * FROM life_entities "
-            "WHERE persona_id = ? AND dimension = ? AND entity_id = ?",
-            (persona_id, dimension, entity_id),
-        ).fetchone()
-        return dict(row) if row else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM life_entities "
+                "WHERE persona_id = ? AND dimension = ? AND entity_id = ?",
+                (persona_id, dimension, entity_id),
+            ).fetchone()
+            return dict(row) if row else None
 
     def list_entities(self, persona_id: str, limit: int = 500) -> list[dict]:
         with self._lock:

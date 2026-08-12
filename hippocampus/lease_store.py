@@ -67,8 +67,9 @@ class TaskLeaseStore:
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE task_leases SET expires_at = ? "
-                "WHERE persona_id = ? AND task_kind = ? AND holder = ?",
-                (now + ttl, persona_id, task_kind, holder),
+                "WHERE persona_id = ? AND task_kind = ? AND holder = ? "
+                "AND expires_at > ?",
+                (now + ttl, persona_id, task_kind, holder, now),
             )
             self._conn.commit()
             return cur.rowcount > 0
@@ -89,8 +90,8 @@ class TaskLeaseStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT holder FROM task_leases "
-                "WHERE persona_id = ? AND task_kind = ?",
-                (persona_id, task_kind),
+                "WHERE persona_id = ? AND task_kind = ? AND expires_at > ?",
+                (persona_id, task_kind, _now()),
             ).fetchone()
             return str(row["holder"]) if row else ""
 
