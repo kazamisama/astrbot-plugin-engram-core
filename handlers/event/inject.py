@@ -161,7 +161,8 @@ class InjectHandler:
                     rtop = int(getattr(cfg, "relation_inject_top_n", 3) or 0)
                     if rtop > 0:
                         rmin = float(getattr(cfg, "relation_inject_min_confidence", 0.0) or 0.0)
-                        rels = svc.recall_relations(query, top_n=rtop, min_confidence=rmin)
+                        rels = svc.recall_relations(query, top_n=rtop, min_confidence=rmin,
+                                                   persona_id=persona_scope)
                         rlines = []
                         for r in rels:
                             subj = (getattr(r, "subject", "") or "").strip()

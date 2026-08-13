@@ -15,7 +15,8 @@ class RecallHandler:
         self.utils = utils
 
     def test_recall(self, service, query: str = "",
-                    mode: str = "hybrid", k: int = 5) -> dict[str, Any]:
+                    mode: str = "hybrid", k: int = 5,
+                    persona_id: str | None = None) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
         query = (query or "").strip()
@@ -23,7 +24,8 @@ class RecallHandler:
             return self.utils.error("Missing query.")
         try:
             from hippocampus import Cue
-            cue = Cue(text=query, actor_id="", channel_id="", k=int(k), mode=mode)
+            cue = Cue(text=query, actor_id="", channel_id="", k=int(k), mode=mode,
+                      persona_id=persona_id)
             result = service.recall(cue)
         except Exception as e:
             return self.utils.error(f"recall failed: {e!r}")

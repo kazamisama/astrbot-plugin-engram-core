@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.76.3] - 2026-08-14
+
+### Changed
+- **Persona-scoped recall everywhere**: relations, semantic graph, narrative,
+  confidence, debug, dual-route, activation, dashboard recall, and agent tools
+  now accept and honor `persona_id`. Command and auto-injection paths pass the
+  current persona scope automatically when `persona_isolation_enabled` is on.
+- Added `HippocampalStore.engram_ids_for_persona()` as the shared partition
+  helper for the new recall filters.
+
+### Notes
+- Agent tools expose an optional `persona_id` parameter; the command and
+  injection paths are automatic, but tool invocations still need upstream
+  context to supply the current persona id.
+
 ## [1.76.2] - 2026-08-14
 
 ### Added

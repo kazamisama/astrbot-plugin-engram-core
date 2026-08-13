@@ -365,7 +365,7 @@ def format_cluster(service, eid):
                           + (sib.summary or sib.content)[:60] + "  [" + tag + "]")
     return chr(10).join(lines)
 
-def format_narrative(service, topic, k=8):
+def format_narrative(service, topic, k=8, *, persona_id=None):
     """Chain engrams that share entities/topics with `topic` and present
     them as an autobiographical narrative in temporal order."""
     if service is None:
@@ -375,8 +375,11 @@ def format_narrative(service, topic, k=8):
         return "usage: /mem narrative <topic>"
     # Find seed engrams via FTS-like topic/entity match
     topic_l = topic.lower()
+    allowed = service.store.engram_ids_for_persona(persona_id) if persona_id is not None else None
     seeds = []
     for e in service.store.list_active(limit=10_000):
+        if allowed is not None and e.id not in allowed:
+            continue
         if topic_l in (e.content or "").lower():
             seeds.append(e); continue
         if any(topic_l in (t or "").lower() for t in e.topics):
@@ -421,7 +424,8 @@ def format_profile(service, actor_id):
     return service.profile.render(actor_id)
 
 
-def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8):
+def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8, *,
+                      persona_id=None):
     """Spread activation from seed entity names / engram ids and show the top-k."""
     if service is None or service.activation is None:
         return "activation layer not initialized (need cfg.enable_semantic=True)"
@@ -430,6 +434,9 @@ def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8):
         return "usage: /mem activate <seed1> [seed2 ...]"
     acts = service.spread_activation(seeds, depth=int(depth),
                                     decay=float(decay), floor=float(floor))
+    if persona_id is not None and acts:
+        allowed = service.store.engram_ids_for_persona(persona_id)
+        acts = {eid: val for eid, val in acts.items() if eid in allowed}
     if not acts:
         return "no activation for: " + " ".join(seeds)
     header = "## spreading activation from: " + " ".join(seeds) \
@@ -441,12 +448,12 @@ def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8):
     return chr(10).join(lines)
 
 
-def format_graph(service, query, k=5):
+def format_graph(service, query, k=5, *, persona_id=None):
     if service is None or service.semantic is None:
         return "Memory service or semantic layer not initialized."
     if not query:
         return "usage: /mem graph <entity>"
-    result = service.recall_semantic(query, k=k)
+    result = service.recall_semantic(query, k=k, persona_id=persona_id)
     if not result.entities and not result.relations:
         return "no entities/relations found for: " + query
     lines = ["## graph for: " + query]
@@ -486,14 +493,14 @@ def parse_search_args(arg):
         mode = "hybrid"
     return arg, mode
 
-def format_confidence(service, query, k=5):
+def format_confidence(service, query, k=5, *, persona_id=None):
     """v1.2 metamemory: recall + show a feeling-of-knowing per hit."""
     if service is None:
         return "Memory service not initialized."
     if not query:
         return "usage: /mem confidence <query>"
     from hippocampus.metamemory import confidence_label, is_tip_of_tongue
-    res = service.recall(Cue(text=query, k=int(k)))
+    res = service.recall(Cue(text=query, k=int(k), persona_id=persona_id))
     if not res.engrams:
         return "(nothing recalled for: " + query + ")"
     confs = res.confidences or [0.0] * len(res.engrams)
@@ -560,7 +567,7 @@ def format_decaycurve(service, arg, k=8):
 def format_stats(service):
     return render_stats(service)
 
-def format_debug(service, query, k=5):
+def format_debug(service, query, k=5, *, persona_id=None):
     """v1.64 B14 /mem debug: explain why a search returned what it returned.
 
     Diagnostic report covering:
@@ -581,7 +588,7 @@ def format_debug(service, query, k=5):
     query = (query or "").strip()
     if not query:
         return t("debug.usage")
-    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None)
+    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None, persona_id=persona_id)
     from hippocampus.retrieval import DualRouteRetriever, DualRouteConfig
     dr = DualRouteRetriever(service, DualRouteConfig())
 
@@ -691,7 +698,7 @@ def format_debug(service, query, k=5):
     return chr(10).join(lines)
 
 
-def format_dual_route(service, query, k=5):
+def format_dual_route(service, query, k=5, *, persona_id=None):
     """v1.3 dual-route result renderer.
 
     Shows hits from both document route (vector+FTS5) and graph route
@@ -703,7 +710,7 @@ def format_dual_route(service, query, k=5):
     query = (query or "").strip()
     if not query:
         return "usage: /mem search <q> --mode=dual"
-    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None)
+    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None, persona_id=persona_id)
     from hippocampus.retrieval import DualRouteRetriever, DualRouteConfig, RouteKind
     retriever = DualRouteRetriever(service, DualRouteConfig())
     res = retriever.search(cue)

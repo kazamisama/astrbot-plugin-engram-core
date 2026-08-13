@@ -251,6 +251,7 @@ class PluginPageApi:
             query=str(body.get("query", "")),
             mode=str(body.get("mode", "hybrid")),
             k=_as_int(body.get("k"), 5),
+            persona_id=(body.get("persona_id") or None),
         )
 
     async def _graph_overview(self) -> dict[str, Any]:

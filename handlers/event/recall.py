@@ -51,13 +51,13 @@ class RecallHandler:
             yield event.plain_result(
                 "usage: /mem search <query> [--mode=vector|fts|hybrid|dual]")
             return
-        if mode == "dual":
-            yield event.plain_result(format_dual_route(self.service, query, k=5))
-            return
         meta = _extract(event)
         cfg2 = getattr(self.service, "cfg", None)
         iso_on2 = bool(getattr(cfg2, "persona_isolation_enabled", True)) if cfg2 else True
         persona_scope2 = (meta.get("persona_id") or "") if iso_on2 else None
+        if mode == "dual":
+            yield event.plain_result(format_dual_route(self.service, query, k=5, persona_id=persona_scope2))
+            return
         result = self.service.recall(Cue(
             text=query, actor_id=meta["actor_id"],
             channel_id=meta["channel_id"], persona_id=persona_scope2, k=5, mode=mode))
@@ -111,7 +111,11 @@ class RecallHandler:
         if self.service is None:
             yield event.plain_result("Memory service not initialized.")
             return
-        yield event.plain_result(format_activation(self.service, seeds))
+        meta = _extract(event)
+        cfg = getattr(self.service, "cfg", None)
+        iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
+        persona_scope = (meta.get("persona_id") or "") if iso else None
+        yield event.plain_result(format_activation(self.service, seeds, persona_id=persona_scope))
 
     async def cmd_mem_cluster(self, event, eid: str):
         from ..format import format_cluster
@@ -139,7 +143,11 @@ class RecallHandler:
         if self.service is None:
             yield event.plain_result("Memory service not initialized.")
             return
-        yield event.plain_result(format_confidence(self.service, query))
+        meta = _extract(event)
+        cfg = getattr(self.service, "cfg", None)
+        iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
+        persona_scope = (meta.get("persona_id") or "") if iso else None
+        yield event.plain_result(format_confidence(self.service, query, persona_id=persona_scope))
 
     async def cmd_mem_decaycurve(self, event, arg: str = ""):
         from ..format import format_decaycurve
@@ -153,7 +161,11 @@ class RecallHandler:
         if self.service is None:
             yield event.plain_result("Memory service not initialized.")
             return
-        yield event.plain_result(format_narrative(self.service, topic.strip()))
+        meta = _extract(event)
+        cfg = getattr(self.service, "cfg", None)
+        iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
+        persona_scope = (meta.get("persona_id") or "") if iso else None
+        yield event.plain_result(format_narrative(self.service, topic.strip(), persona_id=persona_scope))
 
     async def cmd_mem_debug(self, event, query: str = ""):
         """v1.64 B14 /mem debug: diagnostic report on the dual-route
@@ -164,4 +176,8 @@ class RecallHandler:
         if self.service is None:
             yield event.plain_result("Memory service not initialized.")
             return
-        yield event.plain_result(format_debug(self.service, query))
+        meta = _extract(event)
+        cfg = getattr(self.service, "cfg", None)
+        iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
+        persona_scope = (meta.get("persona_id") or "") if iso else None
+        yield event.plain_result(format_debug(self.service, query, persona_id=persona_scope))

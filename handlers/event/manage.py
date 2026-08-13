@@ -101,11 +101,15 @@ class ManageHandler:
         yield event.plain_result(import_engrams(self.service, path.strip()))
 
     async def cmd_mem_graph(self, event, query: str):
-        from ..format import format_graph
+        from ..format import format_graph, _extract
         if self.service is None:
             yield event.plain_result("Memory service not initialized.")
             return
-        yield event.plain_result(format_graph(self.service, query.strip()))
+        meta = _extract(event)
+        cfg = getattr(self.service, "cfg", None)
+        iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
+        persona_scope = (meta.get("persona_id") or "") if iso else None
+        yield event.plain_result(format_graph(self.service, query.strip(), persona_id=persona_scope))
 
     async def cmd_mem_replay(self, event):
         if self.service is None:

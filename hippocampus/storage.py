@@ -546,6 +546,17 @@ class HippocampalStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [Engram.from_row(dict(r)) for r in rows if r["forgotten_at"] == 0.0]
 
+    def engram_ids_for_persona(self, persona_id: str, limit: int = 100000) -> set:
+        """Return active engram ids for a persona partition."""
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM engrams "
+                "WHERE COALESCE(persona_id, '') = ? AND forgotten_at = 0 "
+                "LIMIT ?",
+                (persona_id or "", int(limit)),
+            ).fetchall()
+        return {row["id"] for row in rows}
+
     def list_active_by_entity_ref(self, entity_id: str, limit: int = 200) -> list:
         """Active engrams referencing an entity id, newest first.
 

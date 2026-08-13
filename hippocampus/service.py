@@ -416,19 +416,26 @@ class MemoryService:
         return e
 
     def recall_relations(self, query: str, *, top_n: int = 3,
-                         min_confidence: float = 0.0) -> list:
+                         min_confidence: float = 0.0,
+                         persona_id: str | None = None) -> list:
         """v1.19 B-2: pipeline-filtered relations for injection (option 4,
         no weighting): relevance (subject/object/predicate appears in query)
-        -> confidence threshold -> top-N. Returns list[Relation]."""
+        -> confidence threshold -> top-N. When persona_id is set, only
+        relations sourced from that persona partition are returned."""
         rs = getattr(self, "relation_store", None)
         if rs is None:
             return []
         try:
             q = (query or "").lower()
             cands = rs.all_active(limit=500)
+            allowed = None
+            if persona_id is not None:
+                allowed = self.store.engram_ids_for_persona(persona_id)
             # relevance filter: any of subject/object/predicate substring-matches query
             relevant = []
             for r in cands:
+                if allowed is not None and r.source_engram_id not in allowed:
+                    continue
                 fields = (r.subject, r.object, r.predicate)
                 if any(f and f.lower() in q for f in fields):
                     relevant.append(r)
@@ -1097,13 +1104,20 @@ class MemoryService:
         return result
 
     def recall_semantic(self, query: str, *, actor_id: str | None = None,
-                        k: int = 5) -> SemanticRecallResult:
+                        k: int = 5,
+                        persona_id: str | None = None) -> SemanticRecallResult:
         if self.semantic is None:
             return SemanticRecallResult(entities=[], relations=[], engrams=[], scores=[])
+        allowed = self.store.engram_ids_for_persona(persona_id) if persona_id is not None else None
         entities = self.semantic.search_entities(query, limit=k * 2)
+        if allowed is not None:
+            entities = [e for e in entities
+                        if any(sid in allowed for sid in (getattr(e, "source_engram_ids", None) or []))]
         relations = []
         for ent in entities:
             relations.extend(self.semantic.relations_of(ent.id))
+        if allowed is not None:
+            relations = [r for r in relations if getattr(r, "source_engram_id", "") in allowed]
         seen = set(); uniq_rels = []
         for r in relations:
             if r.id in seen: continue
@@ -1111,6 +1125,8 @@ class MemoryService:
         ent_ids = {e.id for e in entities}
         engrams = []
         for e in self.store.all(limit=10000):
+            if allowed is not None and e.id not in allowed:
+                continue
             if any(ref in ent_ids for ref in e.entity_refs):
                 engrams.append(e)
         engrams = engrams[:k]

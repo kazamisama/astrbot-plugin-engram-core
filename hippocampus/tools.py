@@ -82,13 +82,12 @@ def _forget_handler(service, *, engram_id: str, hard: bool = False) -> str:
     return json.dumps({"ok": bool(ok), "engram_id": eid, "mode": "soft"}, ensure_ascii=False)
 
 
-def _list_recent_handler(service, *, actor_id: str, k: int = 10) -> str:
+def _list_recent_handler(service, *, actor_id: str, k: int = 10,
+                         persona_id: str = "") -> str:
     """Body of list_recent_memories.
 
     Lists active (not soft-forgotten) engrams for an actor, newest first.
-    Filters in Python: store.list_active(limit=200) gives us a recent-enough
-    pool, and we narrow by actor_id and trim to k. Adequate for tool scale;
-    a SQL-level actor filter is a B11 concern.
+    Optional persona_id narrows the pool to that partition.
     """
     if not (actor_id or "").strip():
         return json.dumps({"ok": False, "error": "actor_id is required"}, ensure_ascii=False)
@@ -98,6 +97,9 @@ def _list_recent_handler(service, *, actor_id: str, k: int = 10) -> str:
         pool = service.store.list_active(limit=pool_size, actor_id=aid)
     except Exception as exc:
         return json.dumps({"ok": False, "error": "store list failed: " + str(exc)}, ensure_ascii=False)
+    if persona_id:
+        allowed = service.store.engram_ids_for_persona(persona_id)
+        pool = [e for e in pool if e.id in allowed]
     out = []
     for e in pool:
         out.append({
@@ -117,13 +119,13 @@ def _list_recent_handler(service, *, actor_id: str, k: int = 10) -> str:
     }, ensure_ascii=False)
 
 
-def _search_by_entity_handler(service, *, entity_name: str, k: int = 10) -> str:
+def _search_by_entity_handler(service, *, entity_name: str, k: int = 10,
+                              persona_id: str = "") -> str:
     """Body of search_by_entity_memory.
 
     Resolves the entity by name (case-insensitive, exact or LIKE), then
-    walks engram.entity_refs for matches. Filters in Python from
-    store.list_active(). Adequate for tool scale; SQL-level join is a
-    B11 concern.
+    walks engram.entity_refs for matches. Optional persona_id narrows the
+    pool to that partition.
     """
     if not (entity_name or "").strip():
         return json.dumps({"ok": False, "error": "entity_name is required"}, ensure_ascii=False)
@@ -151,6 +153,9 @@ def _search_by_entity_handler(service, *, entity_name: str, k: int = 10) -> str:
         pool = service.store.list_active_by_entity_ref(eid_target, limit=pool_size)
     except Exception as exc:
         return json.dumps({"ok": False, "error": "store list failed: " + str(exc)}, ensure_ascii=False)
+    if persona_id:
+        allowed = service.store.engram_ids_for_persona(persona_id)
+        pool = [e for e in pool if e.id in allowed]
     out = []
     for e in pool:
         out.append({
@@ -171,10 +176,12 @@ def _search_by_entity_handler(service, *, entity_name: str, k: int = 10) -> str:
     }, ensure_ascii=False)
 
 
-def _recall_handler(service, *, query: str, k: int = 5) -> str:
+def _recall_handler(service, *, query: str, k: int = 5,
+                    persona_id: str = "") -> str:
     """Body of recall_long_term_memory. Returns a JSON string of hits."""
     from .types import Cue
-    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None)
+    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None,
+              persona_id=(persona_id or None))
     res = service.recall(cue)
     hits = []
     for i, (e, s) in enumerate(zip(res.engrams, res.scores)):
@@ -246,6 +253,10 @@ def build_recall_tool() -> MemoryTool:
                     "type": "integer",
                     "description": "Maximum number of memory items to return for one recall. Keep this small unless more evidence is needed.",
                     "default": 5,
+                },
+                "persona_id": {
+                    "type": "string",
+                    "description": "Optional persona partition to constrain recall. Leave empty when the current persona is not known.",
                 },
             },
             "required": ["query"],
@@ -335,6 +346,10 @@ def build_list_recent_tool() -> MemoryTool:
                     "description": "Maximum number of items to return. Keep this small (default 10) for fast review.",
                     "default": 10,
                 },
+                "persona_id": {
+                    "type": "string",
+                    "description": "Optional persona partition to constrain recall. Leave empty when the current persona is not known.",
+                },
             },
             "required": ["actor_id"],
         },
@@ -362,6 +377,10 @@ def build_search_by_entity_tool() -> MemoryTool:
                     "type": "integer",
                     "description": "Maximum number of engrams to return. Keep small (default 10) for focused review.",
                     "default": 10,
+                },
+                "persona_id": {
+                    "type": "string",
+                    "description": "Optional persona partition to constrain recall. Leave empty when the current persona is not known.",
                 },
             },
             "required": ["entity_name"],
