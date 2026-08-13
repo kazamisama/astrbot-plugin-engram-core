@@ -31,10 +31,11 @@ class _Clock:
 
 
 def test_config_fields():
-    banner("9 B-1 config fields + defaults")
+    banner("10 B-1 config fields + defaults")
     for f in ("summary_mode_enabled", "per_message_ingest_debug",
               "summary_idle_seconds_private", "summary_idle_seconds_group",
-              "summary_max_messages", "summary_min_chars",
+              "summary_max_messages", "summary_min_messages",
+              "summary_min_chars",
               "summary_compress_ratio", "summary_compress_floor",
               "summary_compress_cap", "summary_compress_cap_group"):
         assert f in _FIELDS, f
@@ -45,6 +46,7 @@ def test_config_fields():
     assert cfg.summary_idle_seconds_private == 1800.0
     assert cfg.summary_idle_seconds_group == 300.0
     assert cfg.summary_max_messages == 30
+    assert cfg.summary_min_messages == 20
     assert cfg.summary_compress_ratio == 0.15
     assert cfg.summary_compress_cap == 1200
     assert cfg.summary_compress_cap_group == 400
@@ -83,6 +85,7 @@ def test_idle_flush_chat_type():
     cfg = MemoryConfig()
     cfg.summary_idle_seconds_group = 600.0
     cfg.summary_idle_seconds_private = 1800.0
+    cfg.summary_min_messages = 0
     buf = ConversationBuffer(cfg, lambda rec: flushed.append(rec), now_fn=clk)
     # group channel: idle 600 -> flush after 600s gap on next feed of another channel
     buf.feed({"channel_id": "g1", "chat_type": "group", "actor_id": "A", "content": "hi"})
@@ -101,6 +104,32 @@ def test_idle_flush_chat_type():
     buf2.flush_idle_now()
     assert len(flushed) == 1, "private idle after 1901s"
     print("  chat-type idle thresholds OK")
+
+
+def test_min_messages_resets_idle_timer():
+    banner("min messages gate: below threshold only resets idle")
+    clk = _Clock()
+    flushed = []
+    cfg = MemoryConfig()
+    cfg.summary_idle_seconds_group = 600.0
+    cfg.summary_min_messages = 3
+    buf = ConversationBuffer(cfg, lambda rec: flushed.append(rec), now_fn=clk)
+    buf.feed({"channel_id": "g1", "chat_type": "group", "actor_id": "A", "content": "one"})
+    clk.tick(601)
+    buf.flush_idle_now()
+    assert len(flushed) == 0, "below min: idle should not flush"
+    clk.tick(601)
+    buf.feed({"channel_id": "g1", "chat_type": "group", "actor_id": "A", "content": "two"})
+    clk.tick(601)
+    buf.flush_idle_now()
+    assert len(flushed) == 0, "still below min after two lines"
+    buf.feed({"channel_id": "g1", "chat_type": "group", "actor_id": "A", "content": "three"})
+    clk.tick(601)
+    buf.flush_idle_now()
+    assert len(flushed) == 1 and len(flushed[0].lines) == 3
+    buf.feed({"channel_id": "g1", "chat_type": "group", "actor_id": "A", "content": "next"})
+    assert len(flushed) == 1
+    print("  min-messages idle reset OK")
 
 
 def test_target_length():
@@ -183,6 +212,7 @@ def main():
     test_config_fields()
     test_per_channel_interleave()
     test_idle_flush_chat_type()
+    test_min_messages_resets_idle_timer()
     test_target_length()
     test_llm_structured()
     test_persona_prefill()

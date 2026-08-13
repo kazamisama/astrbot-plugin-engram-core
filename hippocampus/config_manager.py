@@ -150,6 +150,7 @@ _FIELDS: dict[str, _FieldSpec] = {
     "summary_idle_seconds_private": _FieldSpec(float, (0.0, 86400.0), label_zh="私聊冷却秒数", label_en="Private idle seconds"),
     "summary_idle_seconds_group": _FieldSpec(float, (0.0, 86400.0), label_zh="群聊冷却秒数", label_en="Group idle seconds"),
     "summary_max_messages": _FieldSpec(int, (0, 1000), label_zh="总结最大消息数", label_en="Summary max messages"),
+    "summary_min_messages": _FieldSpec(int, (0, 1000), label_zh="总结最少消息数", label_en="Summary min messages"),
     "summary_min_chars": _FieldSpec(int, (0, 1000), label_zh="总结最小字数", label_en="Summary min chars"),
     "summary_compress_ratio": _FieldSpec(float, (0.0, 1.0), label_zh="总结压缩比", label_en="Summary compress ratio"),
     "summary_compress_floor": _FieldSpec(int, (0, 5000), label_zh="总结字数下限", label_en="Summary compress floor"),

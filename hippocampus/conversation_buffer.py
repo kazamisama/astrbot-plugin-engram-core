@@ -140,6 +140,22 @@ class ConversationBuffer:
             return False
         return (now - buf.last_ts) >= idle
 
+    def _min_messages(self) -> int:
+        return int(getattr(self.cfg, "summary_min_messages", 0) or 0)
+
+    def _below_min(self, buf: _ChannelBuf) -> bool:
+        min_n = self._min_messages()
+        return min_n > 0 and len(buf.lines) < min_n
+
+    def _settle_idle_buf(self, ch: str, now: float) -> None:
+        buf = self._bufs.get(ch)
+        if buf is None or not self._is_idle(buf, now):
+            return
+        if self._below_min(buf):
+            buf.last_ts = now
+            return
+        self._flush_key(ch)
+
     # ---- quality gate ----
     def _accept(self, content: str) -> bool:
         text = (content or "").strip()
@@ -157,9 +173,7 @@ class ConversationBuffer:
         self._flush_idle(now, exclude=ch)
 
         if not self._accept(meta.get("content", "")):
-            buf = self._bufs.get(ch)
-            if buf is not None and self._is_idle(buf, now):
-                self._flush_key(ch)
+            self._settle_idle_buf(ch, now)
             return
 
         buf = self._bufs.get(ch)
@@ -167,9 +181,12 @@ class ConversationBuffer:
             buf = _ChannelBuf(meta, now)
             self._bufs[ch] = buf
         elif self._is_idle(buf, now):
-            self._flush_key(ch)
-            buf = _ChannelBuf(meta, now)
-            self._bufs[ch] = buf
+            if self._below_min(buf):
+                buf.last_ts = now
+            else:
+                self._flush_key(ch)
+                buf = _ChannelBuf(meta, now)
+                self._bufs[ch] = buf
 
         buf.lines.append(ConvLine(
             actor_id=meta.get("actor_id", "") or "",
@@ -196,18 +213,14 @@ class ConversationBuffer:
         """Scheduled maintenance entrypoint: flush only channels gone idle."""
         now = self._now()
         for ch in list(self._bufs.keys()):
-            buf = self._bufs.get(ch)
-            if buf is not None and self._is_idle(buf, now):
-                self._flush_key(ch)
+            self._settle_idle_buf(ch, now)
 
     # ---- internals ----
     def _flush_idle(self, now: float, exclude: str) -> None:
         for ch in list(self._bufs.keys()):
             if ch == exclude:
                 continue
-            buf = self._bufs.get(ch)
-            if buf is not None and self._is_idle(buf, now):
-                self._flush_key(ch)
+            self._settle_idle_buf(ch, now)
 
     def _flush_key(self, ch: str) -> None:
         buf = self._bufs.pop(ch, None)

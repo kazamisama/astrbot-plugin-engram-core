@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.76.2] - 2026-08-14
+
+### Added
+- **Minimum messages before idle summarization**: new
+  `summary_min_messages` setting (default `20`). Conversation buffers with
+  fewer accepted lines now reset their idle timer instead of flushing, so
+  short fragments are not summarized until the channel accumulates enough
+  messages. `0` disables the minimum and preserves the previous behavior.
+
+### Notes
+- `summary_max_messages` still forces a flush when reached.
+- `flush_all()` on shutdown still flushes every buffered channel.
+- WebUI schema and `_smoke_v40.py` coverage updated.
+
 ## [1.76.1] - 2026-08-13
 
 ### Fixed

@@ -157,6 +157,7 @@ class MemoryConfig:
     summary_idle_seconds_private: float = 1800.0  # private chat cooldown before flush
     summary_idle_seconds_group: float = 300.0     # group chat cooldown before flush
     summary_max_messages: int = 30                # hard cap on buffered msgs before forced flush; 0=off
+    summary_min_messages: int = 20                # minimum buffered msgs before an idle flush may summarize; 0=off
     summary_min_chars: int = 0                   # drop shorter inbound lines from the buffer
     summary_compress_ratio: float = 0.15         # target_chars = total_chars * ratio
     summary_compress_floor: int = 0              # min summary chars; 0=unbounded

@@ -394,6 +394,12 @@
         "description": "条数上限自动压缩",
         "hint": "缓冲区累计达到这么多条（含 bot）就立即总结并重置冷却计时。默认 30。0 表示不限条数（仅靠冷却）。"
       },
+      "summary_min_messages": {
+        "type": "int",
+        "default": 20,
+        "description": "总结最少消息数",
+        "hint": "频道累计达到这么多条后，idle 到期才会总结；不足时只重置 idle 计时并继续积累。默认 20。0 表示不设下限。"
+      },
       "summary_min_chars": {
         "type": "int",
         "default": 0,
