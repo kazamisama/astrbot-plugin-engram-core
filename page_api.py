@@ -28,6 +28,7 @@ Endpoints:
   POST /backups/restore  -> restore from backup_id (DANGEROUS)
 """
 from __future__ import annotations
+import asyncio
 import os
 import sys
 from typing import Any
@@ -397,17 +398,24 @@ class PluginPageApi:
 
     async def _preview_memory_import(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.transfer_handler.preview_import(
-            self._service(), content=str(body.get("content", "")),
-            fmt=str(body.get("format", "json")))
+        service = self._service()
+        content = str(body.get("content", ""))
+        fmt = str(body.get("format", "json"))
+        return await asyncio.to_thread(
+            self.transfer_handler.preview_import, service, content, fmt)
 
     async def _import_memories(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.transfer_handler.import_memories(
-            self._service(), content=str(body.get("content", "")),
-            fmt=str(body.get("format", "json")),
-            dry_run=_as_bool(body.get("dry_run"), False),
-            allow_duplicates=_as_bool(body.get("allow_duplicates"), False))
+        service = self._service()
+        content = str(body.get("content", ""))
+        fmt = str(body.get("format", "json"))
+        dry_run = _as_bool(body.get("dry_run"), False)
+        allow_duplicates = _as_bool(body.get("allow_duplicates"), False)
+        derive_indexes = _as_bool(body.get("derive_indexes"), True)
+        return await asyncio.to_thread(
+            self.transfer_handler.import_memories, service, content, fmt,
+            dry_run=dry_run, allow_duplicates=allow_duplicates,
+            derive_indexes=derive_indexes)
 
     async def _list_prompts(self) -> dict[str, Any]:
         return self.prompt_handler.list_prompts(self._service())

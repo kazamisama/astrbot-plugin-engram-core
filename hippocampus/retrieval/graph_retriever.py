@@ -69,6 +69,8 @@ class GraphRetriever:
             return False
         if cue.channel_id and (getattr(engram, "channel_id", "") or "") != cue.channel_id:
             return False
+        if cue.memory_types and (getattr(engram, "memory_type", "") or "") not in cue.memory_types:
+            return False
         return True
 
     def search(self, cue: Cue) -> list[RankedCandidate]:

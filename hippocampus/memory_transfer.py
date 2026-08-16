@@ -193,7 +193,8 @@ def preview_import(content: str, fmt: str = "json",
 
 
 def import_memories(service, content: str, fmt: str = "json",
-                    allow_duplicates: bool = False) -> dict[str, Any]:
+                    allow_duplicates: bool = False,
+                    derive_indexes: bool = True) -> dict[str, Any]:
     preview = preview_import(content, fmt, service=service)
     if preview["errors"]:
         return {"imported": 0, "skipped": 0, "errors": preview["errors"]}
@@ -239,9 +240,10 @@ def import_memories(service, content: str, fmt: str = "json",
                     embedding=[],
                     embedding_model="",
                 )
-                # Rebuild the current-embedder vector and derived indexes for
-                # imported active memories; archived rows stay audit-only.
-                if ent["forgotten_at"] <= 0:
+                # Archived rows stay audit-only. Active rows optionally get a
+                # current-embedder vector + derived indexes; import callers can
+                # set derive_indexes=False when they plan a batch rebuild.
+                if ent["forgotten_at"] <= 0 and derive_indexes:
                     try:
                         e.embedding = service.embedder.embed(e.content or "")
                         e.embedding_model = service._current_embedding_name
@@ -256,13 +258,40 @@ def import_memories(service, content: str, fmt: str = "json",
                 else:
                     service.store.upsert(e)
             else:
-                service.store_summary(
-                    {"summary": ent["summary"], "key_facts": [], "topics": ent["topics"],
-                     "participants": [], "relations": [], "importance": ent["importance"]},
-                    {"session_id": ent["session_id"], "actor_id": ent["actor_id"],
-                     "platform": ent["platform"], "channel_id": ent["channel_id"],
-                     "persona_id": ent["persona_id"], "scope_id": ent["scope_id"],
-                     "memory_type": ent["memory_type"]})
+                if derive_indexes:
+                    service.store_summary(
+                        {"summary": ent["summary"], "key_facts": [],
+                         "topics": ent["topics"], "participants": [],
+                         "relations": [], "importance": ent["importance"]},
+                        {"session_id": ent["session_id"],
+                         "actor_id": ent["actor_id"],
+                         "platform": ent["platform"],
+                         "channel_id": ent["channel_id"],
+                         "persona_id": ent["persona_id"],
+                         "scope_id": ent["scope_id"],
+                         "memory_type": ent["memory_type"]})
+                else:
+                    from .types import Engram
+                    service.store.upsert(Engram(
+                        content=ent["content"],
+                        summary=ent["summary"],
+                        actor_id=ent["actor_id"],
+                        session_id=ent["session_id"],
+                        platform=ent["platform"],
+                        channel_id=ent["channel_id"],
+                        persona_id=ent["persona_id"],
+                        scope_id=ent["scope_id"],
+                        memory_type=ent["memory_type"],
+                        importance=ent["importance"],
+                        confidence=ent["confidence"],
+                        topics=list(ent["topics"]),
+                        tags=list(ent["tags"]),
+                        created_at=ent["created_at"] or time.time(),
+                        forgotten_at=ent["forgotten_at"],
+                        strength=0.0 if ent["forgotten_at"] > 0 else 1.0,
+                        embedding=[],
+                        embedding_model="",
+                    ))
             imported += 1
             seen.add(_content_key(ent))
             if ent.get("id"):

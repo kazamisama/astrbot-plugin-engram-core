@@ -448,6 +448,8 @@ class DualRouteRetriever:
                         and (getattr(parent, "scope_id", "") or "")
                         != cue.scope_id):
                     continue
+                if cue.memory_types and (getattr(parent, "memory_type", "") or "") not in cue.memory_types:
+                    continue
                 by_engram[eid] = max(by_engram.get(eid, 0.0), atom_score)
                 touched = True
             if touched:

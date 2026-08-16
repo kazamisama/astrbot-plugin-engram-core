@@ -74,6 +74,11 @@ def test_transfer_json_roundtrip_and_preview():
     assert result["imported"] >= 1, result
     result2 = import_memories(svc2, content, "json")
     assert result2["imported"] == 0 and result2["skipped"] >= 1, result2
+    # derive_indexes=False path: write main table only, no embedding work.
+    svc3 = _service(tempfile.mkdtemp())
+    result3 = import_memories(svc3, content, "json", derive_indexes=False)
+    assert result3["imported"] >= 1 and result3["embedded"] == 0, result3
+    svc3.close()
     svc2.close()
     print("K transfer: OK")
 

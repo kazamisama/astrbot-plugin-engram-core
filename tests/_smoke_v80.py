@@ -31,6 +31,11 @@ def test_graph_route_partition_filters():
     ok = Engram(id="ok", persona_id="p1", scope_id="s1", actor_id="u1",
                 channel_id="g1", forgotten_at=0.0)
     assert gr._passes_filters(ok, cue)
+    typed_cue = Cue(text="x", persona_id="p1", scope_id="s1", actor_id="u1",
+                     channel_id="g1", memory_types=["episodic"])
+    assert not gr._passes_filters(
+        Engram(id="d", persona_id="p1", scope_id="s1", actor_id="u1",
+               channel_id="g1", memory_type="diary"), typed_cue)
     for bad in (
         Engram(id="a", persona_id="p2", scope_id="s1", actor_id="u1", channel_id="g1"),
         Engram(id="b", persona_id="p1", scope_id="s2", actor_id="u1", channel_id="g1"),

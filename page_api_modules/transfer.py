@@ -49,14 +49,17 @@ class TransferHandler:
 
     def import_memories(self, service, content: str, fmt: str = "json",
                         dry_run: bool = False,
-                        allow_duplicates: bool = False) -> dict[str, Any]:
+                        allow_duplicates: bool = False,
+                        derive_indexes: bool = True) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
         try:
             from hippocampus.memory_transfer import import_memories, preview_import
             if dry_run:
                 return self.utils.ok(preview_import(content, fmt, service=service))
-            return self.utils.ok(import_memories(service, content, fmt,
-                                                 allow_duplicates=allow_duplicates))
+            return self.utils.ok(import_memories(
+                service, content, fmt,
+                allow_duplicates=allow_duplicates,
+                derive_indexes=derive_indexes))
         except Exception as e:
             return self.utils.error(f"import failed: {e!r}")

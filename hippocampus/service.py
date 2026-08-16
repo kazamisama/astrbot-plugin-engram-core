@@ -1560,6 +1560,16 @@ class MemoryService:
                     self.store.upsert(e)
                 except Exception as exc:
                     print("[hippocampus] restore re-embed failed: " + repr(exc))
+            # Restored active memories may have been archived before their
+            # semantic / atom derived indexes were built. Rebuild missing
+            # indexes (idempotent upserts; _post_ingest skips diary/summary).
+            if not (getattr(e, "entity_refs", None) or []) and (
+                    bool(getattr(self.cfg, "enable_semantic", False))
+                    or bool(getattr(self.cfg, "enable_atom_extraction", False))):
+                try:
+                    self._post_ingest(e)
+                except Exception as pex:
+                    print("[hippocampus] restore _post_ingest failed: " + repr(pex))
         self._invalidate_search_cache()
         return True
 

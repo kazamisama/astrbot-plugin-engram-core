@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.76.9] - 2026-08-16
+
+### Fixed
+- **Import indexing backpressure**: WebUI import/preview now run in a worker
+  thread; `derive_indexes=false` writes the main table only, letting callers
+  schedule a batch rebuild later.
+- **Restore rebuilds missing derived indexes**: restored active memories
+  without `entity_refs` re-run `_post_ingest` so semantic / atom / graph
+  indexes catch up.
+- **Graph/atom route type filters**: graph hydration and atom-parent mapping
+  now obey `Cue.memory_types`, matching the document route.
+
+
 ## [1.76.8] - 2026-08-16
 
 ### Changed
