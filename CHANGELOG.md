@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.76.8] - 2026-08-16
+
+### Changed
+- **SQL-bounded export**: export path now uses COUNT(*) + SQL LIMIT/OFFSET
+  instead of materializing every engram in Python; output remains capped at
+  20,000 with `truncated` / `total_available` metadata.
+- **Native import re-indexes**: active native-imported memories now get a
+  fresh embedding and `_post_ingest` derived indexes (semantic / atom /
+  graph); archived rows remain audit-only.
+- **Route tests future-proof**: page-api smoke tests assert required routes
+  rather than a hard-coded endpoint total.
+- Metadata description refreshed to v1.76.7 capabilities; `_PUBLIC_API.md`
+  documents the boundary between internal scope/prompt/transfer surfaces and
+  the stable cross-plugin contract.
+
+
 ## [1.76.7] - 2026-08-16
 
 ### Fixed

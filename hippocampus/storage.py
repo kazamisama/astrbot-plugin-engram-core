@@ -367,6 +367,20 @@ class HippocampalStore:
             cur = self._conn.execute("SELECT * FROM engrams ORDER BY created_at DESC LIMIT ?", (limit,))
             return [Engram.from_row(dict(r)) for r in cur.fetchall()]
 
+    def count_all(self) -> int:
+        """COUNT(*) without materializing rows."""
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT COUNT(*) AS c FROM engrams").fetchone()
+        return int(row["c"])
+
+    def export_rows(self, limit: int, offset: int = 0) -> list[Engram]:
+        """Bounded page for export; SQL-side LIMIT/OFFSET."""
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT * FROM engrams ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (int(limit), int(offset))).fetchall()
+        return [Engram.from_row(dict(r)) for r in rows]
+
     def delete(self, eid: str) -> bool:
         """Delete an engram by id. Returns True if a row was removed.
         (FTS rows are dropped by the AFTER DELETE trigger.)"""

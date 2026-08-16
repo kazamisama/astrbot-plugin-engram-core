@@ -438,10 +438,7 @@ class DualRouteRetriever:
             atom_score = rel * temporal * float(atom.confidence or 0.5) * float(atom.strength or 0.5)
             if atom_score <= 0.0:
                 continue
-            try:
-                atom_store.touch(atom.atom_id)
-            except Exception:
-                pass
+            touched = False
             for eid in (atom.source_engram_ids or []):
                 parent = svc.store.get(eid)
                 if cue.persona_id is not None:
@@ -452,6 +449,12 @@ class DualRouteRetriever:
                         != cue.scope_id):
                     continue
                 by_engram[eid] = max(by_engram.get(eid, 0.0), atom_score)
+                touched = True
+            if touched:
+                try:
+                    atom_store.touch(atom.atom_id)
+                except Exception:
+                    pass
         items: list[tuple[Engram, float]] = []
         for eid, sc in by_engram.items():
             e = svc.store.get(eid)

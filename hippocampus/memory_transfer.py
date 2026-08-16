@@ -15,10 +15,11 @@ _CONTENT_KEYS = ("content", "text", "summary", "memory", "value")
 
 
 def export_memory_payload(service) -> dict[str, Any]:
+    # SQL-side count + bounded page; do not materialize the whole store.
+    total = service.store.count_all()
+    truncated = total > MAX_EXPORT_ENTRIES
     engrams = []
-    all_rows = service.store.all(limit=10_000_000)
-    truncated = len(all_rows) > MAX_EXPORT_ENTRIES
-    for e in all_rows[:MAX_EXPORT_ENTRIES]:
+    for e in service.store.export_rows(MAX_EXPORT_ENTRIES, offset=0):
         engrams.append({
             "id": e.id,
             "content": e.content,
@@ -43,7 +44,7 @@ def export_memory_payload(service) -> dict[str, Any]:
         "exported_at": time.time(),
         "memory_count": len(engrams),
         "truncated": truncated,
-        "total_available": len(all_rows),
+        "total_available": total,
         "memories": engrams,
     }
 
@@ -203,6 +204,7 @@ def import_memories(service, content: str, fmt: str = "json",
     seen_ids = set(existing_ids)
     imported = 0
     skipped = 0
+    embedded = 0
     for ent in entries:
         if not allow_duplicates:
             if ent.get("id") and ent["id"] in seen_ids:
@@ -237,7 +239,22 @@ def import_memories(service, content: str, fmt: str = "json",
                     embedding=[],
                     embedding_model="",
                 )
-                service.store.upsert(e)
+                # Rebuild the current-embedder vector and derived indexes for
+                # imported active memories; archived rows stay audit-only.
+                if ent["forgotten_at"] <= 0:
+                    try:
+                        e.embedding = service.embedder.embed(e.content or "")
+                        e.embedding_model = service._current_embedding_name
+                        embedded += 1
+                    except Exception:
+                        e.embedding = []
+                    service.store.upsert(e)
+                    try:
+                        service._post_ingest(e)
+                    except Exception as pex:
+                        print("[hippocampus] import _post_ingest failed: " + repr(pex))
+                else:
+                    service.store.upsert(e)
             else:
                 service.store_summary(
                     {"summary": ent["summary"], "key_facts": [], "topics": ent["topics"],
@@ -256,6 +273,7 @@ def import_memories(service, content: str, fmt: str = "json",
                 "entry": ent["content"][:80], "error": repr(exc)})
     service._invalidate_search_cache()
     return {"imported": imported, "skipped": skipped,
+            "embedded": embedded,
             "duplicates": preview["duplicates"],
             "existing_checked": len(existing_keys),
             "errors": preview.get("errors", [])}

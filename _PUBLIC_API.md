@@ -111,6 +111,12 @@ if not star.claim_task("shelly", "diary", holder="instance-a", ttl_seconds=300):
 - `engram_core_helpers.py`（`extra_user_content_parts` 注入协调，根标签 `<engram-context>`）仍是 v1 既有公开面，本文档不覆盖其细节，见 `README.md`。
 - 未列出的 `hippocampus` 内部类（`MemoryService` 上的 `observe / recall / store_diary` 等）虽然存在，但不属于稳定跨插件契约；下游一律经本文件列出的方法调用。
 
+## v1.76.6+ 的内部扩展边界
+
+- `memory_scope_mode`、`identity_aliases`、Prompt 管理页与 WebUI 导入导出属于插件运营面，**不是跨插件公开 API**；外部插件继续使用本文列出的方法即可。
+- 外部写入仍通过 `persona_id` 分区；插件内部新增的 `scope_id` 不要求下游感知。
+- 若未来将 scope 提升为公开契约，会先在本文件补充参数与方法并 bump 契约版本。
+
 ## 契约版本策略
 
 - 公开 API 以本文档为准，契约版本为 `Public API · v1`；方法级稳定性标注在各自小节。
