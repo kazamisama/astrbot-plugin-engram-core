@@ -227,14 +227,56 @@
     return html + "</div>";
   }
 
+  var DONUT_PALETTE = ["#7c9cff", "#53d5fd", "#4ade80", "#b48cff", "#f5c451",
+                      "#ff9f6e", "#ff6b8b", "#8fe3c8", "#e3b7ff", "#a3adc8"];
+
+  function _donutChart(title, data, icon, colors) {
+    var entries = Object.keys(data || {}).filter(function (k) { return Number(data[k]) > 0; });
+    if (!entries.length) return "";
+    var total = entries.reduce(function (sum, k) { return sum + (Number(data[k]) || 0); }, 0);
+    if (total <= 0) return "";
+    var parts = [];
+    var cursor = 0;
+    entries.forEach(function (k, idx) {
+      var v = Number(data[k]) || 0;
+      var start = cursor;
+      var end = cursor + (v / total) * 100;
+      var color = (colors && colors[k]) || DONUT_PALETTE[idx % DONUT_PALETTE.length];
+      parts.push(color + " " + start.toFixed(3) + "% " + end.toFixed(3) + "%");
+      cursor = end;
+    });
+    var gradient = "conic-gradient(" + parts.join(", ") + ")";
+    var legend = "";
+    entries.forEach(function (k, idx) {
+      var v = Number(data[k]) || 0;
+      var pct = Math.round((v / total) * 100);
+      var color = (colors && colors[k]) || DONUT_PALETTE[idx % DONUT_PALETTE.length];
+      legend += '<div class="donut-legend-row">' +
+        '<span class="donut-dot" style="background:' + color + '"></span>' +
+        '<span class="donut-label">' + escapeHtml(k) + "</span>" +
+        '<span class="donut-value">' + v + " · " + pct + "%</span></div>";
+    });
+    return '<div class="chart-card card donut-card">' +
+      '<div class="chart-title"><span class="ico chart-ico">' + icon + "</span>" + escapeHtml(title) + "</div>" +
+      '<div class="donut-body">' +
+        '<div class="donut-ring" style="background:' + gradient + '">' +
+          '<div class="donut-hole"><span class="donut-total">' + total + '</span><span class="donut-caption">条记忆</span></div>' +
+        "</div>" +
+        '<div class="donut-legend">' + legend + "</div>" +
+      "</div></div>";
+  }
+
   function _renderStatCharts(d) {
     var charts = document.getElementById("stat-charts");
     if (!charts) return;
     var html = "";
-    if (d.importance_distribution) html += _barChart("重要性分布", d.importance_distribution);
-    if (d.tier_breakdown) html += _barChart("记忆分层", d.tier_breakdown);
-    if (d.valence_breakdown) html += _barChart("情感价分布", d.valence_breakdown);
-    if (d.stream_breakdown) html += _barChart("双流分布", d.stream_breakdown);
+    if (d.importance_distribution) html += _donutChart("重要性分布", d.importance_distribution, "⭐");
+    if (d.tier_breakdown) html += _donutChart("记忆分层", d.tier_breakdown, "🔥",
+      { hot: "#ff9f6e", warm: "#f5c451", cold: "#7c9cff", unset: "#66708c" });
+    if (d.valence_breakdown) html += _donutChart("情感价分布", d.valence_breakdown, "💗",
+      { positive: "#3ddc91", negative: "#ff6b8b", neutral: "#7c9cff", unscored: "#66708c" });
+    if (d.stream_breakdown) html += _donutChart("双流分布", d.stream_breakdown, "🧭",
+      { what: "#b48cff", where_when: "#53d5fd", untyped: "#66708c" });
     if (d.atom_breakdown) html += _barChart("记忆原子类型", d.atom_breakdown);
     charts.innerHTML = html || emptyBox("暂无分布数据");
   }

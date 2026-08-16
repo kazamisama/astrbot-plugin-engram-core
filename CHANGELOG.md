@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.12] - 2026-08-16
+
+### Changed
+- Overview distribution panels are now donut/pie charts with memory-entry
+  style emoji icons (⭐ importance, 🔥 tier, 💗 valence, 🧭 dual-stream).
+
+
 ## [1.76.11] - 2026-08-16
 
 ### Changed

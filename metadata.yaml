@@ -1,6 +1,6 @@
 name: astrbot_plugin_engram_core
 display_name: Engram 海马体记忆
 author: shirley
-version: 1.76.11
+version: 1.76.12
 repo: https://github.com/kazamisama/astrbot-plugin-engram-core
 description: "类海马体长期记忆框架 (v1.76.7: 双路召回 + 人格隔离 + memory scope + 会话总结/日记 + 原文重总结 + 记忆整合 + 时间化 atom + 可解释加权检索 + WebUI 图谱/统计/提示词/导入导出)"
