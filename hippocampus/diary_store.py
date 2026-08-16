@@ -42,12 +42,12 @@ class DailyLine:
     __slots__ = ("id", "channel_id", "chat_type", "actor_id", "speaker",
                  "content", "ts", "is_bot", "group_id", "group_name",
                  "peer_actor_id", "peer_name", "session_id", "platform",
-                 "persona_id")
+                 "persona_id", "scope_id")
 
     def __init__(self, channel_id="", chat_type="", actor_id="", speaker="",
                  content="", ts=None, is_bot=False, group_id="", group_name="",
                  peer_actor_id="", peer_name="", session_id="", platform="",
-                 persona_id="", id=None):
+                 persona_id="", scope_id="", id=None):
         self.id = id or _new_id()
         self.channel_id = channel_id
         self.chat_type = chat_type
@@ -63,6 +63,7 @@ class DailyLine:
         self.session_id = session_id
         self.platform = platform
         self.persona_id = persona_id
+        self.scope_id = scope_id
 
     @classmethod
     def from_row(cls, row) -> "DailyLine":
@@ -76,17 +77,17 @@ class DailyLine:
             peer_actor_id=d.get("peer_actor_id", ""),
             peer_name=d.get("peer_name", ""),
             session_id=d.get("session_id", ""), platform=d.get("platform", ""),
-            persona_id=d.get("persona_id", ""))
+            persona_id=d.get("persona_id", ""), scope_id=d.get("scope_id", ""))
 
 
 class DiaryChunk:
     __slots__ = ("id", "diary_id", "channel_id", "seq", "text", "embedding",
                  "embedding_model", "ts_start", "ts_end", "created_at",
-                 "persona_id")
+                 "persona_id", "scope_id")
 
     def __init__(self, diary_id="", channel_id="", seq=0, text="",
                  embedding=None, embedding_model="", ts_start=0.0, ts_end=0.0,
-                 id=None, created_at=None, persona_id=""):
+                 id=None, created_at=None, persona_id="", scope_id=""):
         self.id = id or _new_id()
         self.diary_id = diary_id
         self.channel_id = channel_id
@@ -98,6 +99,7 @@ class DiaryChunk:
         self.ts_end = float(ts_end)
         self.created_at = created_at if created_at is not None else _now()
         self.persona_id = persona_id
+        self.scope_id = scope_id
 
     @classmethod
     def from_row(cls, row) -> "DiaryChunk":
@@ -116,7 +118,7 @@ class DiaryChunk:
             text=d.get("text", ""), embedding=emb,
             embedding_model=d.get("embedding_model", ""),
             ts_start=d.get("ts_start", 0.0), ts_end=d.get("ts_end", 0.0),
-            created_at=d.get("created_at"), persona_id=d.get("persona_id", ""))
+            created_at=d.get("created_at"), persona_id=d.get("persona_id", ""), scope_id=d.get("scope_id", ""))
 
 
 class DiaryStore:
@@ -158,8 +160,9 @@ class DiaryStore:
             " actor_id TEXT, speaker TEXT, content TEXT, ts REAL,"
             " is_bot INTEGER, group_id TEXT, group_name TEXT,"
             " peer_actor_id TEXT, peer_name TEXT, session_id TEXT, platform TEXT,"
-            " persona_id TEXT DEFAULT '')")
+            " persona_id TEXT DEFAULT '', scope_id TEXT DEFAULT '')")
         self._add_col_if_missing(c, "daily_messages", "persona_id", "TEXT DEFAULT ''")
+        self._add_col_if_missing(c, "daily_messages", "scope_id", "TEXT DEFAULT ''")
         c.execute("CREATE INDEX IF NOT EXISTS idx_daily_ch_ts ON daily_messages(channel_id, ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_daily_ts ON daily_messages(ts)")
         c.execute(
@@ -167,8 +170,9 @@ class DiaryStore:
             " id TEXT PRIMARY KEY, diary_id TEXT, channel_id TEXT, seq INTEGER,"
             " text TEXT, embedding TEXT, embedding_model TEXT,"
             " ts_start REAL, ts_end REAL, created_at REAL,"
-            " persona_id TEXT DEFAULT '')")
+            " persona_id TEXT DEFAULT '', scope_id TEXT DEFAULT '')")
         self._add_col_if_missing(c, "diary_chunks", "persona_id", "TEXT DEFAULT ''")
+        self._add_col_if_missing(c, "diary_chunks", "scope_id", "TEXT DEFAULT ''")
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_diary ON diary_chunks(diary_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_ch ON diary_chunks(channel_id)")
         c.commit()
@@ -216,13 +220,13 @@ class DiaryStore:
                 (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
                  ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
                  ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
-                 ln.platform, ln.persona_id)
+                 ln.platform, ln.persona_id, ln.scope_id)
                 for ln in self._buffer]
             c.executemany(
                 "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
                 "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
-                "peer_actor_id,peer_name,session_id,platform,persona_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "peer_actor_id,peer_name,session_id,platform,persona_id,scope_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
             c.commit()
             n = len(self._buffer)
@@ -252,64 +256,83 @@ class DiaryStore:
                     (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
                      ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
                      ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
-                     ln.platform, ln.persona_id)
+                     ln.platform, ln.persona_id, ln.scope_id)
                     for ln in self._buffer]
                 c.executemany(
                     "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
                     "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
-                    "peer_actor_id,peer_name,session_id,platform,persona_id) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "peer_actor_id,peer_name,session_id,platform,persona_id,scope_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     rows)
                 c.commit()
                 self._buffer.clear()
         return line
 
-    def channels_with_lines(self, t0: float, t1: float) -> list:
-        """Distinct (channel_id, persona_id) groups with any line in [t0, t1).
-        v1.36: diary is persona-scoped, so each persona in a channel gets its
-        own diary. Returns list[(channel_id, persona_id)]."""
+    def channels_with_lines(self, t0: float, t1: float, *,
+                            include_scope: bool = False) -> list:
+        """Distinct diary source groups with lines in [t0, t1).
+
+        v1.36: diary is persona-scoped, so each persona in a channel gets
+        its own diary. Returns list[(channel_id, persona_id)] unless
+        include_scope=True, in which case the list is
+        [(channel_id, persona_id, scope_id)] (v1.76.12 scope-aware diary).
+        """
         self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
+        if include_scope:
+            rows = c.execute(
+                "SELECT DISTINCT channel_id, COALESCE(persona_id, '') AS persona_id, "
+                "COALESCE(scope_id, '') AS scope_id "
+                "FROM daily_messages WHERE ts >= ? AND ts < ?", (t0, t1)).fetchall()
+            return [(r["channel_id"], r["persona_id"] or "", r["scope_id"] or "")
+                    for r in rows]
         rows = c.execute(
             "SELECT DISTINCT channel_id, COALESCE(persona_id, '') AS persona_id "
             "FROM daily_messages WHERE ts >= ? AND ts < ?", (t0, t1)).fetchall()
         return [(r["channel_id"], r["persona_id"] or "") for r in rows]
 
     def lines_in_range(self, channel_id: str, t0: float, t1: float,
-                       persona_id: str | None = None) -> list:
-        """Time-ordered lines for a channel within [t0, t1). When persona_id
-        is given, restrict to that persona (v1.36 persona-scoped diary)."""
+                       persona_id: str | None = None,
+                       scope_id: str | None = None) -> list:
+        """Time-ordered lines for a channel within [t0, t1).
+
+        persona_id and scope_id restrict the slice to one persona /
+        memory-scope partition when given.
+        """
         self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
-        if persona_id is None:
-            rows = c.execute(
-                "SELECT * FROM daily_messages WHERE channel_id=? "
-                "AND ts >= ? AND ts < ? ORDER BY ts ASC", (channel_id, t0, t1)).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT * FROM daily_messages WHERE channel_id=? "
-                "AND COALESCE(persona_id, '')=? "
-                "AND ts >= ? AND ts < ? ORDER BY ts ASC",
-                (channel_id, persona_id, t0, t1)).fetchall()
+        where = ["channel_id=?", "ts >= ?", "ts < ?"]
+        params: list = [channel_id, t0, t1]
+        if persona_id is not None:
+            where.append("COALESCE(persona_id, '')=?")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '')=?")
+            params.append(scope_id)
+        rows = c.execute(
+            "SELECT * FROM daily_messages WHERE " + " AND ".join(where)
+            + " ORDER BY ts ASC", params).fetchall()
         return [DailyLine.from_row(r) for r in rows]
 
     def find_idle_gap(self, channel_id: str, t0: float, t1: float,
-                      min_gap_seconds: float, persona_id: str | None = None) -> float | None:
+                      min_gap_seconds: float, persona_id: str | None = None,
+                      scope_id: str | None = None) -> float | None:
         """B-3 night cut-point: within [t0, t1), find the END of the LAST
         message that is followed by a silence >= min_gap_seconds (the last
         quiet boundary). Returns that boundary ts, or None if no such gap."""
         self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
-        if persona_id is None:
-            rows = c.execute(
-                "SELECT ts FROM daily_messages WHERE channel_id=? "
-                "AND ts >= ? AND ts < ? ORDER BY ts ASC", (channel_id, t0, t1)).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT ts FROM daily_messages WHERE channel_id=? "
-                "AND COALESCE(persona_id, '')=? "
-                "AND ts >= ? AND ts < ? ORDER BY ts ASC",
-                (channel_id, persona_id, t0, t1)).fetchall()
+        where = ["channel_id=?", "ts >= ?", "ts < ?"]
+        params: list = [channel_id, t0, t1]
+        if persona_id is not None:
+            where.append("COALESCE(persona_id, '')=?")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '')=?")
+            params.append(scope_id)
+        rows = c.execute(
+            "SELECT ts FROM daily_messages WHERE " + " AND ".join(where)
+            + " ORDER BY ts ASC", params).fetchall()
         tss = [r["ts"] for r in rows]
         if len(tss) < 2:
             return None
@@ -328,26 +351,25 @@ class DiaryStore:
         return cur.rowcount or 0
 
     def purge_lines_in_range(self, channel_id: str, t0: float, t1: float,
-                             persona_id: str | None = None) -> int:
-        """FIX (v1.41) for BUG-3 + BUG-7: drop the raw lines that were
-        consumed by a diary write so a re-run of run_daily_diary (manual
-        /mem diary or a delayed scheduler tick) does not reproduce the
-        same diary. Bounded by [t0, t1). persona_id filters to a
-        single persona's slice when given.
+                             persona_id: str | None = None,
+                             scope_id: str | None = None) -> int:
+        """Drop the raw lines consumed by a diary write.
+
+        Bounded by [t0, t1). persona_id / scope_id restrict the purge to
+        a single diary partition slice.
         """
         self.flush_now()  # BUG-7: pending buffer must be flushed before range purge
         c = self._ensure_conn()
-        if persona_id is None:
-            cur = c.execute(
-                "DELETE FROM daily_messages WHERE channel_id=? "
-                "AND ts >= ? AND ts < ?",
-                (channel_id, t0, t1))
-        else:
-            cur = c.execute(
-                "DELETE FROM daily_messages WHERE channel_id=? "
-                "AND COALESCE(persona_id, '')=? "
-                "AND ts >= ? AND ts < ?",
-                (channel_id, persona_id, t0, t1))
+        where = ["channel_id=?", "ts >= ?", "ts < ?"]
+        params: list = [channel_id, t0, t1]
+        if persona_id is not None:
+            where.append("COALESCE(persona_id, '')=?")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '')=?")
+            params.append(scope_id)
+        cur = c.execute(
+            "DELETE FROM daily_messages WHERE " + " AND ".join(where), params)
         c.commit()
         return cur.rowcount or 0
 
@@ -363,13 +385,13 @@ class DiaryStore:
             (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
              ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
              ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
-             ln.platform, ln.persona_id)
+             ln.platform, ln.persona_id, ln.scope_id)
             for ln in lines]
         c.executemany(
             "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
             "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
-            "peer_actor_id,peer_name,session_id,platform,persona_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "peer_actor_id,peer_name,session_id,platform,persona_id,scope_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows)
         c.commit()
         return len(rows)
@@ -389,28 +411,33 @@ class DiaryStore:
         for ch in chunks:
             c.execute(
                 "INSERT OR REPLACE INTO diary_chunks(id,diary_id,channel_id,seq,"
-                "text,embedding,embedding_model,ts_start,ts_end,created_at,persona_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "text,embedding,embedding_model,ts_start,ts_end,created_at,persona_id,scope_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ch.id, ch.diary_id, ch.channel_id, ch.seq, ch.text,
                  json.dumps(ch.embedding) if ch.embedding else "",
                  ch.embedding_model, ch.ts_start, ch.ts_end, ch.created_at,
-                 getattr(ch, "persona_id", "") or ""))
+                 getattr(ch, "persona_id", "") or "",
+                 getattr(ch, "scope_id", "") or ""))
             n += 1
         c.commit()
         return n
 
-    def all_chunks(self, limit: int = 2000, persona_id: str | None = None) -> list:
+    def all_chunks(self, limit: int = 2000, persona_id: str | None = None,
+                  scope_id: str | None = None) -> list:
         self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
-        if persona_id is None:
-            rows = c.execute(
-                "SELECT * FROM diary_chunks ORDER BY created_at DESC LIMIT ?",
-                (limit,)).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT * FROM diary_chunks WHERE COALESCE(persona_id, '')=? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (persona_id, limit)).fetchall()
+        where = ["1=1"]
+        params: list = []
+        if persona_id is not None:
+            where.append("COALESCE(persona_id, '')=?")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '')=?")
+            params.append(scope_id)
+        rows = c.execute(
+            "SELECT * FROM diary_chunks WHERE " + " AND ".join(where)
+            + " ORDER BY created_at DESC LIMIT ?",
+            (*params, limit)).fetchall()
         return [DiaryChunk.from_row(r) for r in rows]
 
     def chunks_for_diary(self, diary_id: str) -> list:

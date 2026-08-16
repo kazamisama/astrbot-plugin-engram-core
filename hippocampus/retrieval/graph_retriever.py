@@ -229,8 +229,17 @@ def _build_graph_for_service(service) -> GraphStore:
     db_path = getattr(store, "_db_path", None) if store is not None else None
     if db_path is None:
         raise ValueError("GraphRetriever: cannot derive db_path from service.store")
-    if not hasattr(service, "_graph_store") or service._graph_store is None:
-        service._graph_store = GraphStore(db_path)
+    graph = getattr(service, "graph_store", None)
+    if graph is not None:
+        return graph
+    graph = getattr(service, "_graph_store", None)
+    service._graph_store = graph or GraphStore(db_path)
+    # Canonical slot so _ensure_atom_layer() and close() share one
+    # connection with every retriever.
+    service.graph_store = service._graph_store
+    activation = getattr(service, "activation", None)
+    if activation is not None:
+        activation._graph = service._graph_store
     return service._graph_store
 
 

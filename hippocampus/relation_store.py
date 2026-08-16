@@ -225,7 +225,7 @@ class RelationStore:
         """Remove every relation whose source engram was hard-deleted."""
         with self._ensure_conn() as conn:
             cur = conn.execute(
-                "DELETE FROM relations WHERE source_engram_id = ?",
+                "DELETE FROM llm_relations WHERE source_engram_id = ?",
                 (engram_id,))
             return cur.rowcount if hasattr(cur, "rowcount") else 0
 

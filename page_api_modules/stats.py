@@ -71,7 +71,7 @@ class StatsHandler:
                 else:
                     active_engrams += 1
                 imp = max(0.0, min(1.0, float(getattr(e, "importance", 0.0) or 0.0)))
-                bucket = f"{min(1.0, round(imp * 10) / 10):.1f}"
+                bucket = f"{min(0.9, int(imp * 10) / 10):.1f}"
                 if bucket == "0.0":
                     bucket = "0.1"
                 importance_distribution[bucket] = importance_distribution.get(bucket, 0) + 1

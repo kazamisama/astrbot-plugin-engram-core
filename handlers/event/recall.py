@@ -187,4 +187,7 @@ class RecallHandler:
         cfg = getattr(self.service, "cfg", None)
         iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
         persona_scope = (meta.get("persona_id") or "") if iso else None
-        yield event.plain_result(format_debug(self.service, query, persona_id=persona_scope))
+        scope_scope = (meta.get("scope_id") or "") if iso else None
+        yield event.plain_result(format_debug(
+            self.service, query, persona_id=persona_scope,
+            scope_id=scope_scope))

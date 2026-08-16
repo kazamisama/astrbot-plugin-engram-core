@@ -1,5 +1,29 @@
 # Changelog
 
+
+## [Unreleased]
+
+### Fixed
+- Persisted prompt overrides now propagate to the actual LLM consumers
+  (encoder / summarizer / diary / consolidation) via `cfg._prompt_namespace`.
+- `SpreadingActivation.activate_with_context()` accepts `session_id` again,
+  so session-context recall seeds are no longer silently disabled.
+- Hard-delete cascade now targets `llm_relations` instead of the unrelated
+  SemanticStore `relations` table.
+- `GraphRetriever` shares the service's canonical `graph_store` connection
+  instead of leaking a second SQLite connection.
+- Working-memory prepend and spread route now enforce `scope_id` /
+  `memory_types` filters.
+- Diary daily-message cache and diary chunks are now memory-scope aware.
+- `/mem debug` forwards scope and uses the live dual-route weights.
+- Dashboard importance distribution buckets floor to 0.1-wide bins.
+- Full-graph v2 shared edges now use a per-memory ownership link table:
+  deleting the first owner no longer removes an edge still referenced by
+  other memories.
+- `BackupManager.restore()` restores into the live database through the
+  SQLite online backup API instead of replacing the open database file
+  with `shutil.copy2`.
+
 ## [1.76.12] - 2026-08-16
 
 ### Changed

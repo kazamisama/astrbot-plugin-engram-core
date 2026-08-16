@@ -73,6 +73,12 @@ class MemoryService:
         # are namespaced per store instance so two MemoryService objects with
         # different DBs do not overwrite each other's prompt customizations.
         self._prompt_namespace = self.store._db_path
+        # Prompt consumers (encoder / summarizer / diary / consolidation)
+        # receive this cfg object and read cfg._prompt_namespace. Keep the
+        # two in sync so persisted per-store overrides actually reach the
+        # LLM call sites instead of silently falling back to the global
+        # namespace.
+        self.cfg._prompt_namespace = self._prompt_namespace
         try:
             from .prompts import set_store_overrides as _set_store_overrides
             _loaded_prompts = {}
@@ -514,7 +520,8 @@ class MemoryService:
                 peer_name=meta.get("peer_name", "") or "",
                 session_id=meta.get("session_id", "") or "",
                 platform=meta.get("platform", "") or "",
-                persona_id=meta.get("persona_id", "") or ""))
+                persona_id=meta.get("persona_id", "") or "",
+                scope_id=meta.get("scope_id", "") or ""))
         except Exception as ex:
             print("[hippocampus] cache_daily_line error: " + repr(ex))
 
@@ -591,7 +598,8 @@ class MemoryService:
                         text=ptext, embedding=emb,
                         embedding_model=self._current_embedding_name,
                         ts_start=ts0, ts_end=ts1,
-                        persona_id=getattr(e, "persona_id", "") or ""))
+                        persona_id=getattr(e, "persona_id", "") or "",
+                        scope_id=getattr(e, "scope_id", "") or ""))
                 if chunks:
                     ds.add_chunks(chunks)
             except Exception as ex:
@@ -623,7 +631,8 @@ class MemoryService:
         if not qvec:
             return []
         try:
-            chunks = ds.all_chunks(limit=2000, persona_id=persona_id)
+            chunks = ds.all_chunks(limit=2000, persona_id=persona_id,
+                                    scope_id=scope_id)
         except Exception:
             chunks = []
         scored = []
@@ -722,28 +731,33 @@ class MemoryService:
         # night window past next_start so cross-midnight sessions show up.
         search_end = next_start + night_h * 3600.0
         try:
-            channels = ds.channels_with_lines(d_start, search_end)
+            channels = ds.channels_with_lines(d_start, search_end,
+                                              include_scope=True)
         except Exception as ex:
             print("[hippocampus] run_daily_diary channels error: " + repr(ex))
             channels = []
-        for ch, pid in channels:
+        for group in channels:
+            ch, pid, scid = group if len(group) == 3 else (group[0], group[1], "")
             try:
-                # Idempotency: skip (channel, persona, day) already written.
-                if self._existing_diary_for_day(ch, pid, day_label) is not None:
+                # Idempotency: skip (channel, persona, scope, day) already
+                # written.
+                if self._existing_diary_for_day(ch, pid, day_label,
+                                                scope_id=scid) is not None:
                     continue
                 t0 = resolve_cut(ds, ch, d_start,
                                   night_hours=night_h,
                                   min_gap_seconds=gap,
-                                  persona_id=pid)
+                                  persona_id=pid, scope_id=scid)
                 # FIX (v1.41) BUG-2: when no idle gap exists in the night
                 # window, extend the diary to the end of the night window
                 # rather than clamping at today 00:00.
                 t1 = resolve_cut(ds, ch, next_start,
                                   night_hours=night_h,
                                   min_gap_seconds=gap,
-                                  persona_id=pid,
+                                  persona_id=pid, scope_id=scid,
                                   fallback=search_end)
-                lines = ds.lines_in_range(ch, t0, t1, persona_id=pid)
+                lines = ds.lines_in_range(ch, t0, t1, persona_id=pid,
+                                          scope_id=scid)
                 if not lines:
                     continue
                 diary = writer.compose(lines, day_label)
@@ -756,6 +770,7 @@ class MemoryService:
                     "platform": first.platform,
                     "channel_id": ch,
                     "persona_id": pid,
+                    "scope_id": getattr(first, "scope_id", scid) or scid,
                     "chat_type": first.chat_type,
                     "group_id": first.group_id,
                     "group_name": first.group_name,
@@ -770,7 +785,8 @@ class MemoryService:
                     # the same diary from the same raw lines.
                     if consume:
                         try:
-                            ds.purge_lines_in_range(ch, t0, t1, persona_id=pid)
+                            ds.purge_lines_in_range(
+                                ch, t0, t1, persona_id=pid, scope_id=scid)
                         except Exception as pex:
                             print("[hippocampus] diary cache purge error: " + repr(pex))
             except Exception as ex:
@@ -785,7 +801,7 @@ class MemoryService:
         return (written, failed)
 
     def _existing_diary_for_day(self, channel_id: str, persona_id: str,
-                               day_label: str):
+                               day_label: str, scope_id: str | None = None):
         """FIX (v1.41) BUG-3: scan active diary engrams for an existing
         (channel_id, persona_id, day:<day_label>) triple. Returns the
         Engram id or None. Cheap O(N) over active engrams; runs at most
@@ -801,6 +817,8 @@ class MemoryService:
                 if (getattr(r, "channel_id", "") or "") != channel_id:
                     continue
                 if (getattr(r, "persona_id", "") or "") != (persona_id or ""):
+                    continue
+                if scope_id is not None and (getattr(r, "scope_id", "") or "") != (scope_id or ""):
                     continue
                 tags = getattr(r, "tags", None) or []
                 if any(str(t) == day_tag for t in tags):
@@ -896,7 +914,7 @@ class MemoryService:
         """Cascade a hard delete through relation / semantic / graph / atom."""
         try:
             rs = getattr(self, "relation_store", None)
-            if rs is not None and rs.is_open():
+            if rs is not None:
                 rs.delete_by_source_engram(engram_id)
         except Exception as exc:
             print("[hippocampus] relation cascade error: " + repr(exc))
@@ -1240,6 +1258,9 @@ class MemoryService:
             if cue.persona_id is not None:
                 head = [e for e in head
                         if (getattr(e, "persona_id", "") or "") == cue.persona_id]
+            if cue.scope_id is not None:
+                head = [e for e in head
+                        if (getattr(e, "scope_id", "") or "") == cue.scope_id]
             if head:
                 # v1.72 (issue 2026-07-29 #1): dedup against completer
                 # result by engram.id. Without this, an engram present
@@ -1740,14 +1761,20 @@ class MemoryService:
     def _dual_route_config(self):
         from .retrieval.dual_route import DualRouteConfig
         cfg = self.cfg
+
+        def _f(name: str, default: float) -> float:
+            # Use `is not None` rather than `or default` so a legitimate
+            # 0.0 config value (e.g. document_route_weight=0) survives.
+            val = getattr(cfg, name, None)
+            return float(val) if val is not None else default
         return DualRouteConfig(
-            score_alpha=float(getattr(cfg, "score_alpha", 0.5) or 0.5),
-            score_beta=float(getattr(cfg, "score_beta", 0.25) or 0.25),
-            score_gamma=float(getattr(cfg, "score_gamma", 0.25) or 0.25),
-            recency_decay_rate=float(getattr(cfg, "recency_decay_rate", 0.01) or 0.0),
-            document_route_weight=float(getattr(cfg, "document_route_weight", 0.65) or 0.65),
-            graph_route_weight=float(getattr(cfg, "graph_route_weight", 0.35) or 0.35),
-            cross_route_bonus=float(getattr(cfg, "cross_route_bonus", 0.08) or 0.0),
+            score_alpha=_f("score_alpha", 0.5),
+            score_beta=_f("score_beta", 0.25),
+            score_gamma=_f("score_gamma", 0.25),
+            recency_decay_rate=_f("recency_decay_rate", 0.01),
+            document_route_weight=_f("document_route_weight", 0.65),
+            graph_route_weight=_f("graph_route_weight", 0.35),
+            cross_route_bonus=_f("cross_route_bonus", 0.08),
             dynamic_route_weighting=bool(getattr(cfg, "dynamic_route_weighting", True)),
         )
 

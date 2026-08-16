@@ -88,6 +88,17 @@ class GraphStore:
                     ON graph_edges_v2(source_node_id, target_node_id, relation_type);
                 CREATE INDEX IF NOT EXISTS idx_graph_edges_v2_mem
                     ON graph_edges_v2(source_memory_id);
+                -- v1.76.12 review fix: an edge merged across several
+                -- memories is owned by all of them through this link table.
+                -- Deleting one source memory removes only its link; the
+                -- edge row survives while any other source remains.
+                CREATE TABLE IF NOT EXISTS graph_edge_memories_v2 (
+                    edge_id INTEGER NOT NULL,
+                    source_memory_id TEXT NOT NULL,
+                    PRIMARY KEY (edge_id, source_memory_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_graph_edge_memories_v2_mem
+                    ON graph_edge_memories_v2(source_memory_id);
                 CREATE TABLE IF NOT EXISTS graph_entries_v2 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     entry_key TEXT NOT NULL UNIQUE,
@@ -118,6 +129,20 @@ class GraphStore:
                 USING fts5(content, entry_id UNINDEXED, tokenize='unicode61');
                 """
             )
+
+            # Backfill edge ownership links for databases created before
+            # graph_edge_memories_v2 existed. graph_edges_v2.source_memory_id
+            # covers the first owner; graph_entries_v2.edge_id recovers the
+            # remaining owners that were merged into the same edge.
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO graph_edge_memories_v2
+                    (edge_id, source_memory_id)
+                SELECT id, source_memory_id FROM graph_edges_v2
+                UNION
+                SELECT edge_id, source_memory_id FROM graph_entries_v2
+                WHERE edge_id IS NOT NULL
+                """)
 
     def close(self) -> None:
         with self._lock:
@@ -344,6 +369,13 @@ class GraphStore:
                 out[node.node_key] = int(row["id"])
         return out
 
+    @staticmethod
+    def _link_edge_memory_v2(conn, edge_id: int, source_memory_id: str) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO graph_edge_memories_v2"
+            "(edge_id, source_memory_id) VALUES (?,?)",
+            (edge_id, source_memory_id))
+
     def add_edges_v2(self, edges: list[GraphEdgeV2],
                      node_map: dict[str, int]) -> dict[str, int]:
         now = self._now_v2()
@@ -364,6 +396,7 @@ class GraphStore:
                         "status=?, metadata=?, updated_at=? WHERE id=? ",
                         (edge.weight, edge.confidence, edge.status,
                          json.dumps(edge.metadata, ensure_ascii=False), now, eid))
+                    self._link_edge_memory_v2(self._conn, eid, edge.source_memory_id)
                     out[edge.edge_key] = eid
                     continue
                 sem = self._conn.execute(
@@ -379,6 +412,7 @@ class GraphStore:
                         "UPDATE graph_edges_v2 SET confidence=?, weight=?, "
                         "updated_at=? WHERE id=?",
                         (merged_conf, merged_weight, now, eid))
+                    self._link_edge_memory_v2(self._conn, eid, edge.source_memory_id)
                     out[edge.edge_key] = eid
                     continue
                 cur = self._conn.execute(
@@ -391,7 +425,9 @@ class GraphStore:
                      edge.source_memory_id, edge.weight, edge.confidence,
                      edge.status,
                      json.dumps(edge.metadata, ensure_ascii=False), now, now))
-                out[edge.edge_key] = int(cur.lastrowid)
+                eid = int(cur.lastrowid)
+                self._link_edge_memory_v2(self._conn, eid, edge.source_memory_id)
+                out[edge.edge_key] = eid
         return out
 
 
@@ -468,10 +504,22 @@ class GraphStore:
                 self._conn.execute(
                     f"DELETE FROM graph_entries_v2 WHERE id IN ({ph})", entry_ids)
                 stats["entries"] = len(entry_ids)
-            cur = self._conn.execute(
-                "DELETE FROM graph_edges_v2 WHERE source_memory_id=? ",
+            # Ownership links decide edge lifetime. An edge shared with
+            # another memory survives; its link for this memory is removed.
+            edge_rows = self._conn.execute(
+                "SELECT edge_id FROM graph_edge_memories_v2 "
+                "WHERE source_memory_id=? ",
+                (source_memory_id,)).fetchall()
+            edge_ids = [int(r["edge_id"]) for r in edge_rows]
+            self._conn.execute(
+                "DELETE FROM graph_edge_memories_v2 WHERE source_memory_id=? ",
                 (source_memory_id,))
-            stats["edges"] = cur.rowcount if hasattr(cur, "rowcount") else 0
+            for eid in edge_ids:
+                cur = self._conn.execute(
+                    "DELETE FROM graph_edges_v2 WHERE id=? AND NOT EXISTS "
+                    "(SELECT 1 FROM graph_edge_memories_v2 WHERE edge_id=?)",
+                    (eid, eid))
+                stats["edges"] += cur.rowcount if hasattr(cur, "rowcount") else 0
             self._conn.execute(
                 "DELETE FROM graph_nodes_v2 WHERE id NOT IN "
                 "(SELECT DISTINCT node_id FROM graph_entry_nodes_v2)")
@@ -500,14 +548,16 @@ class GraphStore:
                     {where}
                     GROUP BY gn.id ORDER BY gn.id ASC""", params).fetchall()
             edges = self._conn.execute(
-                f"""SELECT DISTINCT e.id, e.edge_key, e.source_node_id,
+                f"""SELECT e.id, e.edge_key, e.source_node_id,
                            e.target_node_id, e.relation_type,
-                           e.source_memory_id, e.weight, e.confidence,
-                           e.status, e.metadata
+                           e.weight, e.confidence, e.status, e.metadata,
+                           MIN(gem.source_memory_id) AS memory_id
                     FROM graph_edges_v2 e
+                    JOIN graph_edge_memories_v2 gem ON gem.edge_id = e.id
                     JOIN graph_entries_v2 ge
-                      ON ge.source_memory_id = e.source_memory_id
-                    {where} ORDER BY e.id ASC""", params).fetchall()
+                      ON ge.source_memory_id = gem.source_memory_id
+                    {where}
+                    GROUP BY e.id ORDER BY e.id ASC""", params).fetchall()
             memories = self._conn.execute(
                 f"""SELECT ge.source_memory_id, ge.session_id, ge.persona_id,
                            ge.scope_id, ge.content, ge.metadata
@@ -536,7 +586,7 @@ class GraphStore:
                 "id": int(r["id"]), "key": r["edge_key"],
                 "source": s, "target": t,
                 "relation_type": r["relation_type"],
-                "memory_id": r["source_memory_id"],
+                "memory_id": r["memory_id"],
                 "weight": float(r["weight"] or 1.0),
                 "confidence": float(r["confidence"] or 0.8),
                 "status": r["status"],

@@ -39,6 +39,28 @@ class BackupRecord:
     byte_size: int
 
 
+def _restore_sqlite_live(src_path: str, dst_path: str) -> None:
+    """Restore a backup into an existing, already-open SQLite database.
+
+    Uses sqlite3's online backup API with the live db path as the
+    destination connection. This writes pages through SQLite into the same
+    database file the service connections have open (instead of replacing
+    the file with shutil.copy2, which would corrupt/desynchronise live
+    connections on Windows).
+    """
+    src = sqlite3.connect(src_path)
+    try:
+        src.execute("PRAGMA busy_timeout=5000")
+        dst = sqlite3.connect(dst_path)
+        try:
+            dst.execute("PRAGMA busy_timeout=10000")
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+
 def _copy_sqlite_consistent(src_path: str, dst_path: str) -> None:
     """Copy a live SQLite database to dst_path via the online backup API.
 
@@ -164,9 +186,14 @@ class BackupManager:
     def restore(self, backup_id: str,
                 acquire: Callable[[], None] | None = None,
                 release: Callable[[], None] | None = None) -> bool:
-        """Overwrite db_path with the named backup. Returns True on
-        success. Caller is responsible for re-running migrations if
-        restoring to a different schema version.
+        """Restore the named backup into db_path. Returns True on success.
+
+        When the live database already exists we restore through SQLite's
+        online backup API into the same file, so existing service
+        connections stay valid and the file is never replaced underneath
+        open handles. A fresh destination (no live db yet) falls back to a
+        plain file copy. Callers should still restart the plugin so schema
+        migrations can run against the restored version.
         """
         with self._lock:
             src = os.path.join(self._backup_dir, backup_id + ".db")
@@ -175,7 +202,10 @@ class BackupManager:
             if acquire is not None:
                 acquire()
             try:
-                shutil.copy2(src, self._db_path)
+                if not os.path.exists(self._db_path):
+                    shutil.copy2(src, self._db_path)
+                    return True
+                _restore_sqlite_live(src, self._db_path)
                 return True
             finally:
                 if release is not None:

@@ -497,6 +497,8 @@ class DualRouteRetriever:
             if cue.scope_id is not None and (
                     (getattr(engram, "scope_id", "") or "") != cue.scope_id):
                 continue
+            if cue.memory_types and (getattr(engram, "memory_type", "") or "") not in cue.memory_types:
+                continue
             items.append((engram, float(act)))
         items.sort(key=lambda x: x[1], reverse=True)
         k = self.cfg.spread_candidate_k

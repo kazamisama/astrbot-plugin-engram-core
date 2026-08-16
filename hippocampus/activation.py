@@ -190,6 +190,7 @@ class SpreadingActivation:
                               depth=None, decay=None, floor=None,
                               high_importance_count: int = 5,
                               recent_count: int = 3,
+                              session_id: str = "",
                               persona_id: str | None = None,
                               scope_id: str | None = None) -> dict:
         """One-shot helper: build context seeds, run activation, return
@@ -201,6 +202,7 @@ class SpreadingActivation:
         seeds = self.build_context_seeds(
             matched_entity_ids=matched_entity_ids,
             actor_id=actor_id,
+            session_id=session_id,
             high_importance_count=high_importance_count,
             recent_count=recent_count,
             persona_id=persona_id,

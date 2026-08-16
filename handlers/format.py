@@ -605,8 +605,8 @@ def format_debug(service, query, k=5, *, persona_id=None, scope_id=None):
     if not query:
         return t("debug.usage")
     cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None, persona_id=persona_id, scope_id=scope_id)
-    from hippocampus.retrieval import DualRouteRetriever, DualRouteConfig
-    dr = DualRouteRetriever(service, DualRouteConfig())
+    from hippocampus.retrieval import DualRouteRetriever
+    dr = DualRouteRetriever(service, service._dual_route_config())
 
     # 1) Run search() to know the actual final top-k (post-MMR + truncation).
     res = dr.search(cue)

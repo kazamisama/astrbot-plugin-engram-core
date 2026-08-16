@@ -48,6 +48,6 @@ class BackupHandler:
             if not ok:
                 return self.utils.err("restore returned false")
             return self.utils.ok({"restored": backup_id,
-                                  "note": "service connection may need reopen"})
+                                  "note": "restored in place via SQLite backup API; restart AstrBot to run migrations"})
         except Exception as e:
             return self.utils.err("restore failed: " + repr(e))
