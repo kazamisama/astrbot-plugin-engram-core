@@ -1,18 +1,20 @@
-"""B10 BackupManager: raw .db file copies with retention policy.
+"""B10 BackupManager: consistent .db backups with retention policy.
 
 Design (B10 Q1-Q3):
-- Format: raw SQLite .db copy + .json sidecar with metadata (created_at,
+- Format: SQLite .db backup + .json sidecar with metadata (created_at,
   reason, hippocampus __version__, EXPORT_FORMAT_VERSION, schema hash,
-  engram_count). This is the simplest, fastest, and most reliable
-  backup; cross-version restore just runs run_migrations on the copy.
+  engram_count). Cross-version restore just runs run_migrations on the
+  copy.
 - Schedule: caller-driven (PluginInitializer background thread; interval
   comes from MemoryConfig.backup_interval_hours, 0 disables).
 - Retention: keep_last + keep_weekly + keep_monthly, evaluated on every
   cleanup. weekly = 1 of every 7 most recent days past the keep_last
   window; monthly = 1 per 30-day bucket. Cheap heuristic, not LRU.
-- All public methods are sync; SQLite connections are closed for the
-  duration of the copy so the .db file on disk is in a consistent state
-  (avoids WAL-half-written copies on Windows).
+- v1.76.4: create() uses sqlite3's online backup API instead of a raw
+  file copy. The backup API reads through a single SQLite connection and
+  produces a transactionally-consistent snapshot even while the live
+  service keeps WAL connections open (previously shutil.copy2 could miss
+  uncheckpointed -wal pages on Windows).
 """
 from __future__ import annotations
 import json
@@ -37,13 +39,49 @@ class BackupRecord:
     byte_size: int
 
 
+def _copy_sqlite_consistent(src_path: str, dst_path: str) -> None:
+    """Copy a live SQLite database to dst_path via the online backup API.
+
+    Unlike shutil.copy2, this does not depend on the source being
+    quiescent or fully checkpointed: the backup connection takes a read
+    transaction and copies committed pages, including WAL contents, into
+    a standalone destination database. On any SQLite failure we fall back
+    to a raw file copy so a non-SQLite / unreadable source still produces
+    a best-effort artifact.
+    """
+    tmp = dst_path + ".partial"
+    try:
+        src = sqlite3.connect(src_path)
+        try:
+            src.execute("PRAGMA busy_timeout=5000")
+            dst = sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        if os.path.exists(dst_path):
+            os.remove(dst_path)
+        os.replace(tmp, dst_path)
+    except Exception as ex:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        print("[hippocampus] online sqlite backup failed, falling back to "
+              "raw copy: " + repr(ex))
+        shutil.copy2(src_path, dst_path)
+
+
 class BackupManager:
     """Single-DB backup manager. One instance per .db path.
 
-    The manager is intentionally stateless w.r.t. the .db file contents
-    - it just copies the file and runs retention. The store layer
-    (HippocampalStore) is responsible for closing its connection during
-    the copy via the optional `acquire` callback.
+    create() opens its own short-lived SQLite connections and uses the
+    online backup API, so callers do NOT need to close the live service
+    connections. The optional acquire/release callbacks remain available
+    for callers that still want to pause writers before copying.
     """
 
     def __init__(self, db_path: str, backup_dir: str,
@@ -62,9 +100,10 @@ class BackupManager:
         """Copy db_path -> backup_dir/hippocampus-{ts}-{reason}.db
         plus a .json sidecar.
 
-        `acquire` / `release` are called around the copy so callers can
-        pause writers / close the connection. Both are optional; raw
-        file copy on a quiescent .db is safe (no writes == no torn copy).
+        `acquire` / `release` are optional and called around the copy for
+        callers that want to pause writers. They are no longer required
+        for consistency: the online backup API takes a transactional
+        snapshot through a separate SQLite connection.
         """
         ts = time.time()
         ts_str = _fmt_ts(ts)
@@ -80,7 +119,7 @@ class BackupManager:
                 if not os.path.exists(self._db_path):
                     raise FileNotFoundError(
                         "source db not found: " + self._db_path)
-                shutil.copy2(self._db_path, dst)
+                _copy_sqlite_consistent(self._db_path, dst)
                 size = os.path.getsize(dst)
                 engram_count = _safe_count_engrams(dst)
                 rec = BackupRecord(

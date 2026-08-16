@@ -27,6 +27,7 @@
         <button class="tab" data-tab="graph">关系图谱</button>
         <button class="tab" data-tab="recall">召回测试</button>
         <button class="tab" data-tab="backups">备份</button>
+        <button class="tab" data-tab="prompts">提示词</button>
       </nav>
 
       <main>
@@ -36,14 +37,26 @@
             <button class="btn btn-ghost btn-sm" id="btn-refresh-stats">刷新统计</button>
           </div>
           <div class="cards" id="stat-cards"></div>
+          <div class="chart-grid" id="stat-charts"></div>
         </section>
 
         <!-- 记忆列表 -->
         <section class="panel" data-panel="memories">
           <div class="toolbar">
+            <select id="mem-status" class="input input-sm" title="状态">
+              <option value="active">活跃</option>
+              <option value="archived">已归档</option>
+              <option value="all">全部</option>
+            </select>
             <input id="mem-search" class="input input-grow" placeholder="按内容检索（摘要/原文/用户标识，留空=全部）" />
             <input id="mem-k" class="input input-sm" type="number" value="50" min="1" max="500" title="数量" />
             <button class="btn" id="btn-load-mem">加载</button>
+            <button class="btn btn-ghost btn-sm" id="btn-mem-batch-soft">批量软删除</button>
+            <button class="btn btn-danger btn-sm" id="btn-mem-batch-hard">批量永久删除</button>
+            <button class="btn btn-ghost btn-sm" id="btn-mem-export">导出JSON</button>
+            <input id="mem-import-file" class="input input-sm" type="file" accept=".json,.csv" title="导入JSON/CSV" />
+            <button class="btn btn-ghost btn-sm" id="btn-mem-import">预检</button>
+            <button class="btn btn-sm" id="btn-mem-import-run">导入</button>
           </div>
           <div class="mem-grid" id="mem-rows">
             <div class="empty">点击「加载」查看记忆</div>
@@ -102,6 +115,7 @@
           <div class="toolbar">
             <input id="rc-query" class="input input-grow" placeholder="输入查询语句…" />
             <select id="rc-mode" class="input input-sm">
+              <option value="dual" selected>dual（可解释）</option>
               <option value="hybrid">hybrid</option>
               <option value="vector">vector</option>
               <option value="fts">fts</option>
@@ -110,6 +124,16 @@
             <button class="btn" id="btn-recall">召回</button>
           </div>
           <div id="rc-out"><div class="empty">输入查询并点击「召回」</div></div>
+        </section>
+
+        <!-- 提示词 -->
+        <section class="panel" data-panel="prompts">
+          <div class="toolbar">
+            <button class="btn" id="btn-load-prompts">加载模板</button>
+            <span class="toolbar-hint" id="prompts-count"></span>
+          </div>
+          <div class="prompt-grid" id="prompt-list"></div>
+          <div class="detail" id="prompt-detail"></div>
         </section>
 
         <!-- 备份 -->

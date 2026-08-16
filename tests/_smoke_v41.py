@@ -92,12 +92,12 @@ def test_summary_mode_stores_one_engram():
     h = ObserveHandler(svc)
     ev1 = _Event("g1", "A", "\u4eca\u665a\u5403\u706b\u9505\u5417")
     ev2 = _Event("g1", "B", "\u884c\u554a")
-    asyncio.get_event_loop().run_until_complete(h.handle_message(ev1))
-    asyncio.get_event_loop().run_until_complete(h.handle_message(ev2))
+    asyncio.run(h.handle_message(ev1))
+    asyncio.run(h.handle_message(ev2))
     # bot reply
     class _Resp:
         completion_text = "\u6211\u5e2e\u4f60\u4eec\u8ba2\u4f4d"
-    asyncio.get_event_loop().run_until_complete(h.handle_bot_message(ev2, _Resp.completion_text))
+    asyncio.run(h.handle_bot_message(ev2, _Resp.completion_text))
     # nothing stored yet (not flushed)
     assert len(svc.store.all(limit=10)) == 0, "should not store before flush"
     # force flush
@@ -122,7 +122,7 @@ def test_debug_per_message_ingest():
     svc.cfg.session_aggregate_enabled = False
     h = ObserveHandler(svc)
     ev = _Event("g2", "A", "\u4f60\u597d\u4e16\u754c\u6d4b\u8bd5")
-    asyncio.get_event_loop().run_until_complete(h.handle_message(ev))
+    asyncio.run(h.handle_message(ev))
     # per-message ingest stored one raw engram immediately
     rows = svc.store.all(limit=10)
     assert len(rows) >= 1, "debug per-message ingest should store raw"

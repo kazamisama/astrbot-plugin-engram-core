@@ -188,11 +188,19 @@ class DiaryHandler:
         if hard:
             try:
                 service.store.delete(eid)
+                try:
+                    service._invalidate_search_cache()
+                except Exception:
+                    pass
                 return self.utils.ok({"id": eid, "mode": "hard"})
             except Exception as e:
                 return self.utils.error("hard delete failed: " + repr(e))
         try:
             service.store.soft_forget(eid)
+            try:
+                service._invalidate_search_cache()
+            except Exception:
+                pass
             return self.utils.ok({"id": eid, "mode": "soft"})
         except Exception as e:
             return self.utils.error("soft forget failed: " + repr(e))

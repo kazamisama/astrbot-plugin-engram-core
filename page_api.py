@@ -45,6 +45,8 @@ from page_api_modules import (
     BackupHandler,
     DiaryHandler,
     PersonaHandler,
+    PromptHandler,
+    TransferHandler,
 )
 
 # FIX (v1.48): renamed to match metadata.yaml: name (was
@@ -112,6 +114,8 @@ class PluginPageApi:
         self.backup_handler = BackupHandler(self.utils)
         self.diary_handler = DiaryHandler(self.utils)
         self.persona_handler = PersonaHandler(self.utils)
+        self.prompt_handler = PromptHandler(self.utils)
+        self.transfer_handler = TransferHandler(self.utils)
 
     def _service(self):
         """Return the live MemoryService or None if not initialized."""
@@ -145,6 +149,14 @@ class PluginPageApi:
                  ["POST"], "Hippocampus memory delete")
         register(f"{PAGE_API_PREFIX}/memories/update", self._update_memory,
                  ["POST"], "Hippocampus memory update")
+        register(f"{PAGE_API_PREFIX}/memories/restore", self._restore_memory,
+                 ["POST"], "Hippocampus memory restore")
+        register(f"{PAGE_API_PREFIX}/memories/source", self._memory_source,
+                 ["GET"], "Hippocampus memory source transcript")
+        register(f"{PAGE_API_PREFIX}/memories/resummarize", self._resummarize_memory,
+                 ["POST"], "Hippocampus memory re-summarize")
+        register(f"{PAGE_API_PREFIX}/memories/batch-delete", self._batch_delete_memories,
+                 ["POST"], "Hippocampus memory batch delete")
         register(f"{PAGE_API_PREFIX}/recall/test", self._test_recall,
                  ["POST"], "Hippocampus recall test")
         register(f"{PAGE_API_PREFIX}/graph/overview", self._graph_overview,
@@ -195,6 +207,20 @@ class PluginPageApi:
                  ["POST"], "Hippocampus persona update")
         register(f"{PAGE_API_PREFIX}/personas/delete", self._delete_persona,
                  ["POST"], "Hippocampus persona delete")
+        register(f"{PAGE_API_PREFIX}/prompts", self._list_prompts,
+                 ["GET"], "Hippocampus prompt list")
+        register(f"{PAGE_API_PREFIX}/prompts/detail", self._get_prompt,
+                 ["GET"], "Hippocampus prompt detail")
+        register(f"{PAGE_API_PREFIX}/prompts/update", self._update_prompt,
+                 ["POST"], "Hippocampus prompt update")
+        register(f"{PAGE_API_PREFIX}/prompts/reset", self._reset_prompt,
+                 ["POST"], "Hippocampus prompt reset")
+        register(f"{PAGE_API_PREFIX}/memories/export", self._export_memories,
+                 ["POST"], "Hippocampus memory export")
+        register(f"{PAGE_API_PREFIX}/memories/import", self._import_memories,
+                 ["POST"], "Hippocampus memory import")
+        register(f"{PAGE_API_PREFIX}/memories/import/preview", self._preview_memory_import,
+                 ["POST"], "Hippocampus memory import preview")
 
     # ---------- async route handlers ----------
     async def _health(self) -> dict[str, Any]:
@@ -216,6 +242,7 @@ class PluginPageApi:
             q=str(args.get("q", "") or args.get("actor_id", "")),
             k=_as_int(args.get("k"), 50),
             offset=_as_int(args.get("offset"), 0),
+            status=str(args.get("status", "active")),
         )
 
     async def _memory_detail(self) -> dict[str, Any]:
@@ -230,6 +257,29 @@ class PluginPageApi:
             eid=str(body.get("eid", "")),
             hard=_as_bool(body.get("hard"), False),
         )
+
+    async def _memory_source(self) -> dict[str, Any]:
+        args = await _query_args()
+        return self.memory_handler.get_memory_source(
+            self._service(), eid=str(args.get("eid", "")))
+
+    async def _resummarize_memory(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.memory_handler.resummarize_memory(
+            self._service(), eid=str(body.get("eid", "")))
+
+    async def _restore_memory(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.memory_handler.restore_memory(
+            self._service(), eid=str(body.get("eid", "")))
+
+    async def _batch_delete_memories(self) -> dict[str, Any]:
+        body = await _json_body()
+        eids = body.get("eids")
+        if not isinstance(eids, list):
+            eids = []
+        return self.memory_handler.batch_delete_memories(
+            self._service(), eids=eids, hard=_as_bool(body.get("hard"), False))
 
     async def _update_memory(self) -> dict[str, Any]:
         body = await _json_body()
@@ -249,9 +299,10 @@ class PluginPageApi:
         return self.recall_handler.test_recall(
             self._service(),
             query=str(body.get("query", "")),
-            mode=str(body.get("mode", "hybrid")),
+            mode=str(body.get("mode", "dual")),
             k=_as_int(body.get("k"), 5),
             persona_id=(body.get("persona_id") or None),
+            scope_id=(body.get("scope_id") or None),
         )
 
     async def _graph_overview(self) -> dict[str, Any]:
@@ -338,6 +389,41 @@ class PluginPageApi:
             actor_id=str(body.get("actor_id", "")),
             summary=str(body.get("summary", "")),
             tags=body.get("tags"))
+
+    async def _export_memories(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.transfer_handler.export_memories(
+            self._service(), fmt=str(body.get("format", "json")))
+
+    async def _preview_memory_import(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.transfer_handler.preview_import(
+            self._service(), content=str(body.get("content", "")),
+            fmt=str(body.get("format", "json")))
+
+    async def _import_memories(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.transfer_handler.import_memories(
+            self._service(), content=str(body.get("content", "")),
+            fmt=str(body.get("format", "json")),
+            dry_run=_as_bool(body.get("dry_run"), False),
+            allow_duplicates=_as_bool(body.get("allow_duplicates"), False))
+
+    async def _list_prompts(self) -> dict[str, Any]:
+        return self.prompt_handler.list_prompts(self._service())
+
+    async def _get_prompt(self) -> dict[str, Any]:
+        args = await _query_args()
+        return self.prompt_handler.get_prompt(self._service(), str(args.get("name", "")))
+
+    async def _update_prompt(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.prompt_handler.update_prompt(
+            self._service(), str(body.get("name", "")), str(body.get("content", "")))
+
+    async def _reset_prompt(self) -> dict[str, Any]:
+        body = await _json_body()
+        return self.prompt_handler.reset_prompt(self._service(), str(body.get("name", "")))
 
     async def _delete_persona(self) -> dict[str, Any]:
         body = await _json_body()

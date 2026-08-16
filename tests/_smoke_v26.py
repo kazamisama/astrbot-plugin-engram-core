@@ -114,7 +114,9 @@ def test_migration_idempotent_on_fresh_v14():
         """)
         from hippocampus.db_migration import run_migrations
         ran = run_migrations(conn)
-        assert ran == [], "expected [] on fresh v1.4 db, got " + str(ran)
+        assert ran == ["v1.76.6"], "expected scope migration on legacy db, got " + str(ran)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(engrams)")}
+        assert "scope_id" in cols
         conn.close()
     finally:
         try: os.unlink(db)
@@ -310,7 +312,7 @@ def test_backup_handler_list_backups():
 
 
 def test_page_api_registers_11_endpoints():
-    banner("page_api registers 24 endpoints (8 B9 + 2 backup + 4 graph + 4 diary + 5 persona v1.65)")
+    banner("page_api registers 35 endpoints (+prompts +import/export)")
     sys.path.insert(0, os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     import page_api
@@ -323,7 +325,7 @@ def test_page_api_registers_11_endpoints():
             service=None, backup_manager=None))
     api = page_api.PluginPageApi(plugin)
     api.register_routes()
-    assert len(calls) == 24, "expected 24 endpoints, got " + str(len(calls))
+    assert len(calls) == 35, "expected 35 endpoints, got " + str(len(calls))
     paths = [c[0] for c in calls]
     for needed in ["/astrbot_plugin_engram_core/page/graph/data",
                    "/astrbot_plugin_engram_core/page/graph/entity/delete",
@@ -332,7 +334,7 @@ def test_page_api_registers_11_endpoints():
                    "/astrbot_plugin_engram_core/page/backups",
                    "/astrbot_plugin_engram_core/page/backups/restore"]:
         assert needed in paths, needed
-    print("  24 endpoints incl. /backups + /backups/restore + /personas/*: OK")
+    print("  35 endpoints incl. prompts + import/export: OK")
 
 
 def test_plugin_initializer_backup_manager_attr():

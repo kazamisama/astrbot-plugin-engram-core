@@ -61,11 +61,10 @@ class PluginInitializer:
             self._start_backup_scheduler()
 
     def _init_service(self, cfg_dict: dict) -> None:
-        # B7: route all 67 MemoryConfig fields through ConfigManager
+        # B7: route every MemoryConfig field through ConfigManager
         # (type / range / fallback validation) instead of hand-rolling
-        # 14 hardcoded defaults here. AstrBot-supplied 14-field dict
-        # is the only thing the user ever sets; the other 53 fields
-        # fall back to MemoryConfig defaults with no warn (silent fill).
+        # defaults here. Unset fields silently fall back to
+        # MemoryConfig defaults.
         cfg = ConfigManager(cfg_dict).memory_config
         self.service = MemoryService(cfg)
 
@@ -107,9 +106,10 @@ class PluginInitializer:
         except Exception as e:
             print(f"[hippocampus] register astrmock llm failed: {e!r}")
 
+        emb_provider = None
         try:
-            self.service.register_embedding(
-                "astrmock", ProxyEmbeddingProvider("astrmock", _emb_bridge))
+            emb_provider = ProxyEmbeddingProvider("astrmock", _emb_bridge)
+            self.service.register_embedding("astrmock", emb_provider)
         except Exception as e:
             print(f"[hippocampus] register astrmock embedding failed: {e!r}")
 
@@ -118,12 +118,37 @@ class PluginInitializer:
         # set embedding_name / llm_name to something else (hash / openai /
         # rule) in the config keep that choice. auto_rebuild_on_switch is
         # disabled here so a fresh install does not re-embed on boot.
+        #
+        # v1.76.4: do NOT auto-switch embedding when the astrmock probe
+        # failed (dim==0). Switching to a non-working provider used to make
+        # every subsequent engram embed as [] AND, because recall filtered
+        # FTS by embedding_model, it hid all previously stored hash-vector
+        # memories from keyword search as well.
         prev_rebuild = self.service.cfg.auto_rebuild_on_switch
         self.service.cfg.auto_rebuild_on_switch = False
         try:
             if (self.service.cfg.embedding_name == "hash"
                     and self.service.registry.has_embedding("astrmock")):
-                self.service.set_embedding("astrmock")
+                emb_ready = bool(
+                    emb_provider is not None and getattr(emb_provider, "dim", 0) > 0)
+                if emb_ready:
+                    old_model = self.service.current_embedding()
+                    self.service.set_embedding("astrmock")
+                    legacy = self.service.store.count_by_embedding_model(
+                        old_model, include_forgotten=False)
+                    if legacy:
+                        print(
+                            "[hippocampus] switched embedding hash -> astrmock; "
+                            + str(legacy) + " older vectors were not rebuilt. "
+                            "FTS recall still covers them; run /mem rebuild to "
+                            "restore vector recall.")
+                else:
+                    print(
+                        "[hippocampus] astrmock embedding probe returned no "
+                        "usable vector; keeping configured embedding "
+                        + self.service.current_embedding()
+                        + ". Configure an AstrBot embedding provider or use "
+                        "/mem model use embedding astrmock later.")
         except Exception as e:
             print(f"[hippocampus] activate astrmock embedding failed: {e!r}")
         try:
@@ -169,8 +194,7 @@ class PluginInitializer:
                 register_fn(t)
             except Exception as e:
                 print(f"[hippocampus] register tool {t.name} failed: {e!r}")
-        # B10: kick off backup scheduler (no-op if interval=0 or disabled)
-        self._start_backup_scheduler()
+
     def _start_backup_scheduler(self) -> None:
         """B10: periodic .db backup in a daemon thread.
         
@@ -180,6 +204,14 @@ class PluginInitializer:
         immediately); subsequent backups run at the full cadence.
         """
         if self.service is None:
+            return
+        # v1.76.4: idempotency guard. initialize() calls this method once,
+        # and historical call sites (e.g. _register_agent_tools) may still
+        # invoke it directly; never start a second scheduler for the same
+        # plugin instance.
+        if self._backup_thread is not None and self._backup_thread.is_alive():
+            return
+        if self.backup_manager is not None:
             return
         cfg = self.service.cfg
         if not cfg.enable_backup:

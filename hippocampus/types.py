@@ -18,6 +18,7 @@ class Engram:
     platform: str = ""
     channel_id: str = ""
     persona_id: str = ""        # v1.36: persona-scoped isolation
+    scope_id: str = ""          # v1.76.6: memory scope partition
     content: str = ""
     summary: str = ""
     topics: list[str] = field(default_factory=list)
@@ -135,6 +136,7 @@ class Cue:
     actor_id: str | None = None
     channel_id: str | None = None
     persona_id: str | None = None
+    scope_id: str | None = None    # v1.76.6: scope partition filter
     time_range: tuple[float, float] | None = None
     topics: list[str] | None = None
     k: int = 5
@@ -216,6 +218,22 @@ class MemoryAtom:
     access_count: int = 0
     tags: list[str] = field(default_factory=list)
     attributes: dict = field(default_factory=dict)
+    # --- v1.76.5: time-aware lifecycle (livingmemory-inspired) ---
+    ttl_days: float = 30.0
+    event_time: float = 0.0
+    expires_at: float = 0.0
+
+    def temporal_score(self, now: float | None = None) -> float:
+        """Expiry-aware freshness factor in [0,1]. Active atoms get 1.0
+        until their TTL half-life, then decay smoothly toward 0."""
+        import math
+        now = now if now is not None else time.time()
+        if self.expires_at and self.expires_at > 0 and now >= self.expires_at:
+            return 0.0
+        ttl = max(1.0, float(self.ttl_days or 30.0))
+        dt_days = max(0.0, (now - float(self.last_accessed or now)) / 86400.0)
+        half = ttl / 2.0
+        return math.exp(-math.log(2.0) * dt_days / max(0.5, half))
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()

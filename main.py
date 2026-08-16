@@ -1,7 +1,7 @@
 """astrbot_plugin_engram_core entry.
 
-AstrBot loads via: from main import <registered class> so this file
-must be importable when astrbot.api is on path.
+AstrBot loads via: from main import HippocampusStar (registration is
+metadata.yaml driven), so this file must be importable when astrbot.api is on path.
 
 Split history:
   v1.3 - rendering helpers moved to handlers/ package
@@ -15,11 +15,9 @@ from __future__ import annotations
 import os
 import sys
 import asyncio
-import json
-import time
 from typing import Any
 
-from astrbot.api.star import Star, register, Context
+from astrbot.api.star import Star, Context
 from astrbot.api.event import filter, AstrMessageEvent
 
 # AstrBot loads this plugin as a package; the plugin dir is not on
@@ -66,9 +64,8 @@ from handlers.commands import CommandRouter
 
 
 class HippocampusStar(Star):
-    # Single source of truth for the @register version; mirrored as a
-    # class attribute so smoke v12/v16 can assert alignment with
-    # metadata.yaml.
+    # Single source of truth for the plugin version; mirrored as a class
+    # attribute so smoke v12/v16 can assert alignment with metadata.yaml.
     _registered_version = HIPPO_VERSION
 
     def __init__(self, context: Context) -> None:
@@ -135,14 +132,16 @@ class HippocampusStar(Star):
                     await _a.sleep(max(5.0, interval))
                     convbuf = getattr(self._observer, "_conv_buffer", None)
                     if convbuf is not None:
-                        convbuf.flush_idle_now()
+                        # v1.76.4 (M5): idle flush may trigger an LLM
+                        # summary; run it off the event loop.
+                        await _a.to_thread(convbuf.flush_idle_now)
                     # FIX (v1.42) BUG-7: time-trigger flush for the diary
                     # write buffer so low-traffic channels do not let lines
                     # sit in memory longer than the configured SLA.
                     ds = getattr(self.service, "diary_store", None)
                     if ds is not None and hasattr(ds, "flush_now"):
                         try:
-                            n = ds.flush_now()
+                            n = await _a.to_thread(ds.flush_now)
                             if n:
                                 print("[hippocampus] diary buffer flushed "
                                       + str(n) + " lines")
@@ -196,7 +195,9 @@ class HippocampusStar(Star):
                         target += 86400.0
                     await _a.sleep(max(5.0, target - now))
                     try:
-                        n = self.service.run_daily_diary()
+                        # v1.76.4 (M5): diary generation runs the LLM;
+                        # keep the event loop responsive while it works.
+                        n = await _a.to_thread(self.service.run_daily_diary)
                         if n:
                             print("[hippocampus] daily diary wrote " + str(n) + " entries")
                     except Exception as ex:
@@ -217,10 +218,11 @@ class HippocampusStar(Star):
         synchronous _extract() can scope writes/recall by persona. Gated by
         persona_isolation_enabled (default on); best-effort, never raises."""
         try:
-            from handlers.persona_resolver import stamp_persona_id
+            from handlers.persona_resolver import stamp_persona_id, stamp_scope_id
             cfg = getattr(self.service, "cfg", None) if self.service else None
             enabled = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
             await stamp_persona_id(self.context, event, enabled=enabled)
+            await stamp_scope_id(self.context, event, cfg=cfg)
         except Exception as ex:
             print("[hippocampus] persona stamp error: " + repr(ex))
 
@@ -278,6 +280,7 @@ class HippocampusStar(Star):
 
     @filter.command("recall")
     async def cmd_recall(self, event: AstrMessageEvent, query: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "recall", event, (query,), {}):
             yield r
@@ -292,42 +295,49 @@ class HippocampusStar(Star):
 
     @filter.command("mem search")
     async def cmd_mem_search(self, event: AstrMessageEvent, arg: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem search", event, (arg,), {}):
             yield r
 
     @filter.command("mem model")
     async def cmd_mem_model(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem model", event, (), {}):
             yield r
 
     @filter.command("mem model use embedding")
     async def cmd_mem_use_emb(self, event: AstrMessageEvent, name: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem model use embedding", event, (name,), {}):
             yield r
 
     @filter.command("mem model use llm")
     async def cmd_mem_use_llm(self, event: AstrMessageEvent, name: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem model use llm", event, (name,), {}):
             yield r
 
     @filter.command("mem rebuild")
     async def cmd_mem_rebuild(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem rebuild", event, (), {}):
             yield r
 
     @filter.command("mem prospective")
     async def cmd_mem_prospective(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem prospective", event, (), {}):
             yield r
 
     @filter.command("mem session")
     async def cmd_mem_session(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem session", event, (), {}):
             yield r
@@ -335,6 +345,7 @@ class HippocampusStar(Star):
     @filter.command("mem profile")
     async def cmd_mem_profile(self, event: AstrMessageEvent,
                               actor: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem profile", event, (), {"actor": actor}):
             yield r
@@ -342,6 +353,7 @@ class HippocampusStar(Star):
     @filter.command("mem persona")
     async def cmd_mem_persona(self, event: AstrMessageEvent,
                               actor: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem persona", event, (), {"actor": actor}):
             yield r
@@ -349,6 +361,7 @@ class HippocampusStar(Star):
     @filter.command("mem activate")
     async def cmd_mem_activate(self, event: AstrMessageEvent,
                                seeds: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem activate", event, (), {"seeds": seeds}):
             yield r
@@ -356,18 +369,21 @@ class HippocampusStar(Star):
     @filter.command("mem remember")
     async def cmd_mem_remember(self, event: AstrMessageEvent,
                                arg: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem remember", event, (), {"arg": arg}):
             yield r
 
     @filter.command("mem cluster")
     async def cmd_mem_cluster(self, event: AstrMessageEvent, eid: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem cluster", event, (eid,), {}):
             yield r
 
     @filter.command("mem cluster-list")
     async def cmd_mem_cluster_list(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem cluster-list", event, (), {}):
             yield r
@@ -375,6 +391,7 @@ class HippocampusStar(Star):
     @filter.command("mem confidence")
     async def cmd_mem_confidence(self, event: AstrMessageEvent,
                                  query: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem confidence", event, (), {"query": query}):
             yield r
@@ -382,42 +399,49 @@ class HippocampusStar(Star):
     @filter.command("mem decaycurve")
     async def cmd_mem_decaycurve(self, event: AstrMessageEvent,
                                  arg: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem decaycurve", event, (), {"arg": arg}):
             yield r
 
     @filter.command("mem consolidate")
     async def cmd_mem_consolidate(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem consolidate", event, (), {}):
             yield r
 
     @filter.command("mem diary")
     async def cmd_mem_diary(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem diary", event, (), {}):
             yield r
 
     @filter.command("mem forget")
     async def cmd_mem_forget(self, event: AstrMessageEvent, eid: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem forget", event, (eid,), {}):
             yield r
 
     @filter.command("mem export")
     async def cmd_mem_export(self, event: AstrMessageEvent, path: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem export", event, (path,), {}):
             yield r
 
     @filter.command("mem import")
     async def cmd_mem_import(self, event: AstrMessageEvent, path: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem import", event, (path,), {}):
             yield r
 
     @filter.command("mem graph")
     async def cmd_mem_graph(self, event: AstrMessageEvent, query: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem graph", event, (query,), {}):
             yield r
@@ -425,6 +449,7 @@ class HippocampusStar(Star):
     @filter.command("mem narrative")
     async def cmd_mem_narrative(self, event: AstrMessageEvent,
                                 topic: str):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem narrative", event, (topic,), {}):
             yield r
@@ -432,30 +457,35 @@ class HippocampusStar(Star):
     @filter.command("mem debug")
     async def cmd_mem_debug(self, event: AstrMessageEvent,
                             query: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem debug", event, (), {"query": query}):
             yield r
 
     @filter.command("mem replay")
     async def cmd_mem_replay(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem replay", event, (), {}):
             yield r
 
     @filter.command("mem valence")
     async def cmd_mem_valence(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem valence", event, (), {}):
             yield r
 
     @filter.command("mem streams")
     async def cmd_mem_streams(self, event: AstrMessageEvent):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem streams", event, (), {}):
             yield r
 
     @filter.command("mem tier")
     async def cmd_mem_tier(self, event: AstrMessageEvent, arg: str = ""):
+        await self._stamp_persona(event)
         async for r in self._commands.dispatch(
                 "mem tier", event, (), {"arg": arg}):
             yield r

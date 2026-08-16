@@ -12,6 +12,8 @@ from .graph import GraphHandler
 from .backup import BackupHandler
 from .diary import DiaryHandler
 from .persona import PersonaHandler
+from .prompt import PromptHandler
+from .transfer import TransferHandler
 
 __all__ = [
     "PageApiUtils",
@@ -22,4 +24,6 @@ __all__ = [
     "BackupHandler",
     "DiaryHandler",
     "PersonaHandler",
+    "PromptHandler",
+    "TransferHandler",
 ]

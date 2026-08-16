@@ -54,6 +54,7 @@ class RouteKind(str, Enum):
     DOCUMENT = "document"
     GRAPH = "graph"
     SPREAD = "spread"
+    ATOM = "atom"
 
 
 @dataclass
@@ -82,6 +83,16 @@ class DualRouteConfig:
     spread_candidate_k: int = 16
     # RRF k constant (lower = more weight to top ranks)
     rrf_k: int = 60
+    # v1.76.5: final score = alpha*retrieval + beta*importance + gamma*recency
+    score_alpha: float = 0.5
+    score_beta: float = 0.25
+    score_gamma: float = 0.25
+    recency_decay_rate: float = 0.01
+    # v1.76.5: dynamic document/graph route weighting + cross-route bonus
+    document_route_weight: float = 0.65
+    graph_route_weight: float = 0.35
+    cross_route_bonus: float = 0.08
+    dynamic_route_weighting: bool = True
 
 
 @dataclass
@@ -93,6 +104,13 @@ class RouteHit:
     rrf_contribution: float
     matched_entity: str | None = None
     """If this hit came from the graph route, which entity triggered it."""
+
+
+@dataclass
+class _ScoredCandidate:
+    item: Engram
+    score: float
+    breakdown: dict
 
 
 class DualRouteRetriever:
@@ -108,30 +126,123 @@ class DualRouteRetriever:
         self._service = service
         self.cfg = cfg or DualRouteConfig()
 
-    def search(self, cue: Cue) -> RecallResult:
-        """Run all routes synchronously. Returns RecallResult sorted by rrf_score."""
+    def _route_maps(self, hits: list[RankedCandidate]) -> tuple[dict, float]:
+        raw_by_id = {}
+        max_raw = 0.0
+        for cand in hits:
+            eid = getattr(cand.item, "id", None) or str(id(cand.item))
+            raw_by_id[eid] = float(cand.raw_score)
+            max_raw = max(max_raw, float(cand.raw_score))
+        return raw_by_id, (max_raw or 1.0)
+
+    def _route_weights_for_query(self, query: str) -> tuple[float, float, str]:
+        """Lightweight query-intent rules, mirroring livingmemory."""
+        doc_w = float(self.cfg.document_route_weight)
+        graph_w = float(self.cfg.graph_route_weight)
+        if not self.cfg.dynamic_route_weighting:
+            return doc_w, graph_w, "fixed"
+        q = (query or "").casefold()
+        intent = "default"
+        relation_terms = ("谁", "和谁", "关系", "认识", "朋友", "同事", "同学", "家人",
+                          "老师", "partner", "friend", "relationship", "with whom")
+        temporal_terms = ("上次", "昨天", "前天", "刚才", "之前", "什么时候", "哪天",
+                          "最近", "last time", "yesterday", "recently", "when")
+        factual_terms = ("是什么", "什么是", "解释", "定义", "怎么", "如何",
+                         "why", "what is", "explain", "define", "how to")
+        rel = any(t in q for t in relation_terms)
+        tmp = any(t in q for t in temporal_terms)
+        fac = any(t in q for t in factual_terms)
+        if rel:
+            graph_w += 0.2; doc_w -= 0.2; intent = "relationship"
+        if tmp:
+            graph_w += 0.1; doc_w -= 0.1
+            intent = "temporal" if intent == "default" else intent + "+temporal"
+        if fac and not rel:
+            doc_w += 0.15; graph_w -= 0.15
+            intent = "factual" if intent == "default" else intent + "+factual"
+        doc_w = max(0.15, min(0.9, doc_w))
+        graph_w = max(0.1, min(0.85, graph_w))
+        total = doc_w + graph_w
+        if total <= 0:
+            return float(self.cfg.document_route_weight), float(self.cfg.graph_route_weight), "fixed"
+        return doc_w / total, graph_w / total, intent
+
+    def _rank(self, cue: Cue) -> list[_ScoredCandidate]:
+        import math as _math
+        import time as _time
         doc_hits = self._document_route(cue)
         graph_hits = self._graph_route(cue)
         spread_hits = self._spread_route(cue)
+        atom_hits = self._atom_route(cue)
         routes: list[tuple[str, list]] = [("document", doc_hits)]
         if graph_hits or not self.cfg.skip_empty_graph_route:
             routes.append(("graph", graph_hits))
         if spread_hits:
             routes.append(("spread", spread_hits))
+        if atom_hits:
+            routes.append(("atom", atom_hits))
         fusion = RRFFusion(k=self.cfg.rrf_k)
         fused = fusion.fuse(routes)
-        # v1.63: MMR diversity rerank (after fusion, before truncation)
-        if self.cfg.mmr_enabled and len(fused) > 1:
-            fused = self._mmr_rerank(fused, max(1, cue.k))
-        # trim to k
-        top = fused[: max(1, cue.k)]
-        engrams = [fc.item for fc in top]
-        scores = [fc.rrf_score for fc in top]
-        # v1.62: reconsolidation touch for all routes.
-        # Previously only PatternCompleter (document route) touched
-        # engrams. Graph/spread-route hits were invisible to the
-        # access stats / strength bump. Fix: touch every engram in
-        # the fused top-k regardless of which route surfaced it.
+        if not fused:
+            return []
+
+        doc_map, doc_max = self._route_maps(doc_hits)
+        graph_map, graph_max = self._route_maps(graph_hits)
+        spread_map, spread_max = self._route_maps(spread_hits)
+        atom_map, atom_max = self._route_maps(atom_hits)
+        max_rrf = max(fc.rrf_score for fc in fused) or 1.0
+        doc_w, graph_w, intent = self._route_weights_for_query(cue.text)
+        alpha = float(self.cfg.score_alpha)
+        beta = float(self.cfg.score_beta)
+        gamma = float(self.cfg.score_gamma)
+        decay = float(self.cfg.recency_decay_rate)
+        bonus = float(self.cfg.cross_route_bonus)
+        now = _time.time()
+
+        ranked: list[_ScoredCandidate] = []
+        for fc in fused:
+            e = fc.item
+            eid = getattr(e, "id", None) or str(id(e))
+            doc_sig = (doc_map.get(eid, 0.0) / doc_max) if doc_hits else 0.0
+            graph_sig = (graph_map.get(eid, 0.0) / graph_max) if graph_hits else 0.0
+            spread_sig = (spread_map.get(eid, 0.0) / spread_max) if spread_hits else 0.0
+            atom_sig = (atom_map.get(eid, 0.0) / atom_max) if atom_hits else 0.0
+            if doc_hits or graph_hits:
+                retrieval = doc_w * doc_sig + graph_w * graph_sig
+            else:
+                retrieval = spread_sig
+            retrieval = max(retrieval, atom_sig * 0.5)
+            if retrieval <= 0.0:
+                retrieval = fc.rrf_score / max_rrf
+            importance = min(1.0, max(0.0, float(getattr(e, "importance", 0.5) or 0.5)))
+            ref = max(float(getattr(e, "last_accessed", 0.0) or 0.0),
+                      float(getattr(e, "created_at", now) or now))
+            days = max(0.0, (now - ref) / 86400.0)
+            recency = _math.exp(-decay * days)
+            cross = bonus if (doc_sig > 0.0 and graph_sig > 0.0) else 0.0
+            final = min(1.0, alpha * retrieval + beta * importance + gamma * recency + cross)
+            ranked.append(_ScoredCandidate(item=e, score=final, breakdown={
+                "retrieval": round(retrieval, 4),
+                "importance": round(importance, 4),
+                "recency": round(recency, 4),
+                "cross_route_bonus": round(cross, 4),
+                "document_weight": round(doc_w, 4),
+                "graph_weight": round(graph_w, 4),
+                "query_intent": intent,
+                "rrf_score": round(fc.rrf_score, 6),
+                "final_score": round(final, 4),
+            }))
+        ranked.sort(key=lambda x: x.score, reverse=True)
+        if self.cfg.mmr_enabled and len(ranked) > 1:
+            ranked = self._mmr_rerank_ranked(ranked, max(1, cue.k))
+        return ranked
+
+    def search(self, cue: Cue) -> RecallResult:
+        """Run all routes, apply weighted scoring + MMR, return top-k."""
+        ranked = self._rank(cue)
+        top = ranked[: max(1, cue.k)]
+        engrams = [sc.item for sc in top]
+        scores = [sc.score for sc in top]
         try:
             recon = getattr(self._service, "reconsolidator", None)
             if recon is not None:
@@ -141,26 +252,40 @@ class DualRouteRetriever:
             pass
         return RecallResult(engrams=engrams, scores=scores, confidences=None)
 
+    def _mmr_rerank_ranked(self, candidates: list[_ScoredCandidate], k: int) -> list[_ScoredCandidate]:
+        """MMR over final weighted scores using similar_to as distance proxy."""
+        if len(candidates) <= max(1, k):
+            return list(candidates)
+        lamb = float(self.cfg.mmr_lambda)
+        selected: list[_ScoredCandidate] = []
+        remaining = list(candidates)
+        sim_index = {}
+        for c in remaining:
+            eid = getattr(c.item, "id", None) or str(id(c.item))
+            sim_index[eid] = set(getattr(c.item, "similar_to", None) or [])
+        for _ in range(max(1, k)):
+            best = None; best_score = -999.0
+            for c in remaining:
+                div_penalty = 0.0
+                cid = getattr(c.item, "id", "")
+                for sel in selected:
+                    sid = getattr(sel.item, "id", "")
+                    if cid in sim_index.get(sid, set()):
+                        div_penalty += 0.5
+                    if sid in sim_index.get(cid, set()):
+                        div_penalty += 0.5
+                mmr = lamb * c.score - (1.0 - lamb) * div_penalty
+                if mmr > best_score:
+                    best_score = mmr; best = c
+            if best is None:
+                break
+            selected.append(best); remaining.remove(best)
+        return selected
+
     async def asearch(self, cue: Cue) -> RecallResult:
-        """Async variant: runs both routes concurrently via asyncio.to_thread.
-        The routes themselves are CPU-light (SQLite calls) so this is mainly
-        useful when callers are already inside an event loop.
-        """
-        doc_task = asyncio.to_thread(self._document_route, cue)
-        graph_task = asyncio.to_thread(self._graph_route, cue)
-        doc_hits, graph_hits = await asyncio.gather(doc_task, graph_task)
-        if self.cfg.skip_empty_graph_route and not graph_hits:
-            routes = [("document", doc_hits)]
-        else:
-            routes = [("document", doc_hits), ("graph", graph_hits)]
-        fusion = RRFFusion(k=self.cfg.rrf_k)
-        fused = fusion.fuse(routes)
-        top = fused[: max(1, cue.k)]
-        return RecallResult(
-            engrams=[fc.item for fc in top],
-            scores=[fc.rrf_score for fc in top],
-            confidences=None,
-        )
+        """Async variant: delegate to search() so spread/atom/weighting/scope
+        behaviour can never drift from the sync path."""
+        return await asyncio.to_thread(self.search, cue)
 
     def explain(self, cue: Cue) -> list[RouteHit]:
         """Diagnostic: returns the per-route hits with rrf contribution
@@ -177,6 +302,7 @@ class DualRouteRetriever:
         doc_hits = self._document_route(cue)
         graph_hits = self._graph_route(cue)
         spread_hits = self._spread_route(cue)
+        atom_hits = self._atom_route(cue)
         # Build the same routes tuple as search() so the diagnostic
         # attribution matches the live retrieval path.
         routes: list[tuple[str, list]] = [("document", doc_hits)]
@@ -184,6 +310,8 @@ class DualRouteRetriever:
             routes.append(("graph", graph_hits))
         if spread_hits:
             routes.append(("spread", spread_hits))
+        if atom_hits:
+            routes.append(("atom", atom_hits))
         fusion = RRFFusion(k=self.cfg.rrf_k)
         fused = fusion.fuse(routes)
         by_id: dict[str, FusedCandidate] = {id(fc.item) and getattr(fc.item, "id", None) or str(id(fc.item)): fc for fc in fused}
@@ -218,6 +346,16 @@ class DualRouteRetriever:
                 engram=cand.item, route=RouteKind.SPREAD,
                 raw_score=cand.raw_score,
                 rrf_contribution=fc.contributions.get("spread", 0.0),
+            ))
+        for cand in atom_hits:
+            item_id = getattr(cand.item, "id", None) or str(id(cand.item))
+            fc = by_id.get(item_id)
+            if fc is None:
+                continue
+            out.append(RouteHit(
+                engram=cand.item, route=RouteKind.ATOM,
+                raw_score=cand.raw_score,
+                rrf_contribution=fc.contributions.get("atom", 0.0),
             ))
         out.sort(key=lambda h: h.rrf_contribution, reverse=True)
         return out
@@ -268,6 +406,62 @@ class DualRouteRetriever:
         return selected
 
     # --- route implementations -----------------------------------------
+    def _atom_route(self, cue: Cue) -> list[RankedCandidate]:
+        """v1.76.5: atom-level keyword route. Maps active, temporally
+        fresh atoms back to their parent engrams."""
+        svc = self._service
+        if not getattr(svc.cfg, "enable_atom_extraction", False):
+            return []
+        try:
+            svc._ensure_atom_layer()
+        except Exception:
+            return []
+        atom_store = getattr(svc, "atom_store", None)
+        if atom_store is None:
+            return []
+        q = (cue.text or "").strip().lower()
+        if not q:
+            return []
+        atoms = atom_store.search_text(q, limit=40)
+        tokens = [t for t in q.split() if t]
+        by_engram: dict[str, float] = {}
+        now = __import__("time").time()
+        for atom in atoms:
+            try:
+                temporal = float(atom.temporal_score(now))
+            except Exception:
+                temporal = 0.0
+            if temporal <= 0.0:
+                continue
+            text = " ".join([atom.subject, atom.predicate, atom.object]).lower()
+            rel = sum(1 for t in tokens if t in text) / max(1, len(tokens)) if tokens else 0.5
+            atom_score = rel * temporal * float(atom.confidence or 0.5) * float(atom.strength or 0.5)
+            if atom_score <= 0.0:
+                continue
+            try:
+                atom_store.touch(atom.atom_id)
+            except Exception:
+                pass
+            for eid in (atom.source_engram_ids or []):
+                parent = svc.store.get(eid)
+                if cue.persona_id is not None:
+                    if parent is None or (getattr(parent, "persona_id", "") or "") != cue.persona_id:
+                        continue
+                if (cue.scope_id is not None and parent is not None
+                        and (getattr(parent, "scope_id", "") or "")
+                        != cue.scope_id):
+                    continue
+                by_engram[eid] = max(by_engram.get(eid, 0.0), atom_score)
+        items: list[tuple[Engram, float]] = []
+        for eid, sc in by_engram.items():
+            e = svc.store.get(eid)
+            if e is None or float(getattr(e, "forgotten_at", 0.0) or 0.0) > 0.0:
+                continue
+            items.append((e, sc))
+        items.sort(key=lambda x: x[1], reverse=True)
+        return [RankedCandidate(item=e, raw_score=s, rank=i + 1)
+                for i, (e, s) in enumerate(items[:self.cfg.graph_candidate_k])]
+
     def _spread_route(self, cue: Cue) -> list[RankedCandidate]:
         """v1.62: build RankedCandidate list from pre-computed
         spreading-activation map in cue.activation.
@@ -292,6 +486,12 @@ class DualRouteRetriever:
             engram = store.get(eid)
             if engram is None or engram.forgotten_at > 0:
                 continue
+            if cue.persona_id is not None and (
+                    (getattr(engram, "persona_id", "") or "") != cue.persona_id):
+                continue
+            if cue.scope_id is not None and (
+                    (getattr(engram, "scope_id", "") or "") != cue.scope_id):
+                continue
             items.append((engram, float(act)))
         items.sort(key=lambda x: x[1], reverse=True)
         k = self.cfg.spread_candidate_k
@@ -311,12 +511,14 @@ class DualRouteRetriever:
             qvec = embedder.embed(cue.text)
             vec_pairs = store.vector_search(
                 qvec, k=k, actor_id=cue.actor_id, channel_id=cue.channel_id,
+                persona_id=cue.persona_id, scope_id=cue.scope_id,
                 memory_types=cue.memory_types)
         except Exception:
             pass
         try:
             fts_pairs = store.fts_search(
                 cue.text, k=k, actor_id=cue.actor_id, channel_id=cue.channel_id,
+                persona_id=cue.persona_id, scope_id=cue.scope_id,
                 memory_types=cue.memory_types)
         except Exception:
             pass

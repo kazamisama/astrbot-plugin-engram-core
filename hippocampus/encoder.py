@@ -5,6 +5,7 @@ from .embeddings import EmbeddingProvider
 from .llm import LLMProvider, RuleLLMProvider
 from .config import MemoryConfig
 from .valence import ValenceScorer
+from .prompts import get_prompt
 
 _TOPIC_KEYWORDS = {
     "preference": ["喜欢", "讨厌", "prefer", "like", "hate", "favorite", "love", "dislike"],
@@ -68,6 +69,7 @@ class EngramEncoder:
 
     def encode(self, *, session_id: str, actor_id: str, platform: str,
                channel_id: str, content: str, persona_id: str = "",
+               scope_id: str = "",
                channel_label: str = "", chat_type: str = "") -> Engram:
         text = content.strip()
         # FIX (v1.56): build channel context so the LLM extractor can
@@ -105,7 +107,8 @@ class EngramEncoder:
             importance = min(1.0, importance + 0.05 * inten)
         return Engram(
             session_id=session_id, actor_id=actor_id, platform=platform,
-            channel_id=channel_id, persona_id=persona_id, content=text, summary=summary,
+            channel_id=channel_id, persona_id=persona_id, scope_id=scope_id,
+            content=text, summary=summary,
             topics=topics, entities=entities, importance=importance,
             embedding=emb, strength=max(importance, 0.4),
             valence=v, intensity=inten, stream=stream, temporal_bucket=tbucket,
@@ -118,7 +121,8 @@ class EngramEncoder:
         # context + raised max_tokens (300 -> 600) to leave headroom for
         # longer messages.
         try:
-            sys = _LLM_SYSTEM
+            _pn = getattr(self._cfg, "_prompt_namespace", None)
+            sys = get_prompt("encoder_extract_system", _LLM_SYSTEM, namespace=_pn)
             if self._persona is not None and actor_id:
                 try:
                     p = self._persona(actor_id, channel_ctx)
@@ -126,7 +130,8 @@ class EngramEncoder:
                         sys = sys + "\n\n" + p
                 except Exception:
                     pass
-            user = _build_extract_prompt(text, channel_ctx)
+            user = get_prompt("encoder_extract_user_head", namespace=_pn).format(
+                channel_ctx=(channel_ctx + chr(10)) if channel_ctx else "", text=text)
             raw = self._llm.chat(sys, user, temperature=0.1, max_tokens=600)
         except Exception:
             return None

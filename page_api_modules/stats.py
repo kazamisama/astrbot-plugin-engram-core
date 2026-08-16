@@ -43,22 +43,73 @@ class StatsHandler:
             n_fired = len(service.list_prospective("fired"))
         except Exception:
             pass
-        # B3 atom count: best-effort. AtomStore.list_active exists
-        # post-B3; if the layer is not initialized we just return -1.
+        # B3 atom count: best-effort. AtomStore.count/count_by_type
+        # avoid materializing every atom in Python.
         n_atoms = -1
+        atom_breakdown: dict[str, int] = {}
         try:
-            atom_layer = getattr(service, "_atom_layer", None)
-            if atom_layer is not None:
-                store = getattr(atom_layer, "store", None)
-                if store is not None and hasattr(store, "list_active"):
-                    n_atoms = len(store.list_active(limit=10_000_000))
+            service._ensure_atom_layer()
+            atom_store = getattr(service, "atom_store", None)
+            if atom_store is not None:
+                n_atoms = atom_store.count()
+                atom_breakdown = atom_store.count_by_type()
         except Exception:
             pass
+
+        # v1.76.5 visualization: status / importance / tier / valence /
+        # stream distributions derived from one full scan.
+        total_engrams = 0
+        active_engrams = 0
+        archived_engrams = 0
+        importance_distribution = {f"{i/10:.1f}": 0 for i in range(1, 11)}
+        tier_breakdown: dict[str, int] = {}
+        try:
+            for e in store.all(limit=10_000_000):
+                total_engrams += 1
+                if float(getattr(e, "forgotten_at", 0.0) or 0.0) > 0.0:
+                    archived_engrams += 1
+                else:
+                    active_engrams += 1
+                imp = max(0.0, min(1.0, float(getattr(e, "importance", 0.0) or 0.0)))
+                bucket = f"{min(1.0, round(imp * 10) / 10):.1f}"
+                if bucket == "0.0":
+                    bucket = "0.1"
+                importance_distribution[bucket] = importance_distribution.get(bucket, 0) + 1
+                tier = str(getattr(e, "tier", "") or "unset")
+                tier_breakdown[tier] = tier_breakdown.get(tier, 0) + 1
+        except Exception:
+            pass
+        valence_breakdown: dict[str, int] = {}
+        stream_breakdown: dict[str, int] = {}
+        try:
+            valence_breakdown = store.valence_histogram()
+            stream_breakdown = store.stream_breakdown()
+        except Exception:
+            pass
+
+        n_relations = 0
+        try:
+            if getattr(service, "relation_store", None) is not None:
+                n_relations = service.relation_store.count_active()
+        except Exception:
+            n_relations = -1
+
         return self.utils.ok({
             "engrams": n_engram,
             "fts_count": n_fts,
             "entities": n_entity,
+            "relations": n_relations,
             "atoms": n_atoms,
             "pending_triggers": n_pending,
             "fired_triggers": n_fired,
+            "status_breakdown": {
+                "total": total_engrams,
+                "active": active_engrams,
+                "archived": archived_engrams,
+            },
+            "importance_distribution": importance_distribution,
+            "tier_breakdown": tier_breakdown,
+            "valence_breakdown": valence_breakdown,
+            "stream_breakdown": stream_breakdown,
+            "atom_breakdown": atom_breakdown,
         })

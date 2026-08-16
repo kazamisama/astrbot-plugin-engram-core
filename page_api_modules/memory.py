@@ -18,7 +18,8 @@ class MemoryHandler:
         self.utils = utils
 
     def list_memories(self, service, q: str = "",
-                      k: int = 50, offset: int = 0) -> dict[str, Any]:
+                      k: int = 50, offset: int = 0,
+                      status: str = "active") -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
         try:
@@ -27,12 +28,17 @@ class MemoryHandler:
         except Exception:
             return self.utils.error("Invalid k or offset.")
         q = (q or "").strip()
-        # ???????????????????????????
-        scan_limit = 10_000_000 if q else (offset_i + k_i)
+        status = (status or "active").strip().lower()
+        scan_limit = 10_000_000 if (q or status != "active") else (offset_i + k_i)
         try:
-            rows = service.store.list_active(limit=scan_limit)
+            if status in ("all", "archived"):
+                rows = service.store.all(limit=scan_limit)
+            else:
+                rows = service.store.list_active(limit=scan_limit)
         except Exception as e:
-            return self.utils.error(f"list_active failed: {e!r}")
+            return self.utils.error(f"list failed: {e!r}")
+        if status == "archived":
+            rows = [r for r in rows if float(getattr(r, "forgotten_at", 0.0) or 0.0) > 0.0]
         if q:
             ql = q.lower()
             def _hit(r):
@@ -48,6 +54,7 @@ class MemoryHandler:
             "returned": len(page),
             "offset": offset_i,
             "k": k_i,
+            "status": status,
         })
 
     @staticmethod
@@ -73,6 +80,8 @@ class MemoryHandler:
             "persona_id": getattr(r, "persona_id", None),
             "group_id": group_id or None,
             "group_name": group_name or None,
+            "status": "archived" if float(getattr(r, "forgotten_at", 0.0) or 0.0) > 0.0 else "active",
+            "forgotten_at": getattr(r, "forgotten_at", None),
         }
 
     def get_memory_detail(self, service, eid: str) -> dict[str, Any]:
@@ -117,6 +126,9 @@ class MemoryHandler:
             "tags": getattr(row, "tags", None) or [],
             "tier": getattr(row, "tier", None),
             "persona_id": getattr(row, "persona_id", None),
+            "forgotten_at": getattr(row, "forgotten_at", None),
+            "status": "archived" if float(getattr(row, "forgotten_at", 0.0) or 0.0) > 0.0 else "active",
+            "source_count": len(service.store.get_memory_source(row.id)),
         })
 
     def delete_memory(self, service, eid: str,
@@ -135,18 +147,78 @@ class MemoryHandler:
         if hard:
             try:
                 service.store.delete(eid)
+                try:
+                    service._invalidate_search_cache()
+                except Exception:
+                    pass
                 return self.utils.ok({"id": eid, "mode": "hard"})
             except Exception as e:
                 return self.utils.error(f"hard delete failed: {e!r}")
         # soft: HippocampalStore.soft_forget sets forgotten_at + strength=0
         try:
             service.store.soft_forget(eid)
+            try:
+                service._invalidate_search_cache()
+            except Exception:
+                pass
             return self.utils.ok({"id": eid, "mode": "soft"})
         except Exception as e:
             return self.utils.error(f"soft forget failed: {e!r}")
 
     # v1.21 B-4: edit an engram from the WebUI. Text changes (content)
     # trigger an embedding recompute so recall stays consistent.
+    def get_memory_source(self, service, eid: str) -> dict[str, Any]:
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        eid = (eid or "").strip()
+        if not eid:
+            return self.utils.error("Missing eid.")
+        try:
+            lines = service.store.get_memory_source(eid)
+        except Exception as e:
+            return self.utils.error(f"source lookup failed: {e!r}")
+        return self.utils.ok({"id": eid, "lines": lines, "count": len(lines)})
+
+    def resummarize_memory(self, service, eid: str) -> dict[str, Any]:
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        eid = (eid or "").strip()
+        if not eid:
+            return self.utils.error("Missing eid.")
+        try:
+            ok = service.resummarize_engram(eid) if hasattr(service, "resummarize_engram") else False
+        except Exception as e:
+            return self.utils.error(f"resummarize failed: {e!r}")
+        return self.utils.ok({"id": eid, "resummarized": bool(ok)})
+
+    def restore_memory(self, service, eid: str) -> dict[str, Any]:
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        eid = (eid or "").strip()
+        if not eid:
+            return self.utils.error("Missing eid.")
+        try:
+            ok = service.restore_engram(eid) if hasattr(service, "restore_engram") else False
+        except Exception as e:
+            return self.utils.error(f"restore failed: {e!r}")
+        return self.utils.ok({"id": eid, "restored": bool(ok)})
+
+    def batch_delete_memories(self, service, eids,
+                              hard: bool = False) -> dict[str, Any]:
+        if service is None:
+            return self.utils.error("Memory service not initialized.")
+        ids = [str(x or "").strip() for x in (eids or []) if str(x or "").strip()]
+        if not ids:
+            return self.utils.error("Missing eids.")
+        try:
+            result = (service.batch_delete_engrams(ids, hard=bool(hard))
+                      if hasattr(service, "batch_delete_engrams") else {
+                          "soft_deleted": 0, "hard_deleted": 0,
+                          "missing": len(ids)})
+        except Exception as e:
+            return self.utils.error(f"batch delete failed: {e!r}")
+        return self.utils.ok(result)
+
     _STR_FIELDS = ("summary", "content", "memory_type", "tier", "persona_id")
     _FLOAT_FIELDS = ("importance", "strength")
     _LIST_FIELDS = ("topics", "tags")
@@ -205,6 +277,10 @@ class MemoryHandler:
                 return self.utils.error(f"re-embed failed: {e!r}")
         try:
             service.store.upsert(row)
+            try:
+                service._invalidate_search_cache()
+            except Exception:
+                pass
         except Exception as e:
             return self.utils.error(f"upsert failed: {e!r}")
         return self.utils.ok({"id": eid, "changed": changed,

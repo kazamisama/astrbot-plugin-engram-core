@@ -55,6 +55,22 @@ class GraphRetriever:
 
     # -- public --------------------------------------------------------
 
+    def _passes_filters(self, engram: Engram, cue: Cue) -> bool:
+        """Graph route must obey the same partitions as the document route."""
+        if float(getattr(engram, "forgotten_at", 0.0) or 0.0) > 0.0:
+            return False
+        if cue.persona_id is not None and (
+                (getattr(engram, "persona_id", "") or "") != cue.persona_id):
+            return False
+        if cue.scope_id is not None and (
+                (getattr(engram, "scope_id", "") or "") != cue.scope_id):
+            return False
+        if cue.actor_id and (getattr(engram, "actor_id", "") or "") != cue.actor_id:
+            return False
+        if cue.channel_id and (getattr(engram, "channel_id", "") or "") != cue.channel_id:
+            return False
+        return True
+
     def search(self, cue: Cue) -> list[RankedCandidate]:
         """Run keyword + vector entity retrieval, fuse, walk the graph N
         hops, hydrate engrams, return RankedCandidate per engram.
@@ -111,7 +127,7 @@ class GraphRetriever:
                 engram = store.get(eid)  # type: ignore[attr-defined]
             except Exception:
                 engram = None
-            if engram is None:
+            if engram is None or not self._passes_filters(engram, cue):
                 continue
             rc = RankedCandidate(item=engram, raw_score=float(score), rank=0)
             setattr(rc, "_matched_entity", matched_names.get(eid, ""))
@@ -133,6 +149,8 @@ class GraphRetriever:
             legacy = []
         anchor_ids = {a.entity.id for a in anchors}
         for engram in legacy:
+            if not self._passes_filters(engram, cue):
+                continue
             refs = set(getattr(engram, "entity_refs", []) or [])
             if not (refs & anchor_ids):
                 continue

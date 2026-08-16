@@ -60,7 +60,7 @@ class PatternCompleter:
             vec = self._store.vector_search(
                 qvec, k=candidate_k,
                 actor_id=cue.actor_id, channel_id=cue.channel_id,
-                persona_id=cue.persona_id,
+                persona_id=cue.persona_id, scope_id=cue.scope_id,
                 memory_types=cue.memory_types,
                 embedding_model=embedding_model)
 
@@ -68,7 +68,7 @@ class PatternCompleter:
             fts = self._store.fts_search(
                 cue.text, k=candidate_k,
                 actor_id=cue.actor_id, channel_id=cue.channel_id,
-                persona_id=cue.persona_id,
+                persona_id=cue.persona_id, scope_id=cue.scope_id,
                 memory_types=cue.memory_types,
                 embedding_model=embedding_model)
 
@@ -78,6 +78,13 @@ class PatternCompleter:
             fused = fts
         else:
             fused = _rrf_fuse(vec, fts)
+
+        # v1.76.4: defense-in-depth exclusion of soft-forgotten engrams.
+        # vector_search/fts_search already filter them, but any future
+        # retrieval source feeding this method must never resurrect a
+        # forgotten row (soft_forget keeps embedding_json + fts_text for
+        # audit/recovery, so a missing filter here is silent data leakage).
+        fused = [(e, sc) for e, sc in fused if float(getattr(e, "forgotten_at", 0.0) or 0.0) <= 0.0]
 
         # v1.13: hot/warm/cold tier routing. Normal recall uses hot+warm;
         # cold is held back and only merged in as a fallback when hot+warm

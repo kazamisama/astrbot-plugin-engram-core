@@ -110,6 +110,8 @@ class SpreadingActivation:
     # ---------- v1.42: context-aware activation ----------
     def build_context_seeds(self, *, matched_entity_ids=None, actor_id=None,
                             session_id: str = "",
+                            persona_id: str | None = None,
+                            scope_id: str | None = None,
                             high_importance_count: int = 5,
                             recent_count: int = 3,
                             recent_min_strength: float = 0.5,
@@ -135,6 +137,14 @@ class SpreadingActivation:
         activate(). Empty if nothing matches.
         """
         seeds: list = []
+        def _pass(e):
+            if e is None or float(getattr(e, "forgotten_at", 0.0) or 0.0) > 0.0:
+                return False
+            if persona_id is not None and (getattr(e, "persona_id", "") or "") != persona_id:
+                return False
+            if scope_id is not None and (getattr(e, "scope_id", "") or "") != scope_id:
+                return False
+            return True
         for eid in (matched_entity_ids or []):
             if eid:
                 seeds.append(E_PREFIX + eid)
@@ -145,7 +155,8 @@ class SpreadingActivation:
             except Exception:
                 recent = []
             for e in recent:
-                seeds.append(N_PREFIX + e.id)
+                if _pass(e):
+                    seeds.append(N_PREFIX + e.id)
         if session_id and session_count > 0:
             try:
                 sess = self._store.recent_for_session(
@@ -153,6 +164,8 @@ class SpreadingActivation:
             except Exception:
                 sess = []
             for e in sess:
+                if not _pass(e):
+                    continue
                 key = N_PREFIX + e.id
                 if key not in seeds:
                     seeds.append(key)
@@ -166,6 +179,8 @@ class SpreadingActivation:
             except Exception:
                 top = []
             for e in top:
+                if not _pass(e):
+                    continue
                 key = N_PREFIX + e.id
                 if key not in seeds:
                     seeds.append(key)
@@ -174,7 +189,9 @@ class SpreadingActivation:
     def activate_with_context(self, *, matched_entity_ids=None, actor_id=None,
                               depth=None, decay=None, floor=None,
                               high_importance_count: int = 5,
-                              recent_count: int = 3) -> dict:
+                              recent_count: int = 3,
+                              persona_id: str | None = None,
+                              scope_id: str | None = None) -> dict:
         """One-shot helper: build context seeds, run activation, return
         the engram-only activation map (id -> [0,1]).
 
@@ -186,11 +203,26 @@ class SpreadingActivation:
             actor_id=actor_id,
             high_importance_count=high_importance_count,
             recent_count=recent_count,
+            persona_id=persona_id,
+            scope_id=scope_id,
         )
         if not seeds:
             return {}
         acts = self.activate(seeds, depth=depth, decay=decay, floor=floor)
-        return self.engram_activation(acts)
+        out = self.engram_activation(acts)
+        if persona_id is None and scope_id is None:
+            return out
+        filtered: dict[str, float] = {}
+        for eid, act in out.items():
+            e = self._store.get(eid)
+            if e is None or float(getattr(e, "forgotten_at", 0.0) or 0.0) > 0.0:
+                continue
+            if persona_id is not None and (getattr(e, "persona_id", "") or "") != persona_id:
+                continue
+            if scope_id is not None and (getattr(e, "scope_id", "") or "") != scope_id:
+                continue
+            filtered[eid] = act
+        return filtered
 
     # ---------- internals ----------
     def _resolve_seed(self, s: str) -> str | None:

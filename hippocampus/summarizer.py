@@ -20,6 +20,7 @@ import json
 import re
 
 from .llm import LLMProvider, RuleLLMProvider
+from .prompts import get_prompt
 
 
 def target_length(total_chars: int, ratio: float, *,
@@ -33,39 +34,46 @@ def target_length(total_chars: int, ratio: float, *,
     return t
 
 
-_SYS_BASE = (
-    "\u4f60\u6b63\u5728\u603b\u7ed3\u4e00\u6bb5\u591a\u4eba\u5bf9\u8bdd\u3002"
-    "\u4ee5\u4e2d\u7acb\u3001\u4e8b\u5b9e\u5bfc\u5411\u7684\u53d9\u8ff0\u603b\u7ed3\uff0c"
-    "\u660e\u786e\u4e3b\u8c13\u3001\u4eba\u7269\u5173\u7cfb\u4e0e\u65f6\u95f4\u987a\u5e8f\u3002"
-    "\u4e25\u683c\u8f93\u51fa JSON\u3002"
-)
+_SYS_BASE = """你是聊天机器人本人，正在回忆刚才发生的对话。
+summary 必须是你自己的主观回忆：以第一人称叙述，体现你的语气和关注点，不要写成第三人称会议纪要。
+消息中 [时间 我] 是你自己的发言，必须体现你说了什么。
+对话中的相对时间必须转换为具体日期。
+summary/key_facts 中必须使用具体昵称，禁止使用“用户/某人/对方”代替具体人名。
+严格输出 JSON。"""
 
 
-def _build_prompt(rec, target_chars: int) -> str:
-    head = (
-        "\u8bf7\u5c06\u4ee5\u4e0b\u6309\u65f6\u95f4\u987a\u5e8f\u6392\u5217\u7684\u5bf9\u8bdd"
-        "\u538b\u7f29\u603b\u7ed3\u4e3a\u7ea6 " + str(target_chars) +
-        " \u5b57\u3002\u8fd4\u56de JSON\uff0c\u952e\uff1a"
-        "summary(\u53d9\u8ff0\u6458\u8981), key_facts(\u4e8b\u5b9e\u5217\u8868), "
-        "topics(\u8bdd\u9898), participants(\u53c2\u4e0e\u4eba), "
-        "relations(\u5217\u8868\uff0c\u6bcf\u9879 {subject, subject_type, relation, object, object_type, confidence}\uff0c"
-        "\u5176\u4e2d subject_type/object_type \u4e3a person/place/object/org/unknown \u4e4b\u4e00)\u3002\n\n"
-    )
+def _conversation_date(rec) -> str:
+    """Prefer the transcript's first timestamp; fall back to today."""
+    import datetime as _dt
+    ts = getattr(rec, "first_ts", 0.0) or 0.0
+    try:
+        return _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except Exception:
+        return _dt.datetime.now().strftime("%Y-%m-%d")
+
+
+def _build_prompt(rec, target_chars: int, *, namespace=None) -> str:
+    date_label = _conversation_date(rec)
+    template = get_prompt("summary_user_head", namespace=namespace)
+    head = (template.replace("{date_label}", date_label)
+            .replace("{target_chars}", str(target_chars)))
     ctx = ""
     if rec.chat_type == "group":
-        ctx = ("[\u7fa4\u804a " + (rec.group_name or rec.group_id or rec.channel_id) +
-               " (" + (rec.group_id or "") + ")]\n")
+        ctx = f"""群聊 {(rec.group_name or rec.group_id or rec.channel_id)} ({(rec.group_id or '')})
+"""
     elif rec.chat_type == "private":
         bot_nm = ""
         try:
             bot_nm = rec.bot_name()
         except Exception:
             bot_nm = ""
-        peer = rec.peer_name or rec.peer_actor_id or "\u5bf9\u65b9"
+        peer = rec.peer_name or rec.peer_actor_id or "对方"
         if bot_nm:
-            ctx = ("[\u79c1\u804a \u6211\u65b9 " + bot_nm + " \u5bf9\u65b9 " + peer + "]\n")
+            ctx = f"""私聊 我方 {bot_nm} 对方 {peer}
+"""
         else:
-            ctx = ("[\u79c1\u804a \u5bf9\u65b9 " + peer + "]\n")
+            ctx = f"""私聊 对方 {peer}
+"""
     return head + ctx + rec.transcript()
 
 
@@ -94,7 +102,8 @@ class ConversationSummarizer:
         return int(getattr(self.cfg, "summary_compress_floor", 0) or 0)
 
     def _system_prompt(self, rec) -> str:
-        base = _SYS_BASE
+        _pn = getattr(self.cfg, "_prompt_namespace", None)
+        base = get_prompt("summary_system", _SYS_BASE, namespace=_pn)
         if self._persona is not None:
             try:
                 p = self._persona(rec)
@@ -138,7 +147,7 @@ class ConversationSummarizer:
             return None
         try:
             sys = self._system_prompt(rec)
-            user = _build_prompt(rec, target)
+            user = _build_prompt(rec, target, namespace=getattr(self.cfg, "_prompt_namespace", None))
             raw = self._llm.chat(sys, user, temperature=0.2,
                                  max_tokens=max(512, min(4096, target * 3)))
         except Exception as ex:

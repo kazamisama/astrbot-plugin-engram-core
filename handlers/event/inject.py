@@ -9,6 +9,7 @@ Errors here must never abort the LLM request, so the whole body is
 guarded; on any failure we simply skip injection.
 """
 from __future__ import annotations
+import asyncio
 from collections import deque
 from typing import TYPE_CHECKING
 from ..format import _extract
@@ -31,6 +32,7 @@ class InjectHandler:
         # to break the same-chunk-reappears-every-on_llm_request loop.
         # Content-hash set bounded by a deque so long sessions do not leak.
         self._seen_diary: "deque[str]" = deque(maxlen=64)
+        self._inject_lock = None
         # v1.72b: loud version banner. Operator should see this in
         # AstrBot logs after plugin reload. If absent, Python is still
         # serving cached module - hard-kill AstrBot process + restart,
@@ -91,7 +93,28 @@ class InjectHandler:
             inner_labels=cls._ENGRAM_INNER_LABELS,
         )
 
+    def _get_inject_lock(self):
+        """Serialize injection runs; recall + cache writes are not
+        re-entrant across event-loop and worker-thread callers."""
+        if self._inject_lock is None:
+            self._inject_lock = asyncio.Lock()
+        return self._inject_lock
+
     async def handle_inject(self, event, req) -> None:
+        svc = self.service
+        if svc is None or req is None:
+            return
+        cfg = getattr(svc, "cfg", None)
+        if cfg is None or not getattr(cfg, "auto_inject_enabled", False):
+            return
+        # v1.76.4 (M5): recall / persona / diary lookups are synchronous
+        # SQLite + embedding work. Run them off the event loop while
+        # serializing with this handler's lock (req mutation + _seen_diary
+        # and service.recall cache are shared state).
+        async with self._get_inject_lock():
+            await asyncio.to_thread(self._handle_inject_sync, event, req)
+
+    def _handle_inject_sync(self, event, req) -> None:
         svc = self.service
         if svc is None or req is None:
             return
@@ -113,6 +136,7 @@ class InjectHandler:
             actor_id = meta.get("actor_id")
             iso_on = bool(getattr(cfg, "persona_isolation_enabled", True))
             persona_scope = (meta.get("persona_id") or "") if iso_on else None
+            scope_scope = (meta.get("scope_id") or "") if iso_on else None
 
             # Optional stable-background persona (v1.8). Independent of recall
             # hits: if enabled and present, it is injected as background even
@@ -138,6 +162,7 @@ class InjectHandler:
                 actor_id=actor_id,
                 channel_id=meta.get("channel_id"),
                 persona_id=persona_scope,
+                scope_id=scope_scope,
                 memory_types=["episodic", "semantic", "prospective"],
                 k=top_k))
             engrams = getattr(result, "engrams", None) or []
@@ -162,7 +187,8 @@ class InjectHandler:
                     if rtop > 0:
                         rmin = float(getattr(cfg, "relation_inject_min_confidence", 0.0) or 0.0)
                         rels = svc.recall_relations(query, top_n=rtop, min_confidence=rmin,
-                                                   persona_id=persona_scope)
+                                                   persona_id=persona_scope,
+                                                   scope_id=scope_scope)
                         rlines = []
                         for r in rels:
                             subj = (getattr(r, "subject", "") or "").strip()
@@ -182,7 +208,8 @@ class InjectHandler:
                     dtop = int(getattr(cfg, "diary_inject_top_n", 1) or 0)
                     if dtop > 0:
                         dmin = float(getattr(cfg, "diary_inject_min_score", 0.0) or 0.0)
-                        hits = svc.recall_diary_chunks(query, top_n=dtop, min_score=dmin, persona_id=persona_scope)
+                        hits = svc.recall_diary_chunks(query, top_n=dtop, min_score=dmin,
+                                                      persona_id=persona_scope, scope_id=scope_scope)
                         # v1.72 (issue 2026-07-29 #3): skip chunks whose text
                         # we already injected recently (LRU via
                         # self._seen_diary). Diary recall has no time filter

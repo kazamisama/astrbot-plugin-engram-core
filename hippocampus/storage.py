@@ -65,6 +65,7 @@ class HippocampalStore:
               created_at REAL, session_id TEXT, actor_id TEXT,
               platform TEXT, channel_id TEXT,
               persona_id TEXT DEFAULT '',
+              scope_id TEXT DEFAULT '',
               content TEXT, summary TEXT,
               topics TEXT, entities TEXT, entity_refs TEXT, tags TEXT, similar_to TEXT,
               importance REAL, strength REAL,
@@ -146,6 +147,14 @@ class HippocampalStore:
               key TEXT PRIMARY KEY,
               value TEXT
             );
+
+            -- v1.76.5: retained source transcript for audit + re-summarize
+            CREATE TABLE IF NOT EXISTS memory_sources (
+              memory_id TEXT PRIMARY KEY,
+              source_json TEXT NOT NULL,
+              source_count INTEGER DEFAULT 0,
+              created_at REAL DEFAULT 0.0
+            );
             """)
         # B10: column-append migrations extracted to hippocampus.db_migration
         ran = run_migrations(self._conn, self._lock)
@@ -157,6 +166,8 @@ class HippocampalStore:
             with self._lock, self._conn:
                 self._conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_persona ON engrams(persona_id)")
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scope ON engrams(scope_id)")
         except Exception as _ix:
             print("[hippocampus] idx_persona create skipped: " + repr(_ix))
         # P1 (2026-08-11): resumable write-operation log. The post-ingest
@@ -198,6 +209,27 @@ class HippocampalStore:
                 "INSERT INTO hippo_meta(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, value))
+
+    def prompt_override_keys(self) -> list[str]:
+        """Names of persisted prompt overrides (keys exclude the prefix)."""
+        try:
+            with self._lock, self._conn:
+                rows = self._conn.execute(
+                    "SELECT key FROM hippo_meta WHERE key LIKE 'prompt_override:%'").fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [str(r["key"]).split(":", 1)[1] for r in rows]
+
+    def get_prompt_override(self, name: str) -> str | None:
+        return self._meta_get("prompt_override:" + name)
+
+    def set_prompt_override(self, name: str, content: str | None) -> None:
+        if content is None:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "DELETE FROM hippo_meta WHERE key=?", ("prompt_override:" + name,))
+        else:
+            self._meta_set("prompt_override:" + name, content)
 
     def _sync_tokenizer_mode(self) -> None:
         """If the persisted tokenizer mode differs from the requested one,
@@ -255,7 +287,7 @@ class HippocampalStore:
         e.fts_text = self._build_fts_text(e)
         row = (
             e.id, e.created_at, e.session_id, e.actor_id, e.platform, e.channel_id,
-            e.persona_id,
+            e.persona_id, e.scope_id,
             e.content, e.summary,
             json.dumps(e.topics, ensure_ascii=False),
             json.dumps(e.entities, ensure_ascii=False),
@@ -277,17 +309,18 @@ class HippocampalStore:
         with self._lock, self._conn:
             self._conn.execute("""
             INSERT INTO engrams(id,created_at,session_id,actor_id,platform,channel_id,
-              persona_id,
+              persona_id,scope_id,
               content,summary,topics,entities,entity_refs,tags,similar_to,
               importance,strength,access_count,last_accessed,
               reconsolidation_lock_until,supersedes,embedding_json,
               memory_type,promoted_at,embedding_model,fts_text,
               valence,intensity,temporal_bucket,stream,forgotten_at,
               cluster_id,profile_fact_id,confidence,tier)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               content=excluded.content,
               persona_id=excluded.persona_id,
+              scope_id=excluded.scope_id,
               summary=excluded.summary, topics=excluded.topics, entities=excluded.entities,
               entity_refs=excluded.entity_refs, tags=excluded.tags, similar_to=excluded.similar_to,
               importance=excluded.importance, strength=excluded.strength,
@@ -339,7 +372,10 @@ class HippocampalStore:
         (FTS rows are dropped by the AFTER DELETE trigger.)"""
         with self._lock, self._conn:
             cur = self._conn.execute("DELETE FROM engrams WHERE id=?", (eid,))
-            return cur.rowcount > 0
+            ok = cur.rowcount > 0
+            if ok:
+                self.delete_memory_source(eid)
+            return ok
 
     def all_after(self, after_id: str, limit: int = 100) -> list:
         """Return engrams with id > `after_id`, ordered by id ASC. Used by v1.3 rebuild checkpoint."""
@@ -520,16 +556,34 @@ class HippocampalStore:
         self.upsert(e)
         return True
 
+    def restore(self, eid: str, *, strength: float = 0.1) -> bool:
+        """Un-forget an engram so it re-enters active recall paths.
+
+        v1.76.5: WebUI archive/restore support. The engram keeps its
+        previous embedding/model unless the caller re-embeds it.
+        """
+        e = self.get(eid)
+        if e is None:
+            return False
+        if not (getattr(e, "forgotten_at", 0.0) or 0.0):
+            return False
+        e.forgotten_at = 0.0
+        e.strength = max(float(getattr(e, "strength", 0.0) or 0.0),
+                         float(strength))
+        self.upsert(e)
+        return True
+
     def list_active(self, limit: int = 10_000, *,
                     memory_type: str | None = None,
-                    actor_id: str | None = None) -> list:
+                    actor_id: str | None = None,
+                    scope_id: str | None = None) -> list:
         """Active (not soft-forgotten) engrams, newest first.
 
         P2b (2026-08-11): filters are pushed into the WHERE clause instead
         of post-filtering a Python list. Old callers passing only `limit`
         keep working unchanged.
         """
-        where: list[str] = []
+        where: list[str] = ["COALESCE(forgotten_at, 0) = 0"]
         params: list[object] = []
         if actor_id:
             where.append("actor_id = ?")
@@ -537,6 +591,9 @@ class HippocampalStore:
         if memory_type:
             where.append("memory_type = ?")
             params.append(str(memory_type))
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '') = ?")
+            params.append(scope_id or "")
         sql = "SELECT * FROM engrams"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -544,7 +601,18 @@ class HippocampalStore:
         params.append(limit)
         with self._lock, self._conn:
             rows = self._conn.execute(sql, params).fetchall()
-        return [Engram.from_row(dict(r)) for r in rows if r["forgotten_at"] == 0.0]
+        return [Engram.from_row(dict(r)) for r in rows]
+
+    def engram_ids_for_scope(self, scope_id: str, limit: int = 100000) -> set:
+        """Return active engram ids for one memory-scope partition."""
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM engrams "
+                "WHERE COALESCE(scope_id, '') = ? AND forgotten_at = 0 "
+                "LIMIT ?",
+                (scope_id or "", int(limit)),
+            ).fetchall()
+        return {row["id"] for row in rows}
 
     def engram_ids_for_persona(self, persona_id: str, limit: int = 100000) -> set:
         """Return active engram ids for a persona partition."""
@@ -608,6 +676,7 @@ class HippocampalStore:
     def vector_search(self, query_vec, k: int, *,
                       actor_id: str | None = None, channel_id: str | None = None,
                       persona_id: str | None = None,
+                      scope_id: str | None = None,
                       memory_types: list[str] | None = None,
                       embedding_model: str | None = None):
         """Vector similarity search with SQL-side filter pushdown.
@@ -622,6 +691,10 @@ class HippocampalStore:
         """
         where: list[str] = []
         params: list[object] = []
+        # v1.76.4: soft-forgotten engrams must never re-enter vector recall.
+        # soft_forget() keeps embedding_json for audit/recovery, so without
+        # this clause the vector route can surface "forgotten" memories.
+        where.append("COALESCE(forgotten_at, 0) = 0")
         if actor_id:
             where.append("actor_id = ?")
             params.append(actor_id)
@@ -632,6 +705,9 @@ class HippocampalStore:
             # Original Python filter normalised NULL/empty to ''; keep that.
             where.append("(COALESCE(persona_id, '') = ?)")
             params.append(persona_id)
+        if scope_id is not None:
+            where.append("(COALESCE(scope_id, '') = ?)")
+            params.append(scope_id or "")
         if memory_types:
             placeholders = ",".join("?" for _ in memory_types)
             where.append(f"memory_type IN ({placeholders})")
@@ -672,41 +748,66 @@ class HippocampalStore:
     def fts_search(self, query: str, k: int = 50, *,
                    actor_id: str | None = None, channel_id: str | None = None,
                    persona_id: str | None = None,
+                   scope_id: str | None = None,
                    memory_types: list[str] | None = None,
                    embedding_model: str | None = None) -> list[tuple[Engram, float]]:
         """BM25 keyword search via FTS5. Returns (engram, similarity) where
-        similarity is roughly in (0, 1] derived from -bm25/10."""
+        similarity is roughly in (0, 1] derived from -bm25/10.
+
+        v1.76.4: filters are pushed into the JOIN so persona/actor/channel
+        filtering happens BEFORE the LIMIT. Soft-forgotten rows are always
+        excluded. ``embedding_model`` is accepted for API compatibility but
+        intentionally not applied to keyword search: FTS text is model
+        independent and old memories must stay reachable after a provider
+        switch without a full vector rebuild.
+        """
+        if k <= 0:
+            return []
         safe_q = self._sanitize_fts_query(query)
         if not safe_q:
             return []
+        where = ["COALESCE(e.forgotten_at, 0) = 0"]
+        params: list[object] = [safe_q]
+        if actor_id:
+            where.append("e.actor_id = ?")
+            params.append(actor_id)
+        if channel_id:
+            where.append("e.channel_id = ?")
+            params.append(channel_id)
+        if persona_id is not None:
+            where.append("(COALESCE(e.persona_id, '') = ?)")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("(COALESCE(e.scope_id, '') = ?)")
+            params.append(scope_id or "")
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            where.append(f"e.memory_type IN ({placeholders})")
+            params.extend(memory_types)
+        sql = (
+            "SELECT e.rowid AS _rid, e.*, bm25(engrams_fts) AS score "
+            "FROM engrams_fts "
+            "JOIN engrams e ON e.rowid = engrams_fts.rowid "
+            "WHERE engrams_fts MATCH ? AND " + " AND ".join(where)
+        )
+        sql += " ORDER BY score LIMIT ?"
+        params.append(int(k))
         with self._lock, self._conn:
             try:
-                cur = self._conn.execute(
-                    "SELECT rowid, bm25(engrams_fts) AS score "
-                    "FROM engrams_fts WHERE engrams_fts MATCH ? ORDER BY score LIMIT ?",
-                    (safe_q, k * 4))
-                hits = [(r["rowid"], float(r["score"])) for r in cur.fetchall()]
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
             except sqlite3.OperationalError:
                 return []
-        if not hits: return []
-        rowids = [h[0] for h in hits]
-        placeholders = ",".join("?" for _ in rowids)
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                f"SELECT rowid AS _rid, * FROM engrams WHERE rowid IN ({placeholders})", rowids)
-            by_rowid = {r["_rid"]: Engram.from_row(dict(r)) for r in cur.fetchall()}
         out: list[tuple[Engram, float]] = []
-        for rowid, bm in hits:
-            e = by_rowid.get(rowid)
-            if e is None: continue
-            if actor_id and e.actor_id != actor_id: continue
-            if channel_id and e.channel_id != channel_id: continue
-            if persona_id is not None and (e.persona_id or '') != persona_id: continue
-            if memory_types and e.memory_type not in memory_types: continue
-            if embedding_model and e.embedding_model != embedding_model: continue
+        for r in rows:
+            try:
+                bm = float(r["score"])
+            except (TypeError, ValueError, KeyError):
+                bm = 0.0
+            e = Engram.from_row(dict(r))
             sim = max(0.0, min(1.0, -bm / 10.0))
             out.append((e, sim))
-        return out[:k]
+        return out
 
     def _sanitize_fts_query(self, q: str) -> str:
         """Drop FTS5 operators/special chars, tokenize per mode, join tokens.
@@ -729,6 +830,65 @@ class HippocampalStore:
         with self._lock, self._conn:
             cur = self._conn.execute("SELECT COUNT(*) AS c FROM engrams_fts")
             return int(cur.fetchone()["c"])
+
+    def import_fingerprints(self, limit: int = 200000) -> list[tuple[str, str, str, str]]:
+        """Lightweight (content, session, persona, id) tuples for import dedup."""
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id, content, COALESCE(session_id,'') AS sid, "
+                "COALESCE(persona_id,'') AS pid FROM engrams "
+                "WHERE COALESCE(forgotten_at,0)=0 LIMIT ?",
+                (int(limit),)).fetchall()
+        return [(r["content"] or "", r["sid"], r["pid"], r["id"]) for r in rows]
+
+    def count_by_embedding_model(self, model: str, *,
+                                 include_forgotten: bool = False) -> int:
+        """Count engrams carrying `model` (empty model normalised to '')."""
+        sql = ("SELECT COUNT(*) AS c FROM engrams "
+               "WHERE COALESCE(embedding_model, '') = ?")
+        if not include_forgotten:
+            sql += " AND COALESCE(forgotten_at, 0) = 0"
+        with self._lock, self._conn:
+            cur = self._conn.execute(sql, (model or "",))
+            return int(cur.fetchone()["c"])
+
+    def save_memory_source(self, memory_id: str, lines: list[dict]) -> None:
+        """Persist the source transcript for one memory (audit/re-summarize)."""
+        import time as _t
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO memory_sources(memory_id, source_json, source_count, created_at) "
+                "VALUES(?,?,?,?) "
+                "ON CONFLICT(memory_id) DO UPDATE SET "
+                "source_json=excluded.source_json, source_count=excluded.source_count, "
+                "created_at=excluded.created_at",
+                (memory_id, json.dumps(lines or [], ensure_ascii=False),
+                 len(lines or []), _t.time()))
+
+    def get_memory_source(self, memory_id: str) -> list[dict]:
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "SELECT source_json FROM memory_sources WHERE memory_id=? LIMIT 1",
+                    (memory_id,))
+                row = cur.fetchone()
+        except sqlite3.OperationalError:
+            return []
+        if not row:
+            return []
+        try:
+            data = json.loads(row["source_json"] or "[]")
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def delete_memory_source(self, memory_id: str) -> None:
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "DELETE FROM memory_sources WHERE memory_id=?", (memory_id,))
+        except sqlite3.OperationalError:
+            pass
 
     # ---------- v1.1: cluster_summaries CRUD ----------
     def get_cluster_summary(self, cluster_id: str):

@@ -169,7 +169,7 @@ def _context_header(lines: list) -> str:
 
 
 def _build_prompt(lines: list, target_chars: int, day_label: str,
-                  head_override: str = "") -> str:
+                  head_override: str = "", *, namespace=None) -> str:
     """Build the user prompt for the diary-composing LLM.
 
     v1.72: if `head_override` is non-empty, use it verbatim
@@ -179,7 +179,13 @@ def _build_prompt(lines: list, target_chars: int, day_label: str,
     if (head_override or "").strip():
         head = head_override
     else:
-        head = _DEFAULT_USER_HEAD.format(day_label=day_label, target=target_chars)
+        from .prompts import get_prompt, has_override
+        if has_override("diary_user_head", namespace):
+            head = get_prompt("diary_user_head", _DEFAULT_USER_HEAD,
+                              namespace=namespace).format(
+                day_label=day_label, target=target_chars)
+        else:
+            head = _DEFAULT_USER_HEAD.format(day_label=day_label, target=target_chars)
     return head + _context_header(lines) + _transcript(lines)
 
 
@@ -206,7 +212,14 @@ class DiaryWriter:
         # v1.72: operator can override the system prompt via cfg.
         # Empty override (default) -> built-in _SYS_BASE.
         override = (getattr(self.cfg, "diary_system_prompt_override", "") or "").strip()
-        base = override if override else _SYS_BASE
+        if not override:
+            from .prompts import get_prompt, has_override
+            _pn = getattr(self.cfg, "_prompt_namespace", None)
+            # Preserve the original built-in verbatim unless an operator
+            # actually saved a prompt-manager customisation.
+            override = (get_prompt("diary_system", _SYS_BASE, namespace=_pn)
+                        if has_override("diary_system", _pn) else _SYS_BASE)
+        base = override
         if self._persona is not None:
             try:
                 p = self._persona(lines)
@@ -251,7 +264,8 @@ class DiaryWriter:
             # v1.72: pass operator's user-prompt head override through.
             user = _build_prompt(
                 lines, target, day_label,
-                head_override=getattr(self.cfg, "diary_user_prompt_head_override", ""))
+                head_override=getattr(self.cfg, "diary_user_prompt_head_override", ""),
+                namespace=getattr(self.cfg, "_prompt_namespace", None))
             raw = self._llm.chat(sys, user, temperature=0.4,
                                  max_tokens=max(512, min(4096, target * 3)))
         except Exception as ex:

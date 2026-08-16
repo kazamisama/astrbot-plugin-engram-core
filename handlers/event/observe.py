@@ -7,6 +7,7 @@ Star subclasses for decorators). This class is constructed in
 __init__ and invoked by the thin wrapper in main.py.
 """
 from __future__ import annotations
+import asyncio
 from typing import TYPE_CHECKING
 from ..format import _extract, _resolve_group_name, _bot_actor_id, _resolve_bot_name
 if TYPE_CHECKING:
@@ -53,6 +54,14 @@ class ObserveHandler:
         self._aggregator = None
         self._conv_buffer = None
         self._summarizer = None
+        self._ingest_lock = None
+
+    def _get_ingest_lock(self):
+        """Serialize ingest workers so message order is preserved even
+        though the blocking SQLite/LLM work runs off the event loop."""
+        if self._ingest_lock is None:
+            self._ingest_lock = asyncio.Lock()
+        return self._ingest_lock
 
     def _get_aggregator(self):
         """Lazily build a SessionAggregator bound to this service.
@@ -105,12 +114,20 @@ class ObserveHandler:
                         "platform": rec.platform,
                         "channel_id": rec.channel_id,
                         "persona_id": getattr(rec, "persona_id", "") or "",
+                        "scope_id": getattr(rec, "scope_id", "") or "",
                         "chat_type": rec.chat_type,
                         "group_id": rec.group_id,
                         "group_name": rec.group_name,
                         "peer_actor_id": rec.peer_actor_id,
                         "peer_name": rec.peer_name,
                         "memory_type": "episodic",
+                        "source_lines": [{
+                            "actor_id": ln.actor_id,
+                            "speaker": ln.speaker,
+                            "content": ln.content,
+                            "ts": ln.ts,
+                            "is_bot": bool(ln.is_bot),
+                        } for ln in getattr(rec, "lines", [])],
                     }
                     self.service.store_summary(summ, identity)
                 except Exception as ex:
@@ -135,6 +152,15 @@ class ObserveHandler:
             except Exception:
                 meta["group_name"] = ""
         cfg = getattr(self.service, "cfg", None)
+        # v1.76.4 (M5): the summary/LLM/sqlite path is synchronous and can
+        # block the AstrBot event loop for seconds on a flush. Run it on a
+        # worker thread, serialized per ObserveHandler so channel message
+        # order is preserved.
+        async with self._get_ingest_lock():
+            await asyncio.to_thread(self._process_inbound_meta, meta, cfg)
+
+    def _process_inbound_meta(self, meta: dict, cfg) -> None:
+        """Blocking part of handle_message(); never called concurrently."""
         summary_mode = bool(cfg is not None and getattr(
             cfg, "summary_mode_enabled", False))
         debug_ingest = bool(cfg is not None and getattr(
@@ -165,7 +191,7 @@ class ObserveHandler:
         # message LLM extractor can build channel context.
         core = {k: meta[k] for k in (
             "session_id", "actor_id", "platform", "channel_id", "content",
-            "persona_id", "channel_label", "chat_type")
+            "persona_id", "scope_id", "channel_label", "chat_type")
             if k in meta}
         if cfg is not None and getattr(cfg, "session_aggregate_enabled", False):
             self._get_aggregator().feed(core)
@@ -202,6 +228,10 @@ class ObserveHandler:
                 meta["group_name"] = await _resolve_group_name(event)
             except Exception:
                 meta["group_name"] = ""
+        async with self._get_ingest_lock():
+            await asyncio.to_thread(self._process_bot_meta, meta, cfg, summary_on)
+
+    def _process_bot_meta(self, meta: dict, cfg, summary_on: bool) -> None:
         # v1.20 B-3: cache bot's own line for the daily diary.
         try:
             self.service.cache_daily_line(meta)
@@ -261,12 +291,15 @@ class ObserveHandler:
         # (containing only poke history). Same root cause as the early
         # v1.36 persona-scoping rollout, but pokes were missed at the time.
         persona_id = ""
+        scope_id = ""
         try:
             ge = getattr(event, "get_extra", None)
             if callable(ge):
                 persona_id = ge("hippo_persona_id") or ""
+                scope_id = ge("hippo_scope_id") or ""
         except Exception:
             persona_id = ""
+            scope_id = ""
         meta = {
             "session_id": getattr(event, "unified_msg_origin", "") or "",
             "actor_id": sender_id,
@@ -275,6 +308,7 @@ class ObserveHandler:
             "content": content,
             "chat_type": chat_type,
             "persona_id": persona_id,
+            "scope_id": scope_id,
             "speaker": sender_name,
             "group_id": group_id,
             "group_name": "",
@@ -288,11 +322,15 @@ class ObserveHandler:
                 meta["group_name"] = await _resolve_group_name(event)
             except Exception:
                 meta["group_name"] = ""
+        summary_on = bool(cfg is not None and getattr(cfg, "summary_mode_enabled", False))
+        async with self._get_ingest_lock():
+            await asyncio.to_thread(self._process_poke_meta, meta, summary_on)
+
+    def _process_poke_meta(self, meta: dict, summary_on: bool) -> None:
         try:
             self.service.cache_daily_line(meta)
         except Exception as ce:
             print(f"[hippocampus] poke daily cache error: {ce!r}")
-        summary_on = bool(cfg is not None and getattr(cfg, "summary_mode_enabled", False))
         if summary_on:
             try:
                 self._get_conv_buffer().feed(meta)

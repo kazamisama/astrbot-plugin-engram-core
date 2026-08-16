@@ -27,8 +27,9 @@ class _FieldSpec:
     label_en: str = ""
 
 
-# 67-field registry. Mirrors MemoryConfig exactly. If you add a field
-# to MemoryConfig, add a matching _FieldSpec here.
+# Field registry. Mirrors MemoryConfig exactly (134 fields as of
+# v1.76.4; tests derive the count dynamically). If you add a field to
+# MemoryConfig, add a matching _FieldSpec here.
 _FIELDS: dict[str, _FieldSpec] = {
     # core
     "sqlite_path": _FieldSpec(str, label_zh="SQLite 存储路径", label_en="SQLite storage path"),
@@ -37,10 +38,26 @@ _FIELDS: dict[str, _FieldSpec] = {
     "pattern_separation_threshold": _FieldSpec(float, (0.0, 1.0), label_zh="模式分离阈值", label_en="Pattern separation threshold"),
     "pattern_similar_threshold": _FieldSpec(float, (0.0, 1.0), label_zh="相似判定阈值", label_en="Pattern similar threshold"),
     "recall_candidate_k": _FieldSpec(int, (1, 10000), label_zh="召回候选数", label_en="Recall candidate k"),
+    "score_alpha": _FieldSpec(float, (0.0, 1.0), label_zh="检索相关性权重", label_en="Recall score alpha"),
+    "score_beta": _FieldSpec(float, (0.0, 1.0), label_zh="重要性权重", label_en="Recall score beta"),
+    "score_gamma": _FieldSpec(float, (0.0, 1.0), label_zh="时间新鲜度权重", label_en="Recall score gamma"),
+    "recency_decay_rate": _FieldSpec(float, (0.0, 1.0), label_zh="时间衰减率", label_en="Recency decay rate"),
+    "document_route_weight": _FieldSpec(float, (0.0, 1.0), label_zh="文档路权重", label_en="Document route weight"),
+    "graph_route_weight": _FieldSpec(float, (0.0, 1.0), label_zh="图谱路权重", label_en="Graph route weight"),
+    "cross_route_bonus": _FieldSpec(float, (0.0, 1.0), label_zh="双路命中加成", label_en="Cross route bonus"),
+    "dynamic_route_weighting": _FieldSpec(bool, label_zh="查询意图动态调权", label_en="Dynamic route weighting"),
     "reconsolidation_lock_seconds": _FieldSpec(float, (0.0, 86400.0), label_zh="再固化锁窗口", label_en="Reconsolidation lock seconds"),
     "decay_tau_base": _FieldSpec(float, (1.0, 86400.0 * 365), label_zh="基础衰减 tau", label_en="Decay tau base (s)"),
     "decay_floor": _FieldSpec(float, (0.0, 1.0), label_zh="强度下限", label_en="Decay floor"),
     "consolidation_interval_seconds": _FieldSpec(float, (0.0, 86400.0), label_zh="巩固间隔", label_en="Consolidation interval (s)"),
+    "memory_consolidation_enabled": _FieldSpec(bool, label_zh="启用 LLM 记忆整合", label_en="Enable LLM memory consolidation"),
+    "memory_consolidation_max_importance": _FieldSpec(float, (0.0, 1.0), label_zh="整合候选最高重要性", label_en="Consolidation max importance"),
+    "memory_consolidation_min_age_days": _FieldSpec(int, (1, 3650), label_zh="整合候选最小天龄", label_en="Consolidation min age days"),
+    "memory_consolidation_min_memories_per_group": _FieldSpec(int, (2, 1000), label_zh="每组最少记忆数", label_en="Consolidation min memories per group"),
+    "memory_consolidation_max_groups": _FieldSpec(int, (1, 100), label_zh="单次最多整合组数", label_en="Consolidation max groups"),
+    "memory_consolidation_max_candidates": _FieldSpec(int, (1, 100000), label_zh="整合候选上限", label_en="Consolidation max candidates"),
+    "memory_consolidation_granularity": _FieldSpec(str, choices=("session", "semantic"), label_zh="整合粒度", label_en="Consolidation granularity"),
+    "memory_consolidation_keep_original": _FieldSpec(str, choices=("archive", "delete"), label_zh="旧记忆处理", label_en="Consolidation keep original"),
     "consolidation_max_pairs": _FieldSpec(int, (1, 100000), label_zh="巩固合并对数上限", label_en="Consolidation max pairs"),
     "importance_floor_for_long_term": _FieldSpec(float, (0.0, 1.0), label_zh="长期记忆重要性下限", label_en="Importance floor for long term"),
     # v0.2
@@ -139,6 +156,9 @@ _FIELDS: dict[str, _FieldSpec] = {
     "auto_inject_position": _FieldSpec(str, label_zh="自动注入位置", label_en="Auto inject position"),
     "auto_inject_relative_time": _FieldSpec(bool, label_zh="注入相对时间", label_en="Inject relative time label"),
     "persona_isolation_enabled": _FieldSpec(bool, label_zh="人格记忆隔离", label_en="Persona memory isolation"),
+    "memory_scope_mode": _FieldSpec(str, choices=("legacy", "session", "user", "global"), label_zh="记忆作用域模式", label_en="Memory scope mode"),
+    "isolated_sessions": _FieldSpec(list, label_zh="强制隔离会话", label_en="Isolated sessions"),
+    "identity_aliases": _FieldSpec(str, label_zh="身份别名", label_en="Identity aliases"),
     # v1.6 session aggregation
     "session_aggregate_enabled": _FieldSpec(bool, label_zh="启用会话聚合", label_en="Session aggregate enabled"),
     "session_aggregate_max_messages": _FieldSpec(int, (1, 100), label_zh="会话聚合最大条数", label_en="Session aggregate max messages"),
@@ -155,6 +175,7 @@ _FIELDS: dict[str, _FieldSpec] = {
     "summary_compress_ratio": _FieldSpec(float, (0.0, 1.0), label_zh="总结压缩比", label_en="Summary compress ratio"),
     "summary_compress_floor": _FieldSpec(int, (0, 5000), label_zh="总结字数下限", label_en="Summary compress floor"),
     "summary_compress_cap": _FieldSpec(int, (0, 5000), label_zh="总结字数上限(私聊/通用)", label_en="Summary compress cap (private/default)"),
+    "source_retention_min_importance": _FieldSpec(float, (0.0, 1.0), label_zh="保留原文最低重要性", label_en="Source retention min importance"),
     "summary_compress_cap_group": _FieldSpec(int, (0, 5000), label_zh="总结字数上限(群聊)", label_en="Summary compress cap (group)"),
     "summary_idle_flush_interval_seconds": _FieldSpec(float, (5.0, 3600.0), label_zh="空闲扫描周期秒", label_en="Idle flush interval seconds"),
     "summary_fallback_enabled": _FieldSpec(bool, label_zh="总结回退写入", label_en="Summary fallback write"),

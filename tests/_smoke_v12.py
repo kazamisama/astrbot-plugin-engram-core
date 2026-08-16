@@ -12,7 +12,7 @@ def _install_stub():
     class Star: ...
     captured = {}
     def register(*args, **kwargs):
-        # main.py calls @register("hippocampus", "shirley", <desc>, <version>)
+        # main.py mirrors HIPPO_VERSION onto HippocampusStar._registered_version
         if len(args) >= 4:
             captured["version"] = args[3]
         def deco(cls):
@@ -65,12 +65,12 @@ def _read_metadata_version():
 
 
 def test_version_single_source():
-    banner("version: metadata.yaml == __version__ == HIPPO_VERSION == @register")
+    banner("version: metadata.yaml == __version__ == _registered_version")
     meta = _read_metadata_version()
     assert meta == hippocampus.__version__, (meta, hippocampus.__version__)
     assert HIPPO_VERSION == hippocampus.__version__
     assert main.HippocampusStar._registered_version == hippocampus.__version__, \
-        ("@register version drifted", main.HippocampusStar._registered_version)
+        ("_registered_version drifted", main.HippocampusStar._registered_version)
     # banner_text on a None service should not blow up
     assert banner_text(None) == "[hippocampus] not initialized"
     print("  version single source: OK ->", hippocampus.__version__)

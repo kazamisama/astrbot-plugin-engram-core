@@ -96,7 +96,9 @@ def _svc(tmp):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # Python 3.10+ / 3.14 compatible: get_event_loop() no longer creates
+    # a loop implicitly, so use asyncio.run() for each isolated coroutine.
+    return asyncio.run(coro)
 
 
 def test_poke_to_bot_records_named_line():

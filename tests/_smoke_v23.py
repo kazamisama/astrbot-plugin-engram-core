@@ -7,10 +7,10 @@ Scope:
   (back-compat with PluginInitializer's prior hardcode path).
 - Unknown fields land in MemoryConfig.extra (forward-compat with future
   config keys that B8+ may add before the registry is updated).
-- LABELS is a public dict with 67 entries, each having {zh, en}.
+- LABELS is a public dict covering every MemoryConfig field, each having {zh, en}.
 
 Tests:
-- empty dict -> all 67 fields at their MemoryConfig defaults; extra is {}
+- empty dict -> all MemoryConfig fields at their defaults; extra is {}
 - 14-field legacy dict (the dict PluginInitializer used to consume) -> exact
   same MemoryConfig that the old hardcode path produced
 - type coercion: int / float / bool from strings; bool from "true"/"false"/"1"/"0"
@@ -18,7 +18,7 @@ Tests:
 - range check: embedding_dim=999999 -> default + warn
 - range check passes: embedding_dim=128 stays
 - extras: 2 unknown keys land in MemoryConfig.extra
-- LABELS has 67 entries; embedding_dim / enable_session_filter / sqlite_path
+- LABELS covers every field; embedding_dim / enable_session_filter / sqlite_path
   each have non-empty zh and en labels
 - ConfigManager.get(key) returns the same value as getattr on memory_config
 - None values in raw dict are treated as "use default" (no warn)
@@ -36,7 +36,7 @@ def banner(t): print("\n=== " + t + " ===")
 
 
 def test_registry_covers_all_memory_config_fields():
-    banner("ConfigManager._FIELDS covers every MemoryConfig field (67)")
+    banner("ConfigManager._FIELDS covers every MemoryConfig field")
     import dataclasses
     cfg_fields = {f.name for f in dataclasses.fields(MemoryConfig)}
     registry_fields = set(_FIELDS.keys())
@@ -44,12 +44,14 @@ def test_registry_covers_all_memory_config_fields():
         f"missing in registry: {cfg_fields - registry_fields}\n"
         f"extra in registry:   {registry_fields - cfg_fields}"
     )
-    assert len(registry_fields) == 133  # 67 base +5 backup +2 provider_id -4 openai +3 auto-inject +4 session-agg +3 persona +1 tokenizer +3 dedup +1 reltime +8 tiering +2 cold-archive +1 freq-recall +9 summary-b1 +1 idle-flush +1 summary-fallback +3 relation-b2 +11 diary-b3 +1 graph-pair-cap +2 memory-decay +3 relation-decay +2 forget-purge-profile +1 persona-isolation +2 diary-prompt-overrides
-    print("  all 67 fields registered: OK")
+    assert len(registry_fields) == len(cfg_fields), (
+        f"registry has {len(registry_fields)} fields, "
+        f"MemoryConfig has {len(cfg_fields)}")
+    print(f"  all {len(cfg_fields)} fields registered: OK")
 
 
 def test_empty_dict_yields_all_defaults():
-    banner("empty dict -> all 67 fields at MemoryConfig defaults")
+    banner("empty dict -> all MemoryConfig fields at defaults")
     cm = ConfigManager({})
     cfg = cm.memory_config
     default = MemoryConfig()
@@ -179,7 +181,8 @@ def test_extras_collected_into_memory_config_extra():
 
 def test_labels_have_zh_and_en_for_every_field():
     banner("LABELS has zh + en for every field; spot-check 3 well-known fields")
-    assert len(LABELS) == 133  # 67 base +5 backup +2 provider_id -4 openai +3 auto-inject +4 session-agg +3 persona +1 tokenizer +3 dedup +1 reltime +8 tiering +2 cold-archive +1 freq-recall +9 summary-b1 +1 idle-flush +1 summary-fallback +3 relation-b2 +11 diary-b3 +1 graph-pair-cap +2 memory-decay +3 relation-decay +2 forget-purge-profile +1 persona-isolation +2 diary-prompt-overrides
+    import dataclasses
+    assert len(LABELS) == len(dataclasses.fields(MemoryConfig))
     for fname, lab in LABELS.items():
         assert "zh" in lab and "en" in lab
         assert lab["zh"] and lab["en"], f"{fname}: empty label"
@@ -188,7 +191,7 @@ def test_labels_have_zh_and_en_for_every_field():
     assert LABELS["embedding_dim"]["en"] == "Embedding dimension"
     assert LABELS["enable_session_filter"]["en"].startswith("Enable ")
     assert LABELS["sqlite_path"]["zh"] == "SQLite 存储路径"
-    print("  67/67 labels present + 3 spot-checks pass: OK")
+    print("  all labels present + 3 spot-checks pass: OK")
 
 
 def test_get_matches_getattr_on_memory_config():

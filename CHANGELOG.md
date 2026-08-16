@@ -1,5 +1,137 @@
 # Changelog
 
+## [1.76.7] - 2026-08-16
+
+### Fixed
+- **Graph route partitioning**: graph retrieval now obeys forgotten_at /
+  persona_id / scope_id / actor_id / channel_id filters on both fast-path
+  and legacy fallback.
+- **Command-path scope stamping**: every `/mem` command wrapper now stamps
+  persona + scope before dispatch; activation / confidence / narrative /
+  debug / graph handlers forward scope_id.
+- **Scope coverage**: relation, diary-chunk and semantic recall now accept
+  and enforce scope_id; spreading-activation seeds and final activation map
+  are scope/persona filtered.
+- **Stable user identity**: scope resolution prefers `sender_id` over the
+  mutable nickname; `identity_aliases` remains the nickname bridge.
+- **Consolidation safety**: merged write must succeed before originals are
+  archived/deleted; identity carries scope_id; session grouping is keyed by
+  (session, persona, scope); candidate count is capped.
+- **Import fidelity**: native JSON import preserves id / status / tags /
+  confidence and deduplicates against the existing database, not just the
+  file; archived rows no longer resurrect.
+- **Prompt isolation**: overrides are namespaced per MemoryService/store;
+  empty prompt edits reset to default; encoder/summary/diary built-ins stay
+  byte-identical to their original constants.
+- **Retrieval consistency**: command debug/dual-route use service weights;
+  `asearch()` delegates to weighted `search()`; recall debug truncates to k.
+- **Atom lifecycle**: expired atoms are soft-forgotten by decay pass; atom
+  route touches last_accessed/access_count; LIKE search escapes wildcards.
+- **Resummarize**: derives peer name from source, carries scope_id, and
+  re-runs `_post_ingest` so derived indexes track the rewritten engram.
+
+### Notes
+- `_conf_schema.json` now exposes scope / scoring / consolidation /
+  source-retention fields; README documents the 1.76.6 UI surfaces.
+- Smoke v80 covers graph filters, consolidation safety and prompt
+  namespace isolation.
+
+
+## [1.76.6] - 2026-08-16
+
+### Added
+- **Memory scope (session/user/global)**: new `scope_id` column and
+  `memory_scope_mode` / `isolated_sessions` / `identity_aliases` settings;
+  scope is stamped on hooks and enforced by vector / FTS / dual-route /
+  atom / spread retrieval.
+- **Identity aliases**: `platform:user_id=Canonical` mappings used by the
+  user scope resolver.
+- **Prompt manager**: built-in extract / summary / consolidation / diary
+  templates, persisted overrides, dashboard editor with save/reset, and
+  runtime consumption by encoder / summarizer / consolidator / diary writer.
+- **WebUI memory import/export**: JSON round-trip + CSV export, preview
+  (entry count / duplicates / errors), duplicate-skip import and download.
+
+### Notes
+- Smoke v79 covers scope partitioning, persistent prompt overrides and
+  transfer round-trip.
+
+
+## [1.76.5] - 2026-08-16
+
+### Added
+- **Recall debug console**: `/page/recall/test` now returns per-route raw
+  score + RRF contribution + final weighted breakdown and elapsed ms; the
+  dashboard renders route chips and score parts.
+- **Visualization stats**: stats endpoint returns status/importance/tier/
+  valence/stream/atom distributions; dashboard renders bar charts.
+- **Archive lifecycle**: WebUI can list archived memories, restore them
+  (re-embedding when necessary), and batch soft/hard delete.
+- **Source retention + re-summarize**: important summaries keep their raw
+  transcript; detail view can inspect the source and re-run LLM
+  summarization in place.
+- **First-person episodic recall prompt**: conversation summarization now
+  writes subjective bot memories, normalizes relative time, and forbids
+  generic "user/someone" labels; bot turns are labelled as `我`.
+- **Explainable weighted dual-route scoring**:
+  `retrieval * alpha + importance * beta + recency * gamma +
+  cross_route_bonus`, with dynamic document/graph weights by query intent.
+- **Atom temporal lifecycle**: MemoryAtom gains `ttl_days` / `event_time` /
+  `expires_at` and a temporal score; a new atom keyword route maps fresh
+  atoms back to parent engrams in dual-route recall.
+- **LLM memory consolidation**: optional low-importance stale-memory
+  grouping (session or embedding-based semantic clustering) and LLM merge,
+  with originals archived or deleted.
+
+### Fixed
+- Dual-route document retrieval now honors `persona_id` scoping.
+
+### Notes
+- Smoke v78 covers the new recall debug, stats, lifecycle, source, dynamic
+  routing and atom temporal surfaces.
+
+
+## [1.76.4] - 2026-08-16
+
+### Fixed
+- **Soft-forgotten recall leak**: vector and FTS search now exclude
+  `forgotten_at > 0` rows, and `PatternCompleter` adds a defense-in-depth
+  filter. A `/mem forget` soft-delete can no longer resurface in recall or
+  auto-injection.
+- **FTS filter pushdown**: persona / actor / channel / memory-type filters
+  now run inside the SQL FTS JOIN before `LIMIT`, so persona-scoped recall
+  no longer drops local hits that fall outside the global FTS top-k.
+- **FTS no longer gated by embedding model**: keyword recall still reaches
+  older `embedding_model=hash` rows after switching to `astrmock`.
+- **Safer provider activation**: `astrmock` is auto-activated only when the
+  host embedding probe returns a usable vector. Without a host provider the
+  plugin keeps the configured `hash` provider instead of silently switching
+  to empty embeddings.
+- **Recall cache key completeness**: `valence_hint`, activation maps and the
+  retrieval-affecting config snapshot now participate in the cache key, so
+  runtime config changes take effect immediately.
+- **`list_active` correctness**: `forgotten_at` filtering moved into SQL
+  before `LIMIT`.
+- **Group working memory**: cells are indexed by both `session_id` and
+  `channel_id`; persona filtering is applied to the working-memory prepend.
+- **Backup scheduler**: duplicate `_start_backup_scheduler` call removed and
+  an idempotency guard added (previously two `hippocampus-backup` threads
+  were started).
+- **WAL-consistent backups**: `BackupManager.create()` now uses the SQLite
+  online backup API, producing a consistent snapshot while live service
+  connections stay open.
+- **Event-loop blocking**: observe / bot-reply / poke ingest, auto memory
+  injection, idle flush and daily diary generation now run their
+  synchronous SQLite+LLM work on worker threads instead of blocking the
+  AstrBot event loop. `ConversationBuffer`, `WorkingMemory` and the recall
+  cache gained internal locks for the new cross-thread access pattern.
+
+### Notes
+- Smoke v77 covers the recall/backup/initializer hardening batch; v23/v36/
+  v41/v53/v70 assertions refreshed for current code and Python 3.14.
+- README removed the stale `openai_api_key` config claim.
+
+
 ## [1.76.3] - 2026-08-14
 
 ### Changed

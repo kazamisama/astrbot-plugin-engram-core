@@ -151,6 +151,9 @@
       if (tab.getAttribute("data-tab") === "diary" && !_diaryState.optionsLoaded) {
         loadDiaryOptions();
       }
+      if (tab.getAttribute("data-tab") === "prompts" && !_promptCache.length) {
+        loadPrompts();
+      }
     });
   });
 
@@ -202,9 +205,38 @@
           '<div class="lbl">' + escapeHtml(meta.label) + "</div></div>";
         box.appendChild(card);
       });
+      _renderStatCharts(d);
     } catch (e) {
       box.innerHTML = errBox(e.message);
     }
+  }
+
+  function _barChart(title, data) {
+    var entries = Object.keys(data || {}).filter(function (k) { return Number(data[k]) > 0; });
+    if (!entries.length) return "";
+    var max = Math.max.apply(null, entries.map(function (k) { return Number(data[k]) || 0; }), 1);
+    var html = '<div class="chart-card card"><div class="chart-title">' + escapeHtml(title) + "</div>";
+    entries.forEach(function (k) {
+      var v = Number(data[k]) || 0;
+      var pct = Math.max(2, Math.round(v / max * 100));
+      html += '<div class="bar-row">' +
+        '<span class="bar-label">' + escapeHtml(k) + "</span>" +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+        '<span class="bar-value">' + v + "</span></div>";
+    });
+    return html + "</div>";
+  }
+
+  function _renderStatCharts(d) {
+    var charts = document.getElementById("stat-charts");
+    if (!charts) return;
+    var html = "";
+    if (d.importance_distribution) html += _barChart("重要性分布", d.importance_distribution);
+    if (d.tier_breakdown) html += _barChart("记忆分层", d.tier_breakdown);
+    if (d.valence_breakdown) html += _barChart("情感价分布", d.valence_breakdown);
+    if (d.stream_breakdown) html += _barChart("双流分布", d.stream_breakdown);
+    if (d.atom_breakdown) html += _barChart("记忆原子类型", d.atom_breakdown);
+    charts.innerHTML = html || emptyBox("暂无分布数据");
   }
 
   // ---------- memories ----------
@@ -216,10 +248,17 @@
   // 查看 / 编辑 toggle, and "编辑" swaps in the same editForm() used
   // before (with sliders, save, etc.).
   var _memDetailCache = {};
+  var _memSelected = new Set();
+
+  function _selectedMemIds() {
+    return Array.from(_memSelected);
+  }
 
   async function loadMemories() {
     var q = document.getElementById("mem-search").value.trim();
     var k = document.getElementById("mem-k").value || 50;
+    var status = document.getElementById("mem-status").value || "active";
+    _memSelected.clear();
     var wrap = document.getElementById("mem-rows");
     // v1.50: detail panel below the list is no longer used (folded
     // inline). Empty it out, keep the DOM element for layout stability.
@@ -228,7 +267,7 @@
     _memDetailCache = {};
     wrap.innerHTML = emptyBox("加载中…");
     try {
-      var d = unwrap(await apiGet("page/memories", { q: q, k: k, offset: 0 }));
+      var d = unwrap(await apiGet("page/memories", { q: q, k: k, offset: 0, status: status }));
       var items = (d && d.items) || [];
       if (!items.length) { wrap.innerHTML = emptyBox("暂无记忆"); return; }
       wrap.innerHTML = "";
@@ -251,6 +290,9 @@
     else if (it.channel_id) groupTxt = String(it.channel_id);
     div.innerHTML =
       '<div class="mem-head memory-head">' +
+        '<label class="mem-check">' +
+          '<input type="checkbox" data-mem-check="' + escapeHtml(it.id == null ? "" : it.id) + '">' +
+        "</label>" +
         '<span class="chip">#' + escapeHtml(it.id == null ? "?" : it.id) + "</span>" +
         (it.actor_id ? '<span class="chip chip-muted">用户 ' + escapeHtml(it.actor_id) + "</span>" : "") +
         (it.strength != null ? '<span class="chip chip-muted">强度 ' + Number(it.strength).toFixed(2) + "</span>" : "") +
@@ -270,6 +312,12 @@
     head.addEventListener("click", function (ev) {
       if (ev.target.closest(".row-actions")) return;
       _toggleMemoryRow(div, it.id);
+    });
+    var check = div.querySelector('input[data-mem-check]');
+    if (check) check.addEventListener("change", function () {
+      var id = check.getAttribute("data-mem-check");
+      if (!id) return;
+      if (check.checked) _memSelected.add(id); else _memSelected.delete(id);
     });
     div.querySelector(".mem-toggle").addEventListener("click", function (ev) {
       ev.stopPropagation();
@@ -311,7 +359,11 @@
       // like the legacy bottom panel did, so the fold isn't useless
       // unless the user switches to edit mode.
       var modeBody = (mode === "edit") ? editForm(d) : kvRows(d);
+      var archived = d.status === "archived" || (d.forgotten_at && Number(d.forgotten_at) > 0);
+      var hasSource = Number(d.source_count || 0) > 0;
       var html = '<div class="section-title">记忆详情 #' + escapeHtml(eid) + "</div>" +
+        (archived ? '<div class="mem-mode-actions"><button type="button" class="btn btn-sm mem-restore">恢复为活跃</button></div>' : "") +
+        (hasSource ? '<div class="mem-mode-actions"><button type="button" class="btn btn-ghost btn-sm mem-source">查看原文</button> <button type="button" class="btn btn-ghost btn-sm mem-resummarize">重新总结</button></div>' : "") +
         '<div class="mem-mode-actions">' +
           '<button type="button" class="btn btn-ghost btn-sm mem-mode-view"' +
             (mode === "view" ? ' style="display:none;"' : "") + '>查看</button>' +
@@ -329,6 +381,43 @@
 
   function _wireMemoryFoldButtons(rowDiv, eid) {
     var body = rowDiv.querySelector(".mem-detail-body");
+    var sourceBtn = body.querySelector(".mem-source");
+    if (sourceBtn) sourceBtn.addEventListener("click", async function () {
+      var modeBody = body.querySelector(".mem-mode-body");
+      if (modeBody) modeBody.innerHTML = emptyBox("加载原文…");
+      try {
+        var d = unwrap(await apiGet("page/memories/source", { eid: eid }));
+        var lines = (d && d.lines) || [];
+        var html = lines.map(function (ln) {
+          var when = ln.ts ? new Date(Number(ln.ts) * 1000).toLocaleString() : "";
+          return '<div class="source-line"><span class="chip chip-muted">' +
+            (ln.is_bot ? "我" : escapeHtml(ln.speaker || ln.actor_id || "?")) +
+            "</span>" + (when ? '<span class="source-time">' + escapeHtml(when) + "</span>" : "") +
+            '<div class="source-text">' + escapeHtml(ln.content || "") + "</div></div>";
+        }).join("");
+        if (modeBody) modeBody.innerHTML = html || emptyBox("无原文");
+      } catch (e) { if (modeBody) modeBody.innerHTML = errBox(e.message); }
+    });
+    var resumBtn = body.querySelector(".mem-resummarize");
+    if (resumBtn) resumBtn.addEventListener("click", async function () {
+      var msg = body.querySelector(".mem-mode-body");
+      if (msg) msg.innerHTML = emptyBox("重新总结中…");
+      try {
+        unwrap(await apiPost("page/memories/resummarize", { eid: eid }));
+        delete _memDetailCache[eid];
+        _renderMemoryDetailInto(eid, body, rowDiv, "view");
+        await loadMemories();
+      } catch (e) { if (msg) msg.innerHTML = errBox(e.message); }
+    });
+    var restoreBtn = body.querySelector(".mem-restore");
+    if (restoreBtn) restoreBtn.addEventListener("click", async function () {
+      try {
+        unwrap(await apiPost("page/memories/restore", { eid: eid }));
+        delete _memDetailCache[eid];
+        _renderMemoryDetailInto(eid, body, rowDiv, "view");
+        await loadMemories();
+      } catch (e) { _toastError("恢复失败：" + e.message); }
+    });
     var viewBtn = body.querySelector(".mem-mode-view");
     var editBtn = body.querySelector(".mem-mode-edit");
     if (viewBtn) viewBtn.addEventListener("click", function () {
@@ -635,6 +724,36 @@
   }
 
   // ---------- recall ----------
+  function _routeChips(r) {
+    var routes = r && r.routes;
+    var bd = r && r.score_breakdown;
+    var out = "";
+    if (bd) {
+      out += '<div class="score-parts">';
+      ["retrieval", "importance", "recency", "cross_route_bonus"].forEach(function (k) {
+        if (bd[k] == null) return;
+        out += '<span class="score-sub">' + k + " " + Number(bd[k]).toFixed(3) + "</span>";
+      });
+      if (bd.query_intent) out += '<span class="score-sub">intent:' + escapeHtml(String(bd.query_intent)) + "</span>";
+      out += "</div>";
+    }
+    if (!routes) return out;
+    var order = ["document", "graph", "spread", "atom"];
+    var html = '<div class="route-chips">';
+    order.forEach(function (name) {
+      if (!routes[name]) return;
+      var h = routes[name];
+      html += '<span class="chip chip-route">' + name + "</span>" +
+              '<span class="score-sub">' +
+              "raw " + Number(h.raw_score || 0).toFixed(3) +
+              " · rrf " + Number(h.rrf_contribution || 0).toFixed(4) +
+              (h.matched_entity ? " · " + escapeHtml(String(h.matched_entity)) : "") +
+              "</span>";
+    });
+    html += "</div>";
+    return out + html;
+  }
+
   async function runRecall() {
     var out = document.getElementById("rc-out");
     out.innerHTML = emptyBox("召回中…");
@@ -645,8 +764,13 @@
         k: Number(document.getElementById("rc-k").value) || 5
       }));
       var results = (d && (d.results || d.items)) || (Array.isArray(d) ? d : null);
+      var head = '<div class="recall-meta">' +
+        (d.mode ? '<span class="chip">' + escapeHtml(d.mode) + "</span>" : "") +
+        (d.routes_used && d.routes_used.length ? '<span class="chip chip-muted">路由：' + escapeHtml(d.routes_used.join("+")) + "</span>" : "") +
+        (d.elapsed_time_ms != null ? '<span class="chip chip-muted">' + Number(d.elapsed_time_ms).toFixed(1) + " ms</span>" : "") +
+        "</div>";
       if (results && results.length) {
-        out.innerHTML = "";
+        out.innerHTML = head;
         results.forEach(function (r) {
           var score = (r.score != null) ? r.score : (r.similarity != null ? r.similarity : null);
           var text = r.summary || r.text || r.content || JSON.stringify(r);
@@ -655,18 +779,82 @@
           div.innerHTML =
             '<div class="result-head">' +
             (r.id != null ? '<span class="chip">#' + escapeHtml(r.id) + "</span>" : "") +
-            (score != null ? '<span class="score">' + (typeof score === "number" ? score.toFixed(3) : escapeHtml(score)) + "</span>" : "") +
-            "</div><div class=\"result-text\">" + escapeHtml(text) + "</div>";
+            (score != null ? '<span class="score">' + (typeof score === "number" ? score.toFixed(4) : escapeHtml(score)) + "</span>" : "") +
+            "</div><div class=\"result-text\">" + escapeHtml(text) + "</div>" +
+            _routeChips(r);
           out.appendChild(div);
         });
       } else if (results) {
-        out.innerHTML = emptyBox("无召回结果");
+        out.innerHTML = head + emptyBox("无召回结果");
       } else {
         out.innerHTML = '<div class="raw">' + escapeHtml(JSON.stringify(d, null, 2)) + "</div>";
       }
     } catch (e) {
       out.innerHTML = errBox(e.message);
     }
+  }
+
+  // ---------- prompts ----------
+  var _promptCache = [];
+
+  async function loadPrompts() {
+    var wrap = document.getElementById("prompt-list");
+    var count = document.getElementById("prompts-count");
+    wrap.innerHTML = emptyBox("加载中…");
+    try {
+      var d = unwrap(await apiGet("page/prompts"));
+      _promptCache = (d && d.items) || [];
+      count.textContent = _promptCache.length + " 个模板";
+      if (!_promptCache.length) { wrap.innerHTML = emptyBox("暂无模板"); return; }
+      wrap.innerHTML = "";
+      _promptCache.forEach(function (p) {
+        var div = document.createElement("div");
+        div.className = "result prompt-item";
+        div.innerHTML =
+          '<div class="result-head"><span class="chip">' + escapeHtml(p.name) + "</span>" +
+          (p.is_custom ? '<span class="chip chip-muted">已自定义</span>' : '<span class="chip chip-muted">内置默认</span>') +
+          "</div><div class=\"result-text\">" + escapeHtml(String(p.content || "").slice(0, 160)) + "</div>" +
+          '<div class="mem-mode-actions"><button type="button" class="btn btn-ghost btn-sm prompt-edit">编辑</button> ' +
+          '<button type="button" class="btn btn-ghost btn-sm prompt-reset">恢复默认</button></div>';
+        div.querySelector(".prompt-edit").addEventListener("click", function () { _editPrompt(p.name); });
+        div.querySelector(".prompt-reset").addEventListener("click", function () { _resetPrompt(p.name); });
+        wrap.appendChild(div);
+      });
+    } catch (e) { wrap.innerHTML = errBox(e.message); }
+  }
+
+  function _promptItem(name) {
+    for (var i = 0; i < _promptCache.length; i++) if (_promptCache[i].name === name) return _promptCache[i];
+    return null;
+  }
+
+  function _editPrompt(name) {
+    var p = _promptItem(name);
+    if (!p) return;
+    var detail = document.getElementById("prompt-detail");
+    detail.innerHTML = '<div class="section-title">' + escapeHtml(name) + "</div>" +
+      '<textarea id="prompt-editor" rows="14" class="input input-grow prompt-editor">' + escapeHtml(p.content || "") + "</textarea>" +
+      '<div class="mem-mode-actions"><button type="button" class="btn prompt-save">保存自定义</button> ' +
+      '<button type="button" class="btn btn-ghost prompt-cancel">取消</button></div>';
+    detail.querySelector(".prompt-save").addEventListener("click", async function () {
+      try {
+        var content = document.getElementById("prompt-editor").value;
+        unwrap(await apiPost("page/prompts/update", { name: name, content: content }));
+        detail.innerHTML = emptyBox("已保存");
+        await loadPrompts();
+      } catch (e) { detail.innerHTML = errBox(e.message); }
+    });
+    detail.querySelector(".prompt-cancel").addEventListener("click", function () { detail.innerHTML = ""; });
+  }
+
+  async function _resetPrompt(name) {
+    _confirmInline("恢复 " + name + " 为内置默认？", async function () {
+      try {
+        unwrap(await apiPost("page/prompts/reset", { name: name }));
+        document.getElementById("prompt-detail").innerHTML = "";
+        await loadPrompts();
+      } catch (e) { _toastError("恢复失败：" + e.message); }
+    });
   }
 
   // ---------- backups ----------
@@ -1140,7 +1328,76 @@
   }
 
   document.getElementById("btn-refresh-stats").addEventListener("click", loadStats);
+  document.getElementById("btn-load-prompts").addEventListener("click", loadPrompts);
   document.getElementById("btn-load-mem").addEventListener("click", loadMemories);
+  function _batchDeleteMemories(hard) {
+    var ids = _selectedMemIds();
+    if (!ids.length) { _toastError("请先勾选要删除的记忆"); return; }
+    var label = hard ? "永久删除" : "软删除";
+    _confirmInline(label + "选中的 " + ids.length + " 条记忆？" + (hard ? "此操作不可恢复。" : ""), async function () {
+      try {
+        var r = unwrap(await apiPost("page/memories/batch-delete", { eids: ids, hard: !!hard }));
+        _toastError((hard ? "已永久删除 " : "已软删除 ") + ((r && (r.hard_deleted || r.soft_deleted)) || 0) + " 条");
+        await loadMemories();
+      } catch (e) { _toastError(label + "失败：" + e.message); }
+    }, { danger: hard, yesLabel: label });
+  }
+  document.getElementById("btn-mem-batch-soft").addEventListener("click", function () { _batchDeleteMemories(false); });
+  document.getElementById("btn-mem-batch-hard").addEventListener("click", function () { _batchDeleteMemories(true); });
+
+  // ---------- import / export ----------
+  var _importContent = null;
+  var _importFormat = "json";
+
+  function _readImportFile() {
+    var input = document.getElementById("mem-import-file");
+    var file = input && input.files && input.files[0];
+    if (!file) { _toastError("请先选择 JSON/CSV 文件"); return Promise.resolve(false); }
+    _importFormat = file.name.toLowerCase().endsWith(".csv") ? "csv" : "json";
+    return file.text().then(function (text) { _importContent = text; return true; });
+  }
+
+  async function _previewImport() {
+    if (!(await _readImportFile())) return;
+    var msg = document.getElementById("mem-detail");
+    if (msg) msg.innerHTML = emptyBox("预检中…");
+    try {
+      var d = unwrap(await apiPost("page/memories/import/preview", { content: _importContent, format: _importFormat }));
+      var html = '<div class="section-title">导入预检</div><div class="kv">' +
+        '<div>entries: ' + escapeHtml(String(d.entries || 0)) + "</div>" +
+        '<div>duplicates: ' + escapeHtml(String(d.duplicates || 0)) + "</div>" +
+        (d.errors && d.errors.length ? '<div>errors: ' + escapeHtml(JSON.stringify(d.errors.slice(0, 5))) + "</div>" : "") +
+        "</div>";
+      if (msg) msg.innerHTML = html;
+    } catch (e) { if (msg) msg.innerHTML = errBox(e.message); }
+  }
+
+  async function _runImport() {
+    if (!(await _readImportFile())) return;
+    var msg = document.getElementById("mem-detail");
+    if (msg) msg.innerHTML = emptyBox("导入中…");
+    try {
+      var r = unwrap(await apiPost("page/memories/import", { content: _importContent, format: _importFormat, dry_run: false, allow_duplicates: false }));
+      if (msg) msg.innerHTML = '<div class="section-title">导入完成</div>' + escapeHtml(JSON.stringify(r, null, 2));
+      await loadMemories();
+    } catch (e) { if (msg) msg.innerHTML = errBox(e.message); }
+  }
+
+  async function _exportMemories() {
+    try {
+      var d = unwrap(await apiPost("page/memories/export", { format: "json" }));
+      var blob = new Blob([d.content || ""], { type: "application/json;charset=utf-8" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = d.filename || "engram_memories.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    } catch (e) { _toastError("导出失败：" + e.message); }
+  }
+
+  document.getElementById("btn-mem-export").addEventListener("click", _exportMemories);
+  document.getElementById("btn-mem-import").addEventListener("click", _previewImport);
+  document.getElementById("btn-mem-import-run").addEventListener("click", _runImport);
   document.getElementById("btn-recall").addEventListener("click", runRecall);
   document.getElementById("btn-load-backups").addEventListener("click", loadBackups);
   document.getElementById("btn-load-graph").addEventListener("click", loadGraph);

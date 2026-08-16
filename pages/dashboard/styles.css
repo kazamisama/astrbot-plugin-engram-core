@@ -285,3 +285,34 @@ class is shared between diary and memory rows; the per-list
 .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 @keyframes confirm-fade { from { opacity: 0; } to { opacity: 1; } }
 .toast.err { background: var(--danger); color: #fff; }
+
+/* recall debug */
+.recall-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+.route-chips { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.chip-route { color: var(--accent, #6d8dff); background: rgba(109,141,255,.12); }
+.score-sub { color: var(--text-2); font-size:11.5px; }
+
+/* stat charts */
+.chart-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin-top:14px; }
+.chart-card { padding:12px 14px; }
+.chart-title { color:var(--text-2); font-size:12px; margin-bottom:8px; }
+.bar-row { display:grid; grid-template-columns:72px 1fr 34px; align-items:center; gap:8px; margin:5px 0; font-size:12px; }
+.bar-label { color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bar-track { background:var(--bg-soft); border-radius:99px; height:8px; overflow:hidden; }
+.bar-fill { background:linear-gradient(90deg,var(--accent,#6d8dff),var(--accent-2,#9f7bff)); height:100%; border-radius:99px; }
+.bar-value { color:var(--text); text-align:right; font-variant-numeric:tabular-nums; }
+
+/* memory batch selection */
+.mem-check { display:inline-flex; align-items:center; }
+.mem-check input { accent-color: var(--accent, #6d8dff); width:15px; height:15px; cursor:pointer; }
+
+/* source transcript */
+.source-line { border-bottom:1px dashed var(--border); padding:6px 0; font-size:13px; }
+.source-time { color:var(--text-3); font-size:11px; margin-left:8px; }
+.source-text { color:var(--text); margin-top:3px; white-space:pre-wrap; }
+.score-parts { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+
+/* prompt manager */
+.prompt-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
+.prompt-item { margin:0; }
+.prompt-editor { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; }

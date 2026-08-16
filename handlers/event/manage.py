@@ -109,7 +109,8 @@ class ManageHandler:
         cfg = getattr(self.service, "cfg", None)
         iso = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
         persona_scope = (meta.get("persona_id") or "") if iso else None
-        yield event.plain_result(format_graph(self.service, query.strip(), persona_id=persona_scope))
+        scope_scope = (meta.get("scope_id") or "") if iso else None
+        yield event.plain_result(format_graph(self.service, query.strip(), persona_id=persona_scope, scope_id=scope_scope))
 
     async def cmd_mem_replay(self, event):
         if self.service is None:

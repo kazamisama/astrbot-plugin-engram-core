@@ -43,6 +43,9 @@ _COMPAT_MIGRATIONS: List[tuple] = [
     ("v1.36", [
         ("persona_id", "TEXT DEFAULT ''"),
     ]),
+    ("v1.76.6", [
+        ("scope_id", "TEXT DEFAULT ''"),
+    ]),
 ]
 
 

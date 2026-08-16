@@ -75,10 +75,19 @@ def _forget_handler(service, *, engram_id: str, hard: bool = False) -> str:
     if hard:
         try:
             service.store.delete(eid)
+            try:
+                service._invalidate_search_cache()
+            except Exception:
+                pass
         except Exception as exc:
             return json.dumps({"ok": False, "error": "hard delete failed: " + str(exc)}, ensure_ascii=False)
         return json.dumps({"ok": True, "engram_id": eid, "mode": "hard"}, ensure_ascii=False)
     ok = service.store.soft_forget(eid)
+    if ok:
+        try:
+            service._invalidate_search_cache()
+        except Exception:
+            pass
     return json.dumps({"ok": bool(ok), "engram_id": eid, "mode": "soft"}, ensure_ascii=False)
 
 

@@ -2,6 +2,7 @@
 # Kept in a single-file layout (NOT hippocampus/models/) to avoid colliding
 # with the legacy storage.py as a Python module name.
 from __future__ import annotations
+import time
 
 from typing import Iterable
 
@@ -87,6 +88,34 @@ def make_preference_atom(
     )
     if source_engram_id:
         atom.source_engram_ids.append(source_engram_id)
+    return atom
+
+
+_BASE_TTL_DAYS = {
+    AtomType.EVENT.value: 7.0,
+    AtomType.RELATION.value: 90.0,
+    AtomType.PREFERENCE.value: 60.0,
+    AtomType.FACT.value: 180.0,
+    AtomType.IDENTITY.value: 365.0,
+}
+
+
+def stamp_atom_temporal(atom, *, now: float | None = None) -> MemoryAtom:
+    """Compute type-specific TTL / expiry for a freshly created atom.
+
+    Planned/event atoms with event_time extend their TTL until after the
+    event; importance stretches TTL, mirroring livingmemory's atom model.
+    """
+    now = now if now is not None else time.time()
+    kind = getattr(atom, "kind", AtomType.FACT.value)
+    base = float(_BASE_TTL_DAYS.get(kind, 30.0))
+    importance = max(0.0, min(1.0, float(getattr(atom, "importance", 0.5) or 0.5)))
+    ttl = base * (0.5 + importance)
+    event_time = float(getattr(atom, "event_time", 0.0) or 0.0)
+    if event_time > now and kind == AtomType.EVENT.value:
+        ttl += (event_time - now) / 86400.0
+    atom.ttl_days = max(1.0, ttl)
+    atom.expires_at = now + atom.ttl_days * 86400.0
     return atom
 
 

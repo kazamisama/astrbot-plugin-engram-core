@@ -139,9 +139,11 @@ class _FakeService:
             _FakeEngram("用户喜欢侦探小说"),
             _FakeEngram("用户在做 AstrBot 插件"),
         ])
-    def recall_relations(self, query, top_n=3, min_confidence=0.0):
+    def recall_relations(self, query, top_n=3, min_confidence=0.0,
+                        persona_id=None, scope_id=None):
         return [_Rel("chiriu", "works_on", "engram-core")]
-    def recall_diary_chunks(self, query, top_n=1, min_score=0.0, persona_id=""):
+    def recall_diary_chunks(self, query, top_n=1, min_score=0.0, persona_id="",
+                            scope_id=None):
         return [("- 用户最近在排查 engram 注入块顺序问题", 0.9)]
 
 

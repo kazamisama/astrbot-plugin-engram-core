@@ -9,10 +9,28 @@ class MemoryConfig:
     pattern_separation_threshold: float = 0.92
     pattern_similar_threshold: float = 0.75
     recall_candidate_k: int = 50
+    # --- v1.76.5: dual-route final score = retrieval + importance + recency ---
+    score_alpha: float = 0.5
+    score_beta: float = 0.25
+    score_gamma: float = 0.25
+    recency_decay_rate: float = 0.01
+    document_route_weight: float = 0.65
+    graph_route_weight: float = 0.35
+    cross_route_bonus: float = 0.08
+    dynamic_route_weighting: bool = True
     reconsolidation_lock_seconds: float = 30.0
     decay_tau_base: float = 60 * 60 * 24 * 7.0
     decay_floor: float = 0.05
     consolidation_interval_seconds: float = 60.0
+    # --- v1.76.5: LLM memory consolidation (livingmemory-inspired) ---
+    memory_consolidation_enabled: bool = False
+    memory_consolidation_max_importance: float = 0.5
+    memory_consolidation_min_age_days: int = 7
+    memory_consolidation_min_memories_per_group: int = 3
+    memory_consolidation_max_groups: int = 5
+    memory_consolidation_max_candidates: int = 1000
+    memory_consolidation_granularity: str = "session"
+    memory_consolidation_keep_original: str = "archive"
     consolidation_max_pairs: int = 200
     importance_floor_for_long_term: float = 0.3
     # --- v0.2: 语义/前瞻/升级 ---
@@ -146,6 +164,10 @@ class MemoryConfig:
     auto_inject_relative_time: bool = True  # prefix recalled memories with a zh relative-time label
     # --- v1.36: persona-scoped memory isolation ---
     persona_isolation_enabled: bool = True
+    # --- v1.76.6: livingmemory-style memory scope + identity aliases ---
+    memory_scope_mode: str = "legacy"  # legacy | session | user | global
+    isolated_sessions: list[str] = field(default_factory=list)
+    identity_aliases: str = ""          # one "platform:id=Canonical" per line
     # --- v1.6: per-speaker conversation aggregation (optional) ---
     session_aggregate_enabled: bool = True
     session_aggregate_max_messages: int = 5
@@ -162,6 +184,7 @@ class MemoryConfig:
     summary_compress_ratio: float = 0.15         # target_chars = total_chars * ratio
     summary_compress_floor: int = 0              # min summary chars; 0=unbounded
     summary_compress_cap: int = 1200
+    source_retention_min_importance: float = 0.7  # keep raw transcript for summaries >= this
     summary_compress_cap_group: int = 400             # max summary chars
     summary_idle_flush_interval_seconds: float = 60.0  # background sweep period for idle channels
     summary_fallback_enabled: bool = False       # LLM 失败时是否回退截断转写写入；默认关（不回退、不写入）

@@ -108,7 +108,7 @@ def test_register_routes_8_endpoints():
         _initializer=None)
     api = page_api.PluginPageApi(plugin)
     api.register_routes()
-    assert len(calls) == 24, "expected 24 endpoints, got " + str(len(calls))  # +3 graph entity/relation ops (v1.28); +1 diary list/detail/delete (v1.43); +1 backup restore; +5 persona management (v1.65)
+    assert len(calls) == 35, "expected 35 endpoints, got " + str(len(calls))  # +3 graph entity/relation ops (v1.28); +1 diary list/detail/delete (v1.43); +1 backup restore; +5 persona management (v1.65)
     paths = [c[0] for c in calls]
     expected_paths = [
         "/astrbot_plugin_engram_core/page/health",
@@ -117,6 +117,10 @@ def test_register_routes_8_endpoints():
         "/astrbot_plugin_engram_core/page/memories/detail",
         "/astrbot_plugin_engram_core/page/memories/delete",
         "/astrbot_plugin_engram_core/page/memories/update",
+        "/astrbot_plugin_engram_core/page/memories/restore",
+        "/astrbot_plugin_engram_core/page/memories/source",
+        "/astrbot_plugin_engram_core/page/memories/resummarize",
+        "/astrbot_plugin_engram_core/page/memories/batch-delete",
         "/astrbot_plugin_engram_core/page/recall/test",
         "/astrbot_plugin_engram_core/page/graph/overview",
         "/astrbot_plugin_engram_core/page/graph/data",
@@ -135,6 +139,13 @@ def test_register_routes_8_endpoints():
         "/astrbot_plugin_engram_core/page/personas/build",
         "/astrbot_plugin_engram_core/page/personas/update",
         "/astrbot_plugin_engram_core/page/personas/delete",
+        "/astrbot_plugin_engram_core/page/prompts",
+        "/astrbot_plugin_engram_core/page/prompts/detail",
+        "/astrbot_plugin_engram_core/page/prompts/update",
+        "/astrbot_plugin_engram_core/page/prompts/reset",
+        "/astrbot_plugin_engram_core/page/memories/export",
+        "/astrbot_plugin_engram_core/page/memories/import",
+        "/astrbot_plugin_engram_core/page/memories/import/preview",
     ]
     assert paths == expected_paths, "paths: " + str(paths)
     print("  24 endpoints registered with correct paths: OK")

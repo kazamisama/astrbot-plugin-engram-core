@@ -60,6 +60,9 @@ class AtomStore:
                     access_count INTEGER NOT NULL DEFAULT 0,
                     tags TEXT NOT NULL DEFAULT '[]',
                     attributes TEXT NOT NULL DEFAULT '{}',
+                    ttl_days REAL NOT NULL DEFAULT 30.0,
+                    event_time REAL NOT NULL DEFAULT 0.0,
+                    expires_at REAL NOT NULL DEFAULT 0.0,
                     UNIQUE(subject COLLATE NOCASE, predicate COLLATE NOCASE, object COLLATE NOCASE)
                 );
                 CREATE INDEX IF NOT EXISTS idx_atoms_status
@@ -68,8 +71,17 @@ class AtomStore:
                     ON atoms(kind);
                 CREATE INDEX IF NOT EXISTS idx_atoms_decay
                     ON atoms(decay_type);
+                CREATE INDEX IF NOT EXISTS idx_atoms_expires
+                    ON atoms(expires_at);
                 """
             )
+            # v1.76.5: add temporal columns to existing atom tables.
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(atoms)")}
+            for col, decl in (("ttl_days", "REAL NOT NULL DEFAULT 30.0"),
+                              ("event_time", "REAL NOT NULL DEFAULT 0.0"),
+                              ("expires_at", "REAL NOT NULL DEFAULT 0.0")):
+                if col not in cols:
+                    self._conn.execute("ALTER TABLE atoms ADD COLUMN " + col + " " + decl)
 
     def close(self) -> None:
         with self._lock:
@@ -83,6 +95,12 @@ class AtomStore:
         d["source_engram_ids"] = json.loads(d.get("source_engram_ids") or "[]")
         d["tags"] = json.loads(d.get("tags") or "[]")
         d["attributes"] = json.loads(d.get("attributes") or "{}")
+        if "ttl_days" not in d:
+            d["ttl_days"] = 30.0
+        if "event_time" not in d:
+            d["event_time"] = 0.0
+        if "expires_at" not in d:
+            d["expires_at"] = 0.0
         return MemoryAtom.from_dict(d)
 
     @staticmethod
@@ -109,6 +127,9 @@ class AtomStore:
             "access_count": int(a.access_count),
             "tags": json.dumps(list(a.tags), ensure_ascii=False),
             "attributes": json.dumps(dict(a.attributes), ensure_ascii=False),
+            "ttl_days": float(getattr(a, "ttl_days", 30.0) or 30.0),
+            "event_time": float(getattr(a, "event_time", 0.0) or 0.0),
+            "expires_at": float(getattr(a, "expires_at", 0.0) or 0.0),
         }
 
     # -- write ---------------------------------------------------------
@@ -148,13 +169,15 @@ class AtomStore:
                          evidence_count, source_engram_ids, actor_id, platform,
                          channel_id, created_at, last_seen, last_accessed,
                          status, decay_type, importance, strength,
-                         access_count, tags, attributes)
+                         access_count, tags, attributes,
+                         ttl_days, event_time, expires_at)
                     VALUES
                         (:id, :kind, :subject, :predicate, :object, :confidence,
                          :evidence_count, :source_engram_ids, :actor_id, :platform,
                          :channel_id, :created_at, :last_seen, :last_accessed,
                          :status, :decay_type, :importance, :strength,
-                         :access_count, :tags, :attributes)
+                         :access_count, :tags, :attributes,
+                         :ttl_days, :event_time, :expires_at)
                     """,
                     params,
                 )
@@ -177,7 +200,9 @@ class AtomStore:
                     source_engram_ids = ?,
                     last_seen = ?,
                     strength = ?,
-                    access_count = ?
+                    access_count = ?,
+                    ttl_days = MAX(COALESCE(ttl_days, 0), ?),
+                    expires_at = CASE WHEN ? > 0 THEN MAX(COALESCE(expires_at, 0), ?) ELSE expires_at END
                 WHERE id = ?
                 """,
                 (
@@ -187,6 +212,9 @@ class AtomStore:
                     merged_last_seen,
                     merged_strength,
                     merged_access,
+                    float(getattr(atom, "ttl_days", 30.0) or 30.0),
+                    float(getattr(atom, "expires_at", 0.0) or 0.0),
+                    float(getattr(atom, "expires_at", 0.0) or 0.0),
                     row["id"],
                 ),
             )
@@ -227,6 +255,25 @@ class AtomStore:
             args = args + (limit,)
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
+        return [self._row_to_atom(r) for r in rows]
+
+    def search_text(self, query: str, limit: int = 20) -> list[MemoryAtom]:
+        """Keyword search over active atom triples. No FTS table needed."""
+        q = (query or "").strip()
+        if not q or limit <= 0:
+            return []
+        escaped = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        like = "%" + escaped + "%"
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM atoms
+                   WHERE status = 'active'
+                     AND (subject LIKE ? ESCAPE '\'
+                          OR predicate LIKE ? ESCAPE '\'
+                          OR object LIKE ? ESCAPE '\')
+                   ORDER BY last_seen DESC LIMIT ?""",
+                (like, like, like, int(limit)),
+            ).fetchall()
         return [self._row_to_atom(r) for r in rows]
 
     def list_by_source_engram(self, engram_id: str) -> list[MemoryAtom]:
@@ -272,6 +319,15 @@ class AtomStore:
     def delete(self, atom_id: str) -> bool:
         with self._lock, self._conn:
             cur = self._conn.execute("DELETE FROM atoms WHERE id = ?", (atom_id,))
+            return cur.rowcount > 0
+
+    def touch(self, atom_id: str) -> bool:
+        """Record an atom recall: bump access_count + last_accessed."""
+        import time as _t
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE atoms SET last_accessed = ?, access_count = access_count + 1 "
+                "WHERE id = ?", (_t.time(), atom_id))
             return cur.rowcount > 0
 
     def write_strength(self, atom_id: str, strength: float) -> bool:

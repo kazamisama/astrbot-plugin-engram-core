@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import asyncio
+import threading
 from typing import Callable
 from .types import Cue, Engram, RecallResult, SemanticRecallResult
 from .config import MemoryConfig
@@ -67,6 +68,21 @@ class MemoryService:
         self.store = HippocampalStore(
             self.cfg.sqlite_path, self.embedder,
             tokenizer_mode=getattr(self.cfg, "tokenizer_mode", "char"))
+        # v1.76.6: restore persisted prompt overrides before any LLM caller
+        # (encoder / summarizer / consolidator) reads the registry. Overrides
+        # are namespaced per store instance so two MemoryService objects with
+        # different DBs do not overwrite each other's prompt customizations.
+        self._prompt_namespace = self.store._db_path
+        try:
+            from .prompts import set_store_overrides as _set_store_overrides
+            _loaded_prompts = {}
+            for _name in self.store.prompt_override_keys():
+                _val = self.store.get_prompt_override(_name)
+                if _val is not None:
+                    _loaded_prompts[_name] = _val
+            _set_store_overrides(self._prompt_namespace, _loaded_prompts)
+        except Exception as _pex:
+            print("[hippocampus] prompt override load failed: " + repr(_pex))
         self.encoder = EngramEncoder(self.embedder, llm=self.llm, cfg=self.cfg,
                                     persona_provider=self._build_persona_provider())
         self.separator = PatternSeparator(self.cfg)
@@ -74,6 +90,8 @@ class MemoryService:
         self.reconsolidator = Reconsolidator(self.store, self.cfg)
         self.completer = PatternCompleter(self.store, self.embedder, self.cfg, self.reconsolidator)
         self.consolidator = ReplayConsolidator(self.store, self.cfg, llm=self.llm)
+        # v1.76.5: optional LLM consolidation manager (lazy import).
+        self.consolidation_manager = None
         self.semantic = SemanticStore(self.cfg.sqlite_path) if self.cfg.enable_semantic else None
         from .relation_store import RelationStore
         self.relation_store = RelationStore(self.cfg.sqlite_path)
@@ -124,6 +142,10 @@ class MemoryService:
         # Invalidated on every memory write (see _invalidate_search_cache).
         from collections import OrderedDict as _OrderedDict
         self._recall_cache: _OrderedDict = _OrderedDict()
+        # v1.76.4 (M5): observe now runs on a worker thread while recall can
+        # run on the event loop or the injection worker, so all cache
+        # mutations share this lock.
+        self._recall_cache_lock = threading.RLock()
         self._recall_cache_enabled = bool(getattr(self.cfg, "search_cache_enabled", True))
         self._recall_cache_ttl = float(getattr(self.cfg, "search_cache_ttl_seconds", 60.0) or 60.0)
         self._recall_cache_max = int(getattr(self.cfg, "search_cache_max_entries", 128) or 128)
@@ -250,6 +272,7 @@ class MemoryService:
     # ---------- observe ----------
     def observe(self, *, session_id: str, actor_id: str, platform: str,
                 channel_id: str, content: str, persona_id: str = "",
+                scope_id: str = "",
                 # FIX (v1.57): accepted-but-unused kwargs from the event
                 # ingest path so the LLM extractor can use them later.
                 channel_label: str = "", chat_type: str = "") -> Engram:
@@ -277,7 +300,7 @@ class MemoryService:
         e = self.encoder.encode(
             session_id=session_id, actor_id=actor_id,
             platform=platform, channel_id=channel_id, content=content,
-            persona_id=persona_id)
+            persona_id=persona_id, scope_id=scope_id)
         e.embedding_model = self._current_embedding_name
         if getattr(self.cfg, "dedup_enabled", False):
             dup = self._find_text_duplicate(e)
@@ -353,6 +376,7 @@ class MemoryService:
             platform=identity.get("platform", "") or "",
             channel_id=identity.get("channel_id", "") or "",
             persona_id=identity.get("persona_id", "") or "",
+            scope_id=identity.get("scope_id", "") or "",
             content=content,
             summary=text,
             topics=list(summary.get("topics") or []),
@@ -386,6 +410,15 @@ class MemoryService:
         except Exception as ex:
             print("[hippocampus] store_summary persist error: " + repr(ex))
             return None
+        # v1.76.5: retain the raw transcript for important memories so the
+        # WebUI can audit the source and trigger an LLM re-summarization.
+        source_lines = identity.get("source_lines") or []
+        source_floor = float(getattr(self.cfg, "source_retention_min_importance", 0.7) or 0.0)
+        if source_lines and e.importance >= source_floor:
+            try:
+                self.store.save_memory_source(e.id, source_lines)
+            except Exception as sex:
+                print("[hippocampus] save_memory_source error: " + repr(sex))
         # v1.19 B-2: persist structured relations with conflict-driven supersede.
         # v1.30: LLM relations are the single source of truth. We also mirror
         # them into SemanticStore (entities + relations) so the internal graph
@@ -417,7 +450,8 @@ class MemoryService:
 
     def recall_relations(self, query: str, *, top_n: int = 3,
                          min_confidence: float = 0.0,
-                         persona_id: str | None = None) -> list:
+                         persona_id: str | None = None,
+                         scope_id: str | None = None) -> list:
         """v1.19 B-2: pipeline-filtered relations for injection (option 4,
         no weighting): relevance (subject/object/predicate appears in query)
         -> confidence threshold -> top-N. When persona_id is set, only
@@ -431,6 +465,9 @@ class MemoryService:
             allowed = None
             if persona_id is not None:
                 allowed = self.store.engram_ids_for_persona(persona_id)
+            if scope_id is not None:
+                scoped = self.store.engram_ids_for_scope(scope_id)
+                allowed = scoped if allowed is None else (allowed & scoped)
             # relevance filter: any of subject/object/predicate substring-matches query
             relevant = []
             for r in cands:
@@ -499,6 +536,7 @@ class MemoryService:
             platform=identity.get("platform", "") or "",
             channel_id=identity.get("channel_id", "") or "",
             persona_id=identity.get("persona_id", "") or "",
+            scope_id=identity.get("scope_id", "") or "",
             content=content,
             summary=text,
             topics=list(diary.get("topics") or []),
@@ -560,7 +598,8 @@ class MemoryService:
 
     def recall_diary_chunks(self, query: str, *, top_n: int = 1,
                             min_score: float = 0.0,
-                            persona_id: str | None = None) -> list:
+                            persona_id: str | None = None,
+                            scope_id: str | None = None) -> list:
         """Chunk-level diary recall (B-3 req 13): embed query, score against
         stored diary chunks by cosine, return top-N chunk texts. Returns
         list[(text, score)].
@@ -591,6 +630,10 @@ class MemoryService:
             if not ch.embedding:
                 continue
             seen_diary_ids.add(ch.diary_id)
+            if scope_id is not None:
+                parent = self.store.get(ch.diary_id)
+                if parent is None or (getattr(parent, "scope_id", "") or "") != scope_id:
+                    continue
             s = _diary_cos(qvec, ch.embedding)
             if s >= min_score:
                 scored.append((ch.text, s))
@@ -603,6 +646,8 @@ class MemoryService:
                     continue
                 if (persona_id is not None
                         and (getattr(d, "persona_id", "") or "") != (persona_id or "")):
+                    continue
+                if scope_id is not None and (getattr(d, "scope_id", "") or "") != scope_id:
                     continue
                 text = (getattr(d, "summary", "") or getattr(d, "content", "") or "").strip()
                 if not text:
@@ -955,6 +1000,8 @@ class MemoryService:
                                 atom.decay_type = "preference"
                             else:
                                 atom.decay_type = "semantic"
+                            from .memory_atom_models import stamp_atom_temporal
+                            atom = stamp_atom_temporal(atom, now=e.created_at)
                             self.atom_store.upsert(atom)
                 except Exception:
                     pass
@@ -1021,46 +1068,99 @@ class MemoryService:
         return repaired
 
     # ---------- recall ----------
+    @staticmethod
+    def _recall_activation_fingerprint(activation) -> tuple:
+        """Hashable projection of cue.activation (values may be arbitrary)."""
+        if not activation:
+            return ()
+        try:
+            return tuple(sorted(
+                (str(k), repr(v)) for k, v in dict(activation).items()))
+        except Exception:
+            return ("unhashable-activation",)
+
+    def _recall_config_fingerprint(self) -> tuple:
+        """Snapshot every live config knob that changes PatternCompleter output.
+
+        The recall cache TTL only protects against strength/recency drift;
+        it cannot know when an operator flips tiering / mood / activation
+        weights at runtime. Folding this snapshot into the cache key makes
+        such changes effective immediately instead of returning stale top-k.
+        """
+        cfg = self.cfg
+        try:
+            mm_weights = tuple(sorted(
+                (str(k), repr(v)) for k, v in (cfg.metamemory_weights or {}).items()))
+        except Exception:
+            mm_weights = ("unhashable-metamemory-weights",)
+        return (
+            bool(getattr(cfg, "tiering_enabled", False)),
+            bool(getattr(cfg, "tier_recall_include_cold", False)),
+            int(getattr(cfg, "tier_cold_fallback_min_hits", 1) or 0),
+            float(getattr(cfg, "tier_hot_max_age_days", 3.0)),
+            float(getattr(cfg, "tier_hot_min_strength", 0.5)),
+            float(getattr(cfg, "tier_warm_max_age_days", 30.0)),
+            float(getattr(cfg, "tier_cold_strength_floor", 0.1)),
+            int(getattr(cfg, "recall_candidate_k", 50)),
+            bool(getattr(cfg, "mood_congruence_enabled", True)),
+            float(getattr(cfg, "mood_congruence_weight", 0.1)),
+            float(getattr(cfg, "activation_score_weight", 0.18)),
+            float(getattr(cfg, "frequency_recall_weight", 0.1)),
+            bool(getattr(cfg, "enable_separation", True)),
+            bool(getattr(cfg, "metamemory_enabled", True)),
+            mm_weights,
+            str(getattr(self.store, "_tokenizer_mode", "") or ""),
+        )
+
     def _recall_cache_key(self, cue: Cue) -> tuple:
         """Build a hashable cache key covering every cue field that can
-        change the retrieval result, plus the active embedding model."""
+        change the retrieval result, plus the active embedding model and
+        the retrieval-affecting config snapshot."""
         return (
             cue.text, cue.actor_id, cue.channel_id, cue.persona_id,
+            cue.scope_id,
             cue.time_range,
             tuple(cue.topics) if cue.topics else None,
             cue.k,
             tuple(cue.memory_types) if cue.memory_types else None,
             cue.mode,
             cue.session_id,
+            cue.valence_hint,
+            self._recall_activation_fingerprint(cue.activation),
             self._current_embedding_name,
+            self._recall_config_fingerprint(),
         )
 
     def _recall_cache_get(self, key: tuple) -> "RecallResult | None":
         if not self._recall_cache_enabled or self._recall_cache_ttl <= 0:
             return None
         import time as _t, copy as _copy
-        entry = self._recall_cache.get(key)
-        if entry is None:
-            return None
-        cached_at, result = entry
-        if _t.time() - cached_at > self._recall_cache_ttl:
-            self._recall_cache.pop(key, None)
-            return None
-        self._recall_cache.move_to_end(key)
-        return _copy.deepcopy(result)
+        with self._recall_cache_lock:
+            entry = self._recall_cache.get(key)
+            if entry is None:
+                return None
+            cached_at, result = entry
+            if _t.time() - cached_at > self._recall_cache_ttl:
+                self._recall_cache.pop(key, None)
+                return None
+            self._recall_cache.move_to_end(key)
+            return _copy.deepcopy(result)
 
     def _recall_cache_set(self, key: tuple, result: "RecallResult") -> None:
         if not self._recall_cache_enabled or self._recall_cache_max <= 0:
             return
         import time as _t, copy as _copy
-        self._recall_cache[key] = (_t.time(), _copy.deepcopy(result))
-        self._recall_cache.move_to_end(key)
-        while len(self._recall_cache) > self._recall_cache_max:
-            self._recall_cache.popitem(last=False)
+        snapshot = _copy.deepcopy(result)
+        with self._recall_cache_lock:
+            self._recall_cache[key] = (_t.time(), snapshot)
+            self._recall_cache.move_to_end(key)
+            while len(self._recall_cache) > self._recall_cache_max:
+                self._recall_cache.popitem(last=False)
 
     def _invalidate_search_cache(self) -> None:
         """Drop cached recall results after any memory write."""
-        self._recall_cache.clear()
+        with self._recall_cache_lock:
+            self._recall_cache.clear()
 
     def recall(self, cue: Cue) -> RecallResult:
         _ckey = self._recall_cache_key(cue)
@@ -1068,47 +1168,62 @@ class MemoryService:
         if _cached is not None:
             return _cached
         result = self.completer.recall(cue, embedding_model=self._current_embedding_name)
-        wm_key = cue.channel_id or cue.actor_id or ""
+        # v1.76.4: WorkingMemory indexes cells by both session_id and
+        # channel_id. Prefer the caller-provided session when present; group
+        # events that only set channel_id still resolve through the alias.
+        wm_key = cue.session_id or cue.channel_id or cue.actor_id or ""
         wm = self.working.snapshot(wm_key)
         if wm:
             head = wm[-cue.k:]
-            # v1.72 (issue 2026-07-29 #1): dedup against completer
-            # result by engram.id. Without this, an engram present
-            # in BOTH working memory AND the completer top-k (very
-            # common - Reconsolidator.touch() bumps recently-accessed
-            # engrams into hot tier, which the completer then
-            # re-ranks into top-k) appears twice in the injected
-            # [near-term dialog] block. Livingmemory handles the
-            # analogous problem in RRFFusion.fuse() via
-            # `all_doc_ids = set()`; engram hits the same problem
-            # at a different merge point (working-memory prepend),
-            # so we apply the same set-based dedup here.
-            head_ids = {e.id for e in head}
-            old_engrams = result.engrams
-            old_scores = result.scores
-            old_confs = result.confidences
-            cm_engrams, cm_scores, cm_confs = [], [], []
-            for i, e in enumerate(old_engrams):
-                if e.id in head_ids:
-                    continue
-                cm_engrams.append(e)
-                cm_scores.append(old_scores[i] if i < len(old_scores) else 0.0)
-                if old_confs is not None and i < len(old_confs):
-                    cm_confs.append(old_confs[i])
-            head_n = len(head)
-            result.engrams = list(head) + cm_engrams
-            result.scores = [1.0] * head_n + cm_scores
-            if old_confs is not None:
-                result.confidences = [1.0] * head_n + cm_confs
+            # v1.76.4: working memory is channel-wide, so apply the same
+            # persona partition as the completer before prepending. Without
+            # this, enabling group channel aliases (M4) would leak another
+            # persona's just-observed lines into persona-scoped recall.
+            if cue.persona_id is not None:
+                head = [e for e in head
+                        if (getattr(e, "persona_id", "") or "") == cue.persona_id]
+            if head:
+                # v1.72 (issue 2026-07-29 #1): dedup against completer
+                # result by engram.id. Without this, an engram present
+                # in BOTH working memory AND the completer top-k (very
+                # common - Reconsolidator.touch() bumps recently-accessed
+                # engrams into hot tier, which the completer then
+                # re-ranks into top-k) appears twice in the injected
+                # [near-term dialog] block. Livingmemory handles the
+                # analogous problem in RRFFusion.fuse() via
+                # `all_doc_ids = set()`; engram hits the same problem
+                # at a different merge point (working-memory prepend),
+                # so we apply the same set-based dedup here.
+                head_ids = {e.id for e in head}
+                old_engrams = result.engrams
+                old_scores = result.scores
+                old_confs = result.confidences
+                cm_engrams, cm_scores, cm_confs = [], [], []
+                for i, e in enumerate(old_engrams):
+                    if e.id in head_ids:
+                        continue
+                    cm_engrams.append(e)
+                    cm_scores.append(old_scores[i] if i < len(old_scores) else 0.0)
+                    if old_confs is not None and i < len(old_confs):
+                        cm_confs.append(old_confs[i])
+                head_n = len(head)
+                result.engrams = list(head) + cm_engrams
+                result.scores = [1.0] * head_n + cm_scores
+                if old_confs is not None:
+                    result.confidences = [1.0] * head_n + cm_confs
         self._recall_cache_set(_ckey, result)
         return result
 
     def recall_semantic(self, query: str, *, actor_id: str | None = None,
                         k: int = 5,
-                        persona_id: str | None = None) -> SemanticRecallResult:
+                        persona_id: str | None = None,
+                        scope_id: str | None = None) -> SemanticRecallResult:
         if self.semantic is None:
             return SemanticRecallResult(entities=[], relations=[], engrams=[], scores=[])
         allowed = self.store.engram_ids_for_persona(persona_id) if persona_id is not None else None
+        if scope_id is not None:
+            scoped = self.store.engram_ids_for_scope(scope_id)
+            allowed = scoped if allowed is None else (allowed & scoped)
         entities = self.semantic.search_entities(query, limit=k * 2)
         if allowed is not None:
             entities = [e for e in entities
@@ -1392,11 +1507,244 @@ class MemoryService:
             return ""
         return ls.owner(persona_id, task_kind)
 
+    def list_prompts(self) -> list[dict]:
+        """Built-in prompt templates + persisted override status."""
+        from .prompts import BUILTIN_PROMPTS, list_overrides
+        overrides = list_overrides(getattr(self, "_prompt_namespace", None))
+        out = []
+        for name in sorted(BUILTIN_PROMPTS):
+            out.append({
+                "name": name,
+                "content": overrides.get(name, BUILTIN_PROMPTS[name]),
+                "default_content": BUILTIN_PROMPTS[name],
+                "is_custom": name in overrides,
+            })
+        return out
+
+    def set_prompt(self, name: str, content: str | None) -> bool:
+        from .prompts import BUILTIN_PROMPTS, set_override
+        if name not in BUILTIN_PROMPTS:
+            return False
+        if content is not None and not str(content).strip():
+            # Empty prompt is indistinguishable from a broken LLM call; treat
+            # it as "remove customisation" instead of persisting an empty string.
+            content = None
+        set_override(name, content, getattr(self, "_prompt_namespace", None))
+        self.store.set_prompt_override(name, content)
+        return True
+
+    def reset_prompt(self, name: str) -> bool:
+        from .prompts import BUILTIN_PROMPTS, set_override
+        if name not in BUILTIN_PROMPTS:
+            return False
+        set_override(name, None, getattr(self, "_prompt_namespace", None))
+        self.store.set_prompt_override(name, None)
+        return True
+
+    def restore_engram(self, eid: str) -> bool:
+        """Re-activate a soft-forgotten memory; re-embeds when necessary."""
+        e = self.store.get(eid)
+        if e is None:
+            return False
+        restored = self.store.restore(eid)
+        if not restored:
+            return False
+        e = self.store.get(eid)
+        if e is not None:
+            if (not (getattr(e, "embedding", None) or [])
+                    or (getattr(e, "embedding_model", "") or "")
+                    != self._current_embedding_name):
+                try:
+                    e.embedding = self.embedder.embed(e.content or "")
+                    e.embedding_model = self._current_embedding_name
+                    self.store.upsert(e)
+                except Exception as exc:
+                    print("[hippocampus] restore re-embed failed: " + repr(exc))
+        self._invalidate_search_cache()
+        return True
+
+    def resummarize_engram(self, eid: str) -> bool:
+        """Re-run conversation summarization on the retained source transcript.
+
+        Updates the original engram in place (summary/content/topics/entities/
+        embedding) instead of minting a duplicate memory.
+        """
+        e = self.store.get(eid)
+        if e is None:
+            return False
+        lines = self.store.get_memory_source(eid)
+        if not lines:
+            return False
+        try:
+            from .conversation_buffer import ConversationRecord, ConvLine
+            from .summarizer import ConversationSummarizer
+            conv_lines = []
+            for item in lines:
+                try:
+                    conv_lines.append(ConvLine(
+                        actor_id=str(item.get("actor_id", "") or ""),
+                        speaker=str(item.get("speaker", "") or item.get("actor_id", "") or ""),
+                        content=str(item.get("content", "") or ""),
+                        ts=float(item.get("ts", 0.0) or 0.0),
+                        is_bot=bool(item.get("is_bot", False))))
+                except Exception:
+                    continue
+            if not conv_lines:
+                return False
+            peer_name = ""
+            for ln in conv_lines:
+                if not ln.is_bot:
+                    peer_name = ln.speaker or ln.actor_id
+                    break
+            rec = ConversationRecord(
+                channel_id=e.channel_id,
+                chat_type="group" if (getattr(e, "channel_id", "") and e.channel_id != e.session_id) else "private",
+                session_id=e.session_id,
+                platform=e.platform,
+                persona_id=getattr(e, "persona_id", "") or "",
+                scope_id=getattr(e, "scope_id", "") or "",
+                peer_actor_id=e.actor_id,
+                peer_name=peer_name,
+                group_id=getattr(e, "channel_id", "") or "",
+                group_name="",
+                lines=conv_lines,
+                first_ts=conv_lines[0].ts,
+                last_ts=conv_lines[-1].ts)
+            provider = self._build_persona_provider()
+            summ = ConversationSummarizer(
+                self.cfg, llm=self.llm,
+                persona_provider=lambda r: provider(
+                    r.peer_actor_id or (r.participants(include_bot=False) or [""])[0],
+                    r.channel_id)).summarize(rec)
+            text = (summ.get("summary") or "").strip()
+            if not text:
+                return False
+            facts = summ.get("key_facts") or []
+            e.summary = text
+            e.content = text
+            if facts:
+                e.content = text + chr(10) + chr(10).join(
+                    "- " + str(f) for f in facts)
+            e.topics = [str(t) for t in (summ.get("topics") or [])]
+            e.entities = [str(t) for t in (summ.get("participants") or [])]
+            try:
+                e.importance = min(1.0, max(0.0, float(summ.get("importance", e.importance) or e.importance)))
+            except Exception:
+                pass
+            try:
+                e.embedding = self.embedder.embed(e.content)
+                e.embedding_model = self._current_embedding_name
+            except Exception as exc:
+                print("[hippocampus] resummarize re-embed failed: " + repr(exc))
+            self.store.upsert(e)
+            try:
+                self._post_ingest(e)
+            except Exception as pex:
+                print("[hippocampus] resummarize _post_ingest failed: " + repr(pex))
+            self._invalidate_search_cache()
+            return True
+        except Exception as exc:
+            print("[hippocampus] resummarize_engram failed: " + repr(exc))
+            return False
+
+    def batch_delete_engrams(self, eids: list[str], *, hard: bool = False) -> dict:
+        """Delete many engrams from the WebUI. Returns per-mode counts."""
+        soft = 0
+        hard_del = 0
+        missing = 0
+        for eid in (eids or []):
+            eid = str(eid or "").strip()
+            if not eid:
+                continue
+            e = self.store.get(eid)
+            if e is None:
+                missing += 1
+                continue
+            if hard:
+                if self.store.delete(eid):
+                    hard_del += 1
+            elif self.store.soft_forget(eid):
+                soft += 1
+        if soft or hard_del:
+            self._invalidate_search_cache()
+        return {"soft_deleted": soft, "hard_deleted": hard_del, "missing": missing}
+
+    def _dual_route_config(self):
+        from .retrieval.dual_route import DualRouteConfig
+        cfg = self.cfg
+        return DualRouteConfig(
+            score_alpha=float(getattr(cfg, "score_alpha", 0.5) or 0.5),
+            score_beta=float(getattr(cfg, "score_beta", 0.25) or 0.25),
+            score_gamma=float(getattr(cfg, "score_gamma", 0.25) or 0.25),
+            recency_decay_rate=float(getattr(cfg, "recency_decay_rate", 0.01) or 0.0),
+            document_route_weight=float(getattr(cfg, "document_route_weight", 0.65) or 0.65),
+            graph_route_weight=float(getattr(cfg, "graph_route_weight", 0.35) or 0.35),
+            cross_route_bonus=float(getattr(cfg, "cross_route_bonus", 0.08) or 0.0),
+            dynamic_route_weighting=bool(getattr(cfg, "dynamic_route_weighting", True)),
+        )
+
     def recall_dual_route(self, cue: Cue) -> RecallResult:
         # v1.3 dual route lives in retrieval.dual_route. We delegate.
-        from .retrieval.dual_route import DualRouteRetriever, DualRouteConfig
-        dr = DualRouteRetriever(self, DualRouteConfig())
+        from .retrieval.dual_route import DualRouteRetriever
+        dr = DualRouteRetriever(self, self._dual_route_config())
         return dr.search(cue)
+
+    def explain_dual_route(self, cue: Cue) -> dict:
+        """Serializable per-route score breakdown for the recall debug page.
+
+        Returns the final fused ranking plus, for every surfaced engram,
+        which routes contributed and with what raw score / RRF contribution.
+        Useful for WebUI recall diagnostics and for tuning route weights.
+        """
+        from .retrieval.dual_route import DualRouteRetriever
+        dr = DualRouteRetriever(self, self._dual_route_config())
+        hits = dr.explain(cue)
+        ranked = dr._rank(cue)
+        ranked = ranked[: max(1, int(cue.k or 5))]
+
+        breakdown: dict[str, dict] = {}
+        for h in hits:
+            e = h.engram
+            item = breakdown.setdefault(e.id, {
+                "id": e.id,
+                "summary": (e.summary or "")[:200],
+                "actor_id": e.actor_id,
+                "memory_type": e.memory_type,
+                "importance": e.importance,
+                "strength": e.strength,
+                "created_at": e.created_at,
+                "routes": {},
+            })
+            item["routes"][h.route.value] = {
+                "raw_score": float(h.raw_score),
+                "rrf_contribution": float(h.rrf_contribution),
+                "matched_entity": h.matched_entity,
+            }
+
+        items = []
+        for sc in ranked:
+            e = sc.item
+            d = breakdown.get(e.id, {
+                "id": e.id,
+                "summary": (e.summary or "")[:200],
+                "actor_id": e.actor_id,
+                "memory_type": e.memory_type,
+                "importance": e.importance,
+                "strength": e.strength,
+                "created_at": e.created_at,
+                "routes": {},
+            })
+            d["final_score"] = float(sc.score)
+            d["score_breakdown"] = dict(sc.breakdown)
+            items.append(d)
+        return {
+            "items": items,
+            "query": cue.text,
+            "k": cue.k,
+            "routes_used": sorted({
+                h.route.value for h in hits
+            }),
+        }
 
     # ---------- prospective ----------
     def list_prospective(self, status: str | None = None) -> list:
@@ -1603,6 +1951,13 @@ class MemoryService:
                 out["profile_facts"] = self.decay_profile()
         except Exception as ex:
             print("[hippocampus] profile decay error: " + repr(ex))
+        # v1.76.5: optionally consolidate stale low-importance memories
+        # after the decay sweep (own cooldown; no-op when disabled).
+        try:
+            if bool(getattr(self.cfg, "memory_consolidation_enabled", False)):
+                self.run_memory_consolidation()
+        except Exception as ex:
+            print("[hippocampus] memory consolidation sweep error: " + repr(ex))
         # v1.72: force WAL checkpoint after decay sweep to prevent
         # unbounded WAL growth when multiple connections block auto-checkpoint.
         try:
@@ -1843,6 +2198,8 @@ class MemoryService:
                     depth=self.cfg.activation_max_depth,
                     decay=self.cfg.activation_decay,
                     floor=self.cfg.activation_floor,
+                    persona_id=getattr(cue, 'persona_id', None),
+                    scope_id=getattr(cue, 'scope_id', None),
                 )
                 if act_map:
                     cue.activation = act_map
@@ -1852,10 +2209,23 @@ class MemoryService:
 
     def force_consolidate(self):
         self._invalidate_search_cache()
+        if bool(getattr(self.cfg, "memory_consolidation_enabled", False)):
+            try:
+                return self.run_memory_consolidation(force=True)
+            except Exception as exc:
+                print("[hippocampus] LLM consolidation failed: " + repr(exc))
+                return {"error": repr(exc)}
         try:
             return self.consolidator.step()
         except Exception:
             return {}
+
+    def run_memory_consolidation(self, *, force: bool = False) -> dict:
+        """Group + LLM-merge stale low-importance memories."""
+        if self.consolidation_manager is None:
+            from .consolidation import MemoryConsolidationManager
+            self.consolidation_manager = MemoryConsolidationManager(self)
+        return self.consolidation_manager.run(force=force)
 
     # ---------- shutdown ----------
     def close(self) -> None:

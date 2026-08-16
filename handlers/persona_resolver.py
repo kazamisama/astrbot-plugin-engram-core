@@ -14,7 +14,10 @@ Best-effort: any failure resolves to "" and never raises into a hook.
 """
 from __future__ import annotations
 
+from hippocampus.memory_scope import resolve_scope_id
+
 EXTRA_KEY = "hippo_persona_id"
+EXTRA_SCOPE_KEY = "hippo_scope_id"
 
 
 async def resolve_persona_id(context, event) -> str:
@@ -93,3 +96,25 @@ async def stamp_persona_id(context, event, *, enabled: bool) -> str:
     except Exception:
         pass
     return pid
+
+
+async def stamp_scope_id(context, event, cfg=None) -> str:
+    """Resolve + stamp the livingmemory-style memory scope onto the event.
+
+    Legacy mode returns "" and leaves the old channel/persona behaviour
+    untouched. Idempotent like stamp_persona_id.
+    """
+    try:
+        ge = getattr(event, "get_extra", None)
+        if callable(ge):
+            existing = ge(EXTRA_SCOPE_KEY)
+            if existing is not None:
+                return str(existing)
+    except Exception:
+        pass
+    scope = resolve_scope_id(cfg, event)
+    try:
+        event.set_extra(EXTRA_SCOPE_KEY, scope)
+    except Exception:
+        pass
+    return scope

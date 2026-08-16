@@ -97,7 +97,9 @@
       },
       "external_plugin_root_tags": {
         "type": "list",
-        "default": ["xml-extra"],
+        "default": [
+          "xml-extra"
+        ],
         "description": "外部插件注入根标签白名单（审计用）",
         "hint": "多插件协调约定：其它插件写入 extra_user_content_parts 时应使用各自的唯一 XML 根标签包裹注入块（见 README「多插件注入协调」一节）。在此登记已知的外部根标签便于审计，例如 xml_structured_output 插件的 xml-extra。仅作登记用途，不影响注入行为。"
       },
@@ -363,6 +365,134 @@
         "default": "",
         "description": "日记用户提示词头部覆盖",
         "hint": "覆盖 DiaryWriter._build_prompt 的头部文本（含字数目标 + JSON 键说明 + 格式约束）。留空使用内置 _DEFAULT_USER_HEAD；填写后替换整段 head，支持 {day_label} / {target} 占位符。"
+      },
+      "memory_scope_mode": {
+        "type": "string",
+        "default": "legacy",
+        "description": "记忆作用域模式",
+        "hint": "legacy=旧行为；session=按会话隔离；user=同一用户跨会话共享；global=全局共享。",
+        "options": [
+          "legacy",
+          "session",
+          "user",
+          "global"
+        ]
+      },
+      "isolated_sessions": {
+        "type": "list",
+        "default": [],
+        "description": "强制隔离会话",
+        "hint": "这些会话始终独立记忆分区。"
+      },
+      "identity_aliases": {
+        "type": "string",
+        "default": "",
+        "description": "身份别名",
+        "hint": "每行一个 platform:user_id=规范昵称。"
+      },
+      "score_alpha": {
+        "type": "float",
+        "default": 0.5,
+        "description": "召回检索相关性权重",
+        "hint": ""
+      },
+      "score_beta": {
+        "type": "float",
+        "default": 0.25,
+        "description": "召回重要性权重",
+        "hint": ""
+      },
+      "score_gamma": {
+        "type": "float",
+        "default": 0.25,
+        "description": "召回时间新鲜度权重",
+        "hint": ""
+      },
+      "recency_decay_rate": {
+        "type": "float",
+        "default": 0.01,
+        "description": "召回时间衰减率",
+        "hint": ""
+      },
+      "document_route_weight": {
+        "type": "float",
+        "default": 0.65,
+        "description": "文档路权重",
+        "hint": ""
+      },
+      "graph_route_weight": {
+        "type": "float",
+        "default": 0.35,
+        "description": "图谱路权重",
+        "hint": ""
+      },
+      "cross_route_bonus": {
+        "type": "float",
+        "default": 0.08,
+        "description": "双路命中加成",
+        "hint": ""
+      },
+      "dynamic_route_weighting": {
+        "type": "bool",
+        "default": true,
+        "description": "查询意图动态调权",
+        "hint": ""
+      },
+      "memory_consolidation_enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用 LLM 记忆整合",
+        "hint": ""
+      },
+      "memory_consolidation_max_importance": {
+        "type": "float",
+        "default": 0.5,
+        "description": "整合候选最高重要性",
+        "hint": ""
+      },
+      "memory_consolidation_min_age_days": {
+        "type": "int",
+        "default": 7,
+        "description": "整合候选最小天龄",
+        "hint": ""
+      },
+      "memory_consolidation_min_memories_per_group": {
+        "type": "int",
+        "default": 3,
+        "description": "每组最少记忆数",
+        "hint": ""
+      },
+      "memory_consolidation_max_groups": {
+        "type": "int",
+        "default": 5,
+        "description": "单次最多整合组数",
+        "hint": ""
+      },
+      "memory_consolidation_max_candidates": {
+        "type": "int",
+        "default": 1000,
+        "description": "整合候选上限",
+        "hint": ""
+      },
+      "memory_consolidation_granularity": {
+        "type": "string",
+        "default": "session",
+        "description": "整合粒度",
+        "hint": "session=同会话聚合；semantic=向量相似聚类。",
+        "options": [
+          "session",
+          "semantic"
+        ]
+      },
+      "memory_consolidation_keep_original": {
+        "type": "string",
+        "default": "archive",
+        "description": "旧记忆处理",
+        "hint": "archive=软遗忘；delete=永久删除。",
+        "options": [
+          "archive",
+          "delete"
+        ]
       }
     }
   },
@@ -441,6 +571,12 @@
         "default": false,
         "description": "总结回退写入",
         "hint": "LLM 总结失败时是否回退为“截断转写”并写入记忆。默认关：不回退、该条总结直接跳过不写入。"
+      },
+      "source_retention_min_importance": {
+        "type": "float",
+        "default": 0.7,
+        "description": "保留原文最低重要性",
+        "hint": "达到该重要性的总结会保存原文，供审计与重新总结。"
       }
     }
   },

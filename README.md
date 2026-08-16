@@ -126,11 +126,16 @@ v1.44 改的是仓库名 / 部署目录名，plugin ID 没动。直接 `git pull
 | `sqlite_path` | `data/hippocampus.db` | SQLite 存储路径 |
 | `embedding_name` | `hash` | 初始 embedding provider |
 | `llm_name` | `rule` | 初始 llm provider |
-| `openai_api_key` | `""` | OpenAI key,非空时自动注册 |
-| `openai_embedding_model` | `text-embedding-3-small` | |
-| `openai_llm_model` | `gpt-4o-mini` | |
+| `embedding_provider_id` / `llm_provider_id` | `""` | 留空时使用 AstrBot 当前 provider（经 `astrmock` 桥） |
 | `auto_rebuild_on_switch` | `True` | 切 embedding 自动重算 |
 | `enable_semantic` / `enable_prospective` / `enable_promotion` | `True` | 三层开关 |
+
+## v1.76.6 新能力
+
+- **记忆作用域**：`memory_scope_mode`（legacy / session / user / global）、`isolated_sessions`、`identity_aliases`（`platform:user_id=规范昵称`）。
+- **提示词管理页**：Dashboard → 提示词，可编辑 extract / summary / consolidation / diary 模板并恢复默认；自定义内容持久化到数据库。
+- **WebUI 导入导出**：记忆列表支持 JSON 导出、JSON/CSV 导入、导入预检与按“规范化内容+会话+人格”去重。
+- **召回调试台**：Dashboard → 召回测试 → dual 模式，显示 document/graph/spread/atom 各路由分数与最终加权分解。
 
 ## 命令
 
@@ -306,9 +311,9 @@ python tests/_smoke_v11.py
 
 ## v1.2 版本治理 + 导出格式校验
 
-把"插件版本"和"导出格式版本"收敛到单一事实源,消除此前 `@register("...","0.5.0")` / export `"version":"0.7"` / `metadata.yaml: 1.1.0` 三处各说各话的隐患。
+把"插件版本"和"导出格式版本"收敛到单一事实源,消除此前多处版本号各说各话的隐患。
 
-- **单一版本源** — `hippocampus/__init__.py` 新增 `__version__`(插件版本)与 `EXPORT_FORMAT_VERSION`(导出 JSON 结构版本,与插件版本解耦)。`main.py` 的 `@register` 与 `/mem export` 都引用它们,改版本只需改一处。
+- **单一版本源** — `hippocampus/__init__.py` 新增 `__version__`(插件版本)与 `EXPORT_FORMAT_VERSION`(导出 JSON 结构版本,与插件版本解耦)。`main.py` 的 `_registered_version` 与 `/mem export` 都引用它们,改版本只需改一处。
 - **banner 带版本** — 启动 banner 现在打印 `v<__version__>`,运维一眼看到生效版本。
 - **import 格式守卫** — `/mem import` 读取 payload 的 `version` 字段:与当前 `EXPORT_FORMAT_VERSION` 不一致时在结果里追加 `[warn: export format vX != current vY]`,不阻断导入;旧 dump 缺 `version` 字段则静默兼容。
 
@@ -316,7 +321,7 @@ python tests/_smoke_v11.py
 
 ### v1.2 烟测
 
-`tests/_smoke_v12.py` 覆盖版本单一事实源一致性(metadata / `__version__` / `@register` 三方对齐)、export 写入正确格式版本、import 往返 + 旧版本告警 + 缺字段兼容。独立运行,只 mock `astrbot.api`。
+`tests/_smoke_v12.py` 覆盖版本单一事实源一致性(metadata / `__version__` / `_registered_version` 三方对齐)、export 写入正确格式版本、import 往返 + 旧版本告警 + 缺字段兼容。独立运行,只 mock `astrbot.api`。
 
 ```bash
 python tests/_smoke_v12.py

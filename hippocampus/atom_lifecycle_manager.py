@@ -157,6 +157,14 @@ class AtomLifecycleManager:
         active = self._store.all(status=AtomStatus.ACTIVE.value) if self._store is not None else []
         touched = 0
         for atom in active:
+            expires = float(getattr(atom, "expires_at", 0.0) or 0.0)
+            if expires > 0 and now >= expires:
+                if self._store is not None:
+                    atom.status = AtomStatus.SOFT_FORGOTTEN.value
+                    self._store.set_status(atom.id, atom.status)
+                    self._store.write_strength(atom.id, 0.0)
+                touched += 1
+                continue
             mult_for_type = mult.get(atom.decay_type, 1.0)
             if mult_for_type <= 0:
                 # Treat a 0 / negative multiplier as "no decay" for safety.

@@ -20,6 +20,7 @@ turns that into a summarized engram. No AstrBot imports here so it is unit
 testable in isolation.
 """
 from __future__ import annotations
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -42,6 +43,7 @@ class ConversationRecord:
     session_id: str
     platform: str
     persona_id: str = ""
+    scope_id: str = ""
     # identity stamps (B-1 requirement): private -> peer; group -> id+name
     peer_actor_id: str = ""     # private: who the bot talks to
     peer_name: str = ""
@@ -84,11 +86,20 @@ class ConversationRecord:
         return name
 
     def transcript(self) -> str:
-        """Time-ordered, speaker-labelled text for the LLM prompt."""
+        """Time-ordered, speaker-labelled text for the LLM prompt.
+
+        Bot turns are labelled as `我` so first-person summarization can
+        tell the bot's own words apart from the other participants.
+        """
+        bot_name = self.bot_name()
         out = []
         for ln in self.lines:
             t = time.strftime("%H:%M", time.localtime(ln.ts))
-            out.append("[" + t + " " + (ln.speaker or ln.actor_id) + "] " + ln.content)
+            if ln.is_bot and bot_name:
+                label = "我" if (ln.speaker or "").strip() == bot_name else ("我/" + (ln.speaker or ln.actor_id))
+            else:
+                label = ln.speaker or ln.actor_id
+            out.append("[" + t + " " + label + "] " + ln.content)
         return "\n".join(out)
 
     def round_count(self) -> int:
@@ -107,6 +118,7 @@ class _ChannelBuf:
             "session_id": meta.get("session_id", "") or "",
             "platform": meta.get("platform", "") or "",
             "persona_id": meta.get("persona_id", "") or "",
+            "scope_id": meta.get("scope_id", "") or "",
             "peer_actor_id": meta.get("peer_actor_id", "") or "",
             "peer_name": meta.get("peer_name", "") or "",
             "group_id": meta.get("group_id", "") or "",
@@ -127,6 +139,9 @@ class ConversationBuffer:
         self._sink = sink
         self._now = now_fn
         self._bufs: dict[str, _ChannelBuf] = {}
+        # v1.76.4: feeds now run on an ingest worker thread while the
+        # idle-flush task may call flush_idle_now() from the event loop.
+        self._lock = threading.RLock()
 
     # ---- chat-type aware idle ----
     def _idle_seconds(self, chat_type: str) -> float:
@@ -166,6 +181,10 @@ class ConversationBuffer:
 
     # ---- public API ----
     def feed(self, meta: dict) -> None:
+        with self._lock:
+            self._feed(meta)
+
+    def _feed(self, meta: dict) -> None:
         """Ingest one message (user or bot) into its channel buffer.
         First settles any other channel that has gone idle."""
         now = self._now()
@@ -197,7 +216,7 @@ class ConversationBuffer:
         ))
         buf.last_ts = now
         # fill late-arriving identity stamps (e.g. group_name resolved async)
-        for k in ("peer_name", "group_name", "peer_actor_id", "group_id", "session_id", "persona_id"):
+        for k in ("peer_name", "group_name", "peer_actor_id", "group_id", "session_id", "persona_id", "scope_id"):
             if not buf.meta.get(k) and meta.get(k):
                 buf.meta[k] = meta[k]
 
@@ -206,10 +225,18 @@ class ConversationBuffer:
             self._flush_key(ch)
 
     def flush_all(self) -> None:
+        with self._lock:
+            self._flush_all()
+
+    def _flush_all(self) -> None:
         for ch in list(self._bufs.keys()):
             self._flush_key(ch)
 
     def flush_idle_now(self) -> None:
+        with self._lock:
+            self._flush_idle_now()
+
+    def _flush_idle_now(self) -> None:
         """Scheduled maintenance entrypoint: flush only channels gone idle."""
         now = self._now()
         for ch in list(self._bufs.keys()):
@@ -232,6 +259,7 @@ class ConversationBuffer:
             session_id=buf.meta.get("session_id", ""),
             platform=buf.meta.get("platform", ""),
             persona_id=buf.meta.get("persona_id", ""),
+            scope_id=buf.meta.get("scope_id", ""),
             peer_actor_id=buf.meta.get("peer_actor_id", ""),
             peer_name=buf.meta.get("peer_name", ""),
             group_id=buf.meta.get("group_id", ""),
