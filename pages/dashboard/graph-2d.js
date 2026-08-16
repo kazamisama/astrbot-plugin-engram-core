@@ -37,8 +37,8 @@
   };
 
   var TYPE_COLORS = {
-    person: "#2f9e8b", place: "#4c6ef5", object: "#c99a16",
-    concept: "#7c6fca", unknown: "#8b949e"
+    person: "#4ade80", place: "#7c9cff", object: "#f5c451",
+    concept: "#b48cff", unknown: "#66708c"
   };
   var TYPE_LABEL = {
     person: "人物", place: "地点", object: "事物",

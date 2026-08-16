@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.76.11] - 2026-08-16
+
+### Changed
+- **Dashboard visual redesign**: Aurora Dark theme with glass cards, sticky
+  topbar, gradient tabs, radial background accents, refreshed graph palette
+  and journal-style diary cards.
+- Memory list cards now show live status, memory type, tier and importance
+  metadata; page API list items expose those fields.
+
+
 ## [1.76.10] - 2026-08-16
 
 ### Added

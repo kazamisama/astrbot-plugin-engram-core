@@ -306,6 +306,12 @@
       '<div class="mem-summary">' +
         escapeHtml(it.summary || "（无摘要）") +
       "</div>" +
+      '<div class="mem-meta">' +
+        '<span class="status-dot ' + (it.status === "archived" ? "off" : "on") + '">' + (it.status === "archived" ? "已归档" : "活跃") + "</span>" +
+        (it.memory_type ? '<span class="meta-chip">' + escapeHtml(it.memory_type) + "</span>" : "") +
+        (it.tier ? '<span class="meta-chip tier">' + escapeHtml(it.tier) + "</span>" : "") +
+        (it.importance != null ? '<span class="meta-chip">重要 ' + Number(it.importance).toFixed(2) + "</span>" : "") +
+      "</div>" +
       '<div class="mem-detail-body" style="display:none;"></div>';
 
     var head = div.querySelector(".mem-head");
@@ -904,7 +910,7 @@
   var GRAPH_TYPES = (window.EngramGraph2D && window.EngramGraph2D.TYPE_LABEL) ||
     { person: "人物", place: "地点", object: "事物", concept: "概念", unknown: "其它" };
   var GRAPH_COLORS = (window.EngramGraph2D && window.EngramGraph2D.TYPE_COLORS) ||
-    { person: "#2f9e8b", place: "#4c6ef5", object: "#c99a16", concept: "#7c6fca", unknown: "#8b949e" };
+    { person: "#4ade80", place: "#7c9cff", object: "#f5c451", concept: "#b48cff", unknown: "#66708c" };
   var graphReady = false;
 
   function colorOf(type) { return GRAPH_COLORS[type] || GRAPH_COLORS.unknown; }
