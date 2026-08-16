@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.76.10] - 2026-08-16
+
+### Added
+- **Persistent full graph v2**: graph_nodes_v2 / graph_edges_v2 /
+  graph_entries_v2 / graph_entry_nodes_v2 + FTS5, with cross-memory edge
+  merging (EMA confidence / accumulated weight).
+- **GraphExtractorV2**: deterministic topic / person / fact nodes and
+  describes / mentioned_in / co_occurs_with edges from engram metadata and
+  optional key_facts.
+- **Full-graph snapshot API**: `page/graph/data?full=true` returns scoped
+  nodes / edges / memories with node weights.
+- **Derived-index cascade**: hard delete now removes RelationStore,
+  SemanticStore, GraphStore fast-path + v2 entries and MemoryAtoms in one
+  service-owned hook.
+- Dashboard graph page gains a "全量图谱" toggle.
+
+### Notes
+- Graph vector memory-level embeddings and shadow-generation rebuild remain
+  deferred; current JSON-vector retrieval still powers the graph route.
+
+
 ## [1.76.9] - 2026-08-16
 
 ### Fixed

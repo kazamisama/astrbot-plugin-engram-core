@@ -312,7 +312,10 @@ class PluginPageApi:
     async def _graph_data(self) -> dict[str, Any]:
         args = await _query_args()
         return self.graph_handler.graph_data(
-            self._service(), limit=_as_int(args.get("limit"), 300))
+            self._service(), limit=_as_int(args.get("limit"), 300),
+            full=_as_bool(args.get("full"), False),
+            scope_id=(args.get("scope_id") or None),
+            persona_id=(args.get("persona_id") or None))
 
     async def _graph_query(self) -> dict[str, Any]:
         body = await _json_body()

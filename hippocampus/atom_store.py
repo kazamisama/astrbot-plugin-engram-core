@@ -276,6 +276,16 @@ class AtomStore:
             ).fetchall()
         return [self._row_to_atom(r) for r in rows]
 
+    def delete_by_source_engram(self, engram_id: str) -> int:
+        """Delete atoms whose source_engram_ids contains the engram."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """DELETE FROM atoms WHERE EXISTS (
+                       SELECT 1 FROM json_each(atoms.source_engram_ids)
+                       WHERE value = ?)""",
+                (engram_id,))
+            return cur.rowcount if hasattr(cur, "rowcount") else 0
+
     def list_by_source_engram(self, engram_id: str) -> list[MemoryAtom]:
         """Return every atom whose source_engram_ids contains `engram_id`.
 

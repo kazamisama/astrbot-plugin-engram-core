@@ -50,6 +50,7 @@ class HippocampalStore:
         from .tokenizer import normalize_mode
         self._tokenizer_mode = normalize_mode(tokenizer_mode)
         self._lock = threading.RLock()
+        self._derived_delete_hook = None
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         from .sqlite_util import apply_pragmas
@@ -389,7 +390,14 @@ class HippocampalStore:
             ok = cur.rowcount > 0
             if ok:
                 self.delete_memory_source(eid)
-            return ok
+        if ok:
+            try:
+                hook = self._derived_delete_hook
+                if hook is not None:
+                    hook(eid)
+            except Exception as exc:
+                print("[hippocampus] derived delete hook error: " + repr(exc))
+        return ok
 
     def all_after(self, after_id: str, limit: int = 100) -> list:
         """Return engrams with id > `after_id`, ordered by id ASC. Used by v1.3 rebuild checkpoint."""

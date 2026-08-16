@@ -164,6 +164,34 @@ class SemanticStore:
             self._conn.execute("DELETE FROM entities WHERE id=?", (entity_id,))
         return n
 
+    def delete_relations_by_source(self, engram_id: str) -> int:
+        """Remove relations sourced from a hard-deleted engram."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM relations WHERE source_engram_id = ?",
+                (engram_id,))
+            return cur.rowcount if hasattr(cur, "rowcount") else 0
+
+    def remove_engram_from_entities(self, engram_id: str) -> list[str]:
+        """Drop `engram_id` from every entity's source refs; delete orphan
+        entities. Returns deleted entity ids (for graph cleanup)."""
+        deleted: list[str] = []
+        with self._lock, self._conn:
+            rows = self._conn.execute("SELECT * FROM entities").fetchall()
+            for row in rows:
+                ent = Entity.from_row(dict(row))
+                refs = [x for x in (ent.source_engram_ids or []) if x != engram_id]
+                if refs:
+                    self._conn.execute(
+                        "UPDATE entities SET source_engram_ids=? WHERE id=? ",
+                        (json.dumps(refs, ensure_ascii=False), ent.id))
+                else:
+                    self._conn.execute("DELETE FROM relations WHERE subject_id=? OR object_id=?",
+                                       (ent.id, ent.id))
+                    self._conn.execute("DELETE FROM entities WHERE id=?", (ent.id,))
+                    deleted.append(ent.id)
+        return deleted
+
     def delete_relation(self, relation_id: str) -> bool:
         with self._lock, self._conn:
             cur = self._conn.execute(

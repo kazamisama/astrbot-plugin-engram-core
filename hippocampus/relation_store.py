@@ -221,6 +221,14 @@ class RelationStore:
         row = conn.execute("SELECT * FROM llm_relations WHERE id=?", (rid,)).fetchone()
         return Relation.from_row(row) if row else None
 
+    def delete_by_source_engram(self, engram_id: str) -> int:
+        """Remove every relation whose source engram was hard-deleted."""
+        with self._ensure_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM relations WHERE source_engram_id = ?",
+                (engram_id,))
+            return cur.rowcount if hasattr(cur, "rowcount") else 0
+
     def delete_by_id(self, rid: str) -> bool:
         """Hard-delete one relation by id. True if a row was removed."""
         conn = self._ensure_conn()

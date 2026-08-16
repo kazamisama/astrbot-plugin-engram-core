@@ -82,13 +82,24 @@ class GraphHandler:
         nodes = self._collect_nodes(rels)
         sample = [{"id": n["id"], "name": n["name"], "type": n["type"]}
                   for n in list(nodes.values())[:10]]
+        v2_stats = {"nodes": 0, "edges": 0, "entries": 0}
+        try:
+            g = getattr(service, "graph_store", None)
+            if g is not None:
+                v2_stats = g.graph_stats_v2()
+        except Exception:
+            pass
         return self.utils.ok({
             "n_entities": len(nodes),
             "n_relations": len(rels),
             "sample": sample,
+            "graph_v2": v2_stats,
         })
 
-    def graph_data(self, service, limit: int = 300) -> dict[str, Any]:
+    def graph_data(self, service, limit: int = 300,
+                   full: bool = False,
+                   scope_id: str | None = None,
+                   persona_id: str | None = None) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")
         rs = _rs(service)
@@ -98,6 +109,21 @@ class GraphHandler:
             cap = max(1, min(int(limit), 2000))
         except Exception:
             cap = 300
+        if full:
+            try:
+                g = getattr(service, "graph_store", None)
+                if g is not None:
+                    snap = g.full_graph_snapshot_v2(
+                        scope_id=scope_id, persona_id=persona_id)
+                    return self.utils.ok({
+                        "nodes": snap.get("nodes", []),
+                        "edges": snap.get("edges", []),
+                        "memories": snap.get("memories", []),
+                        "truncated": False,
+                        "full": True,
+                    })
+            except Exception as e:
+                return self.utils.error(f"full graph failed: {e!r}")
         try:
             rels = rs.all_active(limit=10_000_000) or []
         except Exception as e:

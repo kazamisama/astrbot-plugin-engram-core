@@ -922,6 +922,18 @@
     return canvas;
   }
 
+  var _graphFull = false;
+
+  function _toggleFullGraph() {
+    _graphFull = !_graphFull;
+    var btn = document.getElementById("btn-graph-full");
+    if (btn) {
+      btn.textContent = _graphFull ? "全量图谱（开）" : "全量图谱";
+      btn.classList.toggle("btn-active", _graphFull);
+    }
+    loadGraph();
+  }
+
   async function loadGraph() {
     var stage = document.getElementById("graph-stage");
     var tip = document.getElementById("graph-tip");
@@ -933,7 +945,8 @@
     }
     stage.innerHTML = emptyBox("加载中…");
     try {
-      var d = unwrap(await apiGet("page/graph/data", { limit: 300 }));
+      var d = unwrap(await apiGet("page/graph/data",
+        { limit: _graphFull ? 2000 : 300, full: _graphFull }));
       var nodes = (d && d.nodes) || [];
       var edges = (d && d.edges) || [];
       if (!nodes.length) {
@@ -1401,6 +1414,7 @@
   document.getElementById("btn-recall").addEventListener("click", runRecall);
   document.getElementById("btn-load-backups").addEventListener("click", loadBackups);
   document.getElementById("btn-load-graph").addEventListener("click", loadGraph);
+  document.getElementById("btn-graph-full").addEventListener("click", _toggleFullGraph);
     document.getElementById("btn-load-personas").addEventListener("click", loadPersonas);
   document.getElementById("btn-load-diary").addEventListener("click", function () { loadDiaries(false); });
   ["diary-channel", "diary-persona", "diary-day"].forEach(function (id) {

@@ -107,6 +107,7 @@ class MemoryService:
         self.lease_store = TaskLeaseStore(self.cfg.sqlite_path)
         from .life_graph_store import LifeGraphStore
         self.life_graph = LifeGraphStore(self.cfg.sqlite_path)
+        self.store._derived_delete_hook = self._delete_derived_indexes
         self.extractor = EntityExtractor(self.llm) if self.cfg.enable_semantic else None
         self.prospective_store = ProspectiveStore(self.cfg.sqlite_path) if self.cfg.enable_prospective else None
         self.prospective_scheduler = (
@@ -406,7 +407,8 @@ class MemoryService:
         try:
             self.working.add(e)
             self.store.upsert(e)
-            self._post_ingest(e, name_map=name_map)
+            self._post_ingest(e, name_map=name_map,
+                              graph_facts=summary.get("key_facts"))
         except Exception as ex:
             print("[hippocampus] store_summary persist error: " + repr(ex))
             return None
@@ -890,7 +892,54 @@ class MemoryService:
         except Exception as ex:
             print("[hippocampus] mirror relation error: " + repr(ex))
 
-    def _post_ingest(self, e: Engram, name_map: dict | None = None) -> None:
+    def _delete_derived_indexes(self, engram_id: str) -> None:
+        """Cascade a hard delete through relation / semantic / graph / atom."""
+        try:
+            rs = getattr(self, "relation_store", None)
+            if rs is not None and rs.is_open():
+                rs.delete_by_source_engram(engram_id)
+        except Exception as exc:
+            print("[hippocampus] relation cascade error: " + repr(exc))
+        try:
+            sem = getattr(self, "semantic", None)
+            if sem is not None:
+                sem.delete_relations_by_source(engram_id)
+                deleted_entities = sem.remove_engram_from_entities(engram_id)
+                graph = getattr(self, "graph_store", None)
+                if graph is not None:
+                    for eid in deleted_entities:
+                        graph.remove_entity(eid)
+        except Exception as exc:
+            print("[hippocampus] semantic cascade error: " + repr(exc))
+        try:
+            graph = getattr(self, "graph_store", None)
+            if graph is not None:
+                graph.remove_engram_refs(engram_id)
+                graph.delete_graph_memory_v2(engram_id)
+                if getattr(self, "semantic", None) is not None:
+                    graph.rebuild_from_semantic(self.semantic)
+        except Exception as exc:
+            print("[hippocampus] graph cascade error: " + repr(exc))
+        try:
+            atom_store = getattr(self, "atom_store", None)
+            if atom_store is not None:
+                atom_store.delete_by_source_engram(engram_id)
+        except Exception as exc:
+            print("[hippocampus] atom cascade error: " + repr(exc))
+
+    def _index_graph_v2(self, e: Engram, *, name_map=None,
+                        graph_facts=None) -> None:
+        from .graph_extractor import GraphExtractorV2
+        extracted = GraphExtractorV2().extract(
+            e, name_map=name_map or {}, facts=graph_facts)
+        if not extracted.entries:
+            return
+        node_map = self.graph_store.upsert_nodes_v2(extracted.nodes)
+        edge_map = self.graph_store.add_edges_v2(extracted.edges, node_map)
+        self.graph_store.add_entries_v2(extracted.entries, node_map, edge_map)
+
+    def _post_ingest(self, e: Engram, name_map: dict | None = None,
+                     graph_facts: list[str] | None = None) -> None:
         # FIX (v1.41) BUG-9: diary + summary engrams are already produced
         # by the diary / summary pipeline (which extracts relations and
         # entities itself). Running them through the per-engram extractor
@@ -1005,6 +1054,15 @@ class MemoryService:
                             self.atom_store.upsert(atom)
                 except Exception:
                     pass
+        # v1.76.10: persistent full-graph extraction (nodes/edges/entries).
+        if self.cfg.enable_graph_indexing:
+            self._ensure_atom_layer()
+            if self.graph_store is not None:
+                try:
+                    self._index_graph_v2(e, name_map=name_map,
+                                         graph_facts=graph_facts)
+                except Exception as _gex:
+                    print("[hippocampus] graph v2 index failed: " + repr(_gex))
         # v1.4 B4: mirror entity_refs into the GraphStore fast-path index.
         if self.cfg.enable_graph_indexing and e.entity_refs:
             self._ensure_atom_layer()

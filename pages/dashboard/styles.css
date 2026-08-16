@@ -316,3 +316,4 @@ class is shared between diary and memory rows; the per-list
 .prompt-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
 .prompt-item { margin:0; }
 .prompt-editor { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; }
+.btn-active { background: var(--accent, #6d8dff); color: #fff; }
