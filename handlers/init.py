@@ -37,6 +37,7 @@ class PluginInitializer:
         self.tools: list | None = None
         self.backup_manager: BackupManager | None = None
         self._backup_thread: threading.Thread | None = None
+        self._backup_stop: threading.Event | None = None
 
     def initialize(self, config_dict: dict | None = None) -> None:
         cfg_dict = config_dict or {}
@@ -235,11 +236,13 @@ class PluginInitializer:
         if interval_s <= 0:
             return
         first_delay = max(60.0, interval_s / 12.0)
-        
+        stop = threading.Event()
+        self._backup_stop = stop
+
         def _loop():
-            import time as _t
-            _t.sleep(first_delay)
-            while True:
+            if stop.wait(first_delay):
+                return
+            while not stop.is_set():
                 try:
                     if self.backup_manager is not None:
                         self.backup_manager.create(reason="auto")
@@ -249,8 +252,25 @@ class PluginInitializer:
                             keep_monthly=cfg.backup_keep_monthly)
                 except Exception as e:
                     print("[hippocampus] backup loop error: " + repr(e))
-                _t.sleep(interval_s)
-        
+                if stop.wait(interval_s):
+                    return
+
         t = threading.Thread(target=_loop, daemon=True, name="hippocampus-backup")
         t.start()
         self._backup_thread = t
+
+    def shutdown(self) -> None:
+        """Stop the backup scheduler thread (idempotent)."""
+        stop = getattr(self, "_backup_stop", None)
+        if stop is not None:
+            try:
+                stop.set()
+            except Exception:
+                pass
+        thread = getattr(self, "_backup_thread", None)
+        if thread is not None and thread.is_alive():
+            try:
+                thread.join(timeout=5.0)
+            except Exception:
+                pass
+        self._backup_thread = None

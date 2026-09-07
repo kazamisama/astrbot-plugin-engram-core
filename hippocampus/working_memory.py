@@ -1,5 +1,6 @@
 from __future__ import annotations
 import threading
+import time
 from dataclasses import dataclass
 from .types import Engram
 from .config import MemoryConfig
@@ -8,6 +9,7 @@ from .config import MemoryConfig
 class TimeCell:
     session_id: str
     started_at: float
+    last_seen: float
     engrams: list[Engram]
 
 class WorkingMemory:
@@ -35,14 +37,18 @@ class WorkingMemory:
             self._add(e)
 
     def _add(self, e: Engram) -> None:
+        now = time.time()
         cell = self._cells.get(e.session_id)
         if cell is None:
             cell = TimeCell(session_id=e.session_id, started_at=e.created_at,
-                            engrams=[])
+                            last_seen=now, engrams=[])
+        else:
+            cell.last_seen = now
         self._index_aliases(cell, e.session_id, e.channel_id)
         cell.engrams.append(e)
         if len(cell.engrams) > self._cfg.working_memory_capacity:
             cell.engrams = cell.engrams[-self._cfg.working_memory_capacity:]
+        self._evict_excess(now)
 
     def drain(self, session_id: str) -> list[Engram]:
         with self._lock:
@@ -59,10 +65,45 @@ class WorkingMemory:
         cell.engrams = []
         return out
 
+    def evict_idle(self, now: float | None = None) -> int:
+        """Drop cells that have not been touched for the configured idle TTL."""
+        now = time.time() if now is None else now
+        idle = float(getattr(self._cfg, "working_memory_idle_seconds", 86400.0) or 0.0)
+        if idle <= 0:
+            return 0
+        with self._lock:
+            idle_cells = {
+                id(cell) for cell in self._cells.values()
+                if now - cell.last_seen >= idle
+            }
+            for key, cell in list(self._cells.items()):
+                if id(cell) in idle_cells:
+                    self._cells.pop(key, None)
+            return len(idle_cells)
+
+    def _evict_excess(self, now: float) -> None:
+        max_cells = int(getattr(self._cfg, "working_memory_max_cells", 512) or 512)
+        if max_cells <= 0:
+            return
+        # Unique cells (aliases point at the same object).
+        cells: dict[int, TimeCell] = {}
+        for cell in self._cells.values():
+            cells[id(cell)] = cell
+        if len(cells) <= max_cells:
+            return
+        oldest = sorted(cells.values(), key=lambda c: c.last_seen)
+        remove = {id(c) for c in oldest[: len(cells) - max_cells]}
+        for key, cell in list(self._cells.items()):
+            if id(cell) in remove:
+                self._cells.pop(key, None)
+
     def snapshot(self, key: str) -> list[Engram]:
         with self._lock:
             cell = self._cells.get(key)
-            return list(cell.engrams) if cell else []
+            if cell is None:
+                return []
+            cell.last_seen = time.time()
+            return list(cell.engrams)
 
     def candidates_for_separation(self, session_id: str) -> list[Engram]:
         return self.snapshot(session_id)

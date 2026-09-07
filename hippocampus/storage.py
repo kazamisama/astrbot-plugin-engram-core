@@ -527,28 +527,39 @@ class HippocampalStore:
                    importance_modulator: float = 4.0) -> int:
         """Bulk Ebbinghaus decay. Returns count that fell below floor.
 
-        v1.72: batch UPDATE via executemany instead of per-engram upsert.
-        A single pass with N engrams now produces 1 fsync instead of N,
-        preventing WAL explosion from N independent write transactions."""
-        import math, time
+        v1.76.15: single SQL UPDATE instead of materializing the whole
+        engrams table into Python. Same math as the previous loop; one
+        statement produces one write transaction (and one fsync).
+        """
+        import time
         now = time.time()
-        below = 0
-        updates = []
-        for e in self.all(limit=10_000_000):
-            if e.forgotten_at > 0:
-                continue
-            tau = tau_base * (1.0 + importance_modulator * (e.importance or 0.0))
-            anchor = max(e.last_accessed or 0.0, e.created_at or now)
-            dt = max(0.0, now - anchor)
-            new_strength = e.strength * math.exp(-dt / max(tau, 1.0))
-            if new_strength < floor:
-                below += 1
-            updates.append((max(0.0, new_strength), e.id))
-        if updates:
-            with self._lock, self._conn:
-                self._conn.executemany(
-                    "UPDATE engrams SET strength=? WHERE id=?", updates)
-        return below
+        tau = max(float(tau_base), 1.0)
+        mod = max(0.0, float(importance_modulator))
+        floor = float(floor)
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE engrams
+                SET strength = MAX(0.0,
+                    strength * EXP(
+                        -MAX(0.0, ? - CASE
+                            WHEN COALESCE(created_at, 0.0) <= 0.0
+                             AND COALESCE(last_accessed, 0.0) <= 0.0
+                            THEN ?
+                            ELSE MAX(COALESCE(last_accessed, 0.0),
+                                     COALESCE(created_at, 0.0))
+                        END)
+                        / MAX(1.0, ? * (1.0 + ? * COALESCE(importance, 0.0)))
+                    )
+                )
+                WHERE COALESCE(forgotten_at, 0.0) = 0.0
+                """,
+                (now, now, tau, mod))
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM engrams "
+                "WHERE COALESCE(forgotten_at, 0.0) = 0.0 AND strength < ?",
+                (floor,)).fetchone()
+            return int(row["c"])
 
     def gc_pass(self, floor: float, min_age_seconds: float = 86400.0) -> int:
         """Hard-delete engrams below floor, never recalled, and old enough."""
@@ -886,6 +897,35 @@ class HippocampalStore:
                 "created_at=excluded.created_at",
                 (memory_id, json.dumps(lines or [], ensure_ascii=False),
                  len(lines or []), _t.time()))
+
+    def purge_memory_sources(self, retention_seconds: float) -> int:
+        """Delete raw transcripts older than `retention_seconds`. 0 = no-op."""
+        import time as _t
+        if retention_seconds is None or float(retention_seconds) <= 0.0:
+            return 0
+        cutoff = _t.time() - float(retention_seconds)
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM memory_sources WHERE created_at < ?", (cutoff,))
+                return int(cur.rowcount or 0)
+        except sqlite3.OperationalError:
+            return 0
+
+    def purge_completed_write_ops(self, retention_seconds: float) -> int:
+        """Delete completed write-op journal rows older than the retention."""
+        import time as _t
+        if retention_seconds is None or float(retention_seconds) <= 0.0:
+            return 0
+        cutoff = _t.time() - float(retention_seconds)
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM memory_write_ops "
+                    "WHERE status='completed' AND updated_at < ?", (cutoff,))
+                return int(cur.rowcount or 0)
+        except sqlite3.OperationalError:
+            return 0
 
     def get_memory_source(self, memory_id: str) -> list[dict]:
         try:

@@ -10,6 +10,7 @@ guarded; on any failure we simply skip injection.
 """
 from __future__ import annotations
 import asyncio
+import threading
 from collections import deque
 from typing import TYPE_CHECKING
 from ..format import _extract
@@ -19,6 +20,12 @@ try:
 except ImportError:
     TextPart = None  # pre-v4 AstrBot: fallback to string concat
 from engram_core_helpers import strip_injected_blocks  # v1.73: public re-injection defense
+
+# v1.76.15: cap concurrent injection workers so timed-out injections cannot
+# pile up threads on the default executor. When saturated, injection is
+# skipped for that LLM request (injection is best-effort by contract).
+_INJECT_MAX_CONCURRENCY = 4
+_INJECT_SLOTS = threading.BoundedSemaphore(_INJECT_MAX_CONCURRENCY)
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 
@@ -140,7 +147,17 @@ class InjectHandler:
         # and service.recall cache are shared state). v1.76.13: bounded
         # by handle_inject's asyncio.wait_for.
         async with self._get_inject_lock():
-            await asyncio.to_thread(self._handle_inject_sync, event, req)
+            if not _INJECT_SLOTS.acquire(blocking=False):
+                print("[hippocampus] inject worker saturated; skipping injection")
+                return
+
+            def _worker():
+                try:
+                    self._handle_inject_sync(event, req)
+                finally:
+                    _INJECT_SLOTS.release()
+
+            await asyncio.to_thread(_worker)
 
     def _handle_inject_sync(self, event, req) -> None:
         svc = self.service

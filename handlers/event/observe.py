@@ -8,6 +8,7 @@ __init__ and invoked by the thin wrapper in main.py.
 """
 from __future__ import annotations
 import asyncio
+import threading
 from typing import TYPE_CHECKING
 from ..format import _extract, _resolve_group_name, _bot_actor_id, _resolve_bot_name
 if TYPE_CHECKING:
@@ -18,6 +19,14 @@ if TYPE_CHECKING:
 # replays), not real user messages. AstrBot CronMessageEvent sets
 # platform_meta.name = "cron".
 _SYNTHETIC_PLATFORMS = {"cron"}
+
+# v1.76.15: at most this many ingest worker threads may be in flight.
+# Timed-out workers keep their slot until they finish, so a wedged worker
+# cannot pile up unbounded `asyncio.to_thread` threads on the default
+# executor; extra messages are dropped from memory capture instead of
+# freezing the bot.
+_INGEST_MAX_CONCURRENCY = 4
+_INGEST_SLOTS = threading.BoundedSemaphore(_INGEST_MAX_CONCURRENCY)
 
 # Marker strings injected by other plugins (e.g. proactive-reply) into a
 # replayed wake event. These are prompts the bot sends to *itself*, never
@@ -64,6 +73,30 @@ class ObserveHandler:
         self._conv_buffer = None
         self._summarizer = None
         self._ingest_lock = None
+
+    async def _run_ingest(self, fn, *args, timeout: float, label: str) -> bool:
+        """Run one blocking ingest function with bounded worker concurrency.
+
+        Returns True when the worker finished before the timeout.
+        """
+        if not _INGEST_SLOTS.acquire(blocking=False):
+            print("[hippocampus] ingest worker saturated; skipping "
+                  + label + " capture")
+            return False
+
+        def _worker():
+            try:
+                fn(*args)
+            finally:
+                _INGEST_SLOTS.release()
+
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_worker), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            print("[hippocampus] " + label + " timed out after "
+                  + str(timeout) + "s; released (ingest continues in background)")
+            return False
 
     def _get_ingest_lock(self):
         """Serialize ingest workers so message order is preserved even
@@ -166,14 +199,10 @@ class ObserveHandler:
         # worker thread, serialized per ObserveHandler so channel message
         # order is preserved. v1.76.14: bounded by _OBSERVE_HARD_TIMEOUT.
         async with self._get_ingest_lock():
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self._process_inbound_meta, meta, cfg),
-                    timeout=self._OBSERVE_HARD_TIMEOUT)
-            except asyncio.TimeoutError:
-                print("[hippocampus] observe_message timed out after "
-                      + str(self._OBSERVE_HARD_TIMEOUT) + "s; released "
-                      "(ingest continues in background)")
+            await self._run_ingest(
+                self._process_inbound_meta, meta, cfg,
+                timeout=self._OBSERVE_HARD_TIMEOUT,
+                label="observe_message")
 
     def _process_inbound_meta(self, meta: dict, cfg) -> None:
         """Blocking part of handle_message(); never called concurrently."""
@@ -245,14 +274,10 @@ class ObserveHandler:
             except Exception:
                 meta["group_name"] = ""
         async with self._get_ingest_lock():
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self._process_bot_meta, meta, cfg, summary_on),
-                    timeout=self._OBSERVE_HARD_TIMEOUT)
-            except asyncio.TimeoutError:
-                print("[hippocampus] observe_bot_reply timed out after "
-                      + str(self._OBSERVE_HARD_TIMEOUT) + "s; released "
-                      "(ingest continues in background)")
+            await self._run_ingest(
+                self._process_bot_meta, meta, cfg, summary_on,
+                timeout=self._OBSERVE_HARD_TIMEOUT,
+                label="observe_bot_reply")
 
     def _process_bot_meta(self, meta: dict, cfg, summary_on: bool) -> None:
         # v1.20 B-3: cache bot's own line for the daily diary.
@@ -347,14 +372,10 @@ class ObserveHandler:
                 meta["group_name"] = ""
         summary_on = bool(cfg is not None and getattr(cfg, "summary_mode_enabled", False))
         async with self._get_ingest_lock():
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self._process_poke_meta, meta, summary_on),
-                    timeout=self._OBSERVE_HARD_TIMEOUT)
-            except asyncio.TimeoutError:
-                print("[hippocampus] observe_poke timed out after "
-                      + str(self._OBSERVE_HARD_TIMEOUT) + "s; released "
-                      "(ingest continues in background)")
+            await self._run_ingest(
+                self._process_poke_meta, meta, summary_on,
+                timeout=self._OBSERVE_HARD_TIMEOUT,
+                label="observe_poke")
 
     def _process_poke_meta(self, meta: dict, summary_on: bool) -> None:
         try:

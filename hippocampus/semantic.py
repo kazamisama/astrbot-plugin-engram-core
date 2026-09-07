@@ -4,6 +4,8 @@ from .types import Entity, Relation, Engram
 from .config import MemoryConfig
 
 class SemanticStore:
+    _max_source_refs = 200
+
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._lock = threading.RLock()
@@ -62,6 +64,11 @@ class SemanticStore:
             for sid in e.source_engram_ids:
                 if sid not in existing.source_engram_ids:
                     existing.source_engram_ids.append(sid)
+            # v1.76.15: cap the JSON array so a long-lived entity row does
+            # not grow forever (keep the most recent sources).
+            max_refs = int(getattr(self, "_max_source_refs", 200) or 200)
+            if len(existing.source_engram_ids) > max_refs:
+                existing.source_engram_ids = existing.source_engram_ids[-max_refs:]
             self._conn.execute(
                 "UPDATE entities SET mention_count=?, last_seen=?, aliases=?, attributes=?, source_engram_ids=? WHERE id=?",
                 (existing.mention_count, existing.last_seen,
@@ -229,6 +236,8 @@ def _classify(name: str) -> str:
     return "unknown"
 
 class EntityExtractor:
+    _MAX_IDENTITY_ACTORS = 1024
+
     def __init__(self, llm=None) -> None:
         self._llm = llm
         self._identity_by_actor: dict[str, str] = {}
@@ -275,6 +284,11 @@ class EntityExtractor:
                 explicit_name = ident0.group(1).strip()
         if explicit_name and actor_id:
             self._identity_by_actor[actor_id] = explicit_name
+            if len(self._identity_by_actor) > self._MAX_IDENTITY_ACTORS:
+                try:
+                    self._identity_by_actor.pop(next(iter(self._identity_by_actor)), None)
+                except Exception:
+                    pass
 
         def _subject() -> Entity | None:
             person = next((e for e in entities if e.type == "person"), None)

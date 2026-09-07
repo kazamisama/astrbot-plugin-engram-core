@@ -1,38 +1,9 @@
 from __future__ import annotations
-import json, threading, urllib.request, urllib.error
+import json, urllib.request, urllib.error
 from .embeddings import EmbeddingProvider
 from .llm import LLMProvider, RuleLLMProvider, OpenAILLMProvider, AstrBotLLMProvider
 from ._async_bridge import run_sync, DEFAULT_SYNC_TIMEOUT
-
-
-def _bounded_sync_call(fn, args, timeout: float):
-    """Run a plain sync callable on a fresh daemon thread and wait at most
-    *timeout* seconds for it. On expiry raise RuntimeError and DETACH (the
-    daemon thread keeps running but cannot consume a shared pool slot and
-    cannot take the process down). Used to bound provider fns that carry no
-    timeout of their own -- without this, a hung sync fn blocks the calling
-    thread (possibly the astrbot event loop) indefinitely."""
-    box: dict = {}
-    done = threading.Event()
-
-    def _worker() -> None:
-        try:
-            box["out"] = fn(*args)
-        except BaseException as ex:  # re-raised in caller
-            box["err"] = ex
-        finally:
-            done.set()
-
-    t = threading.Thread(target=_worker, daemon=True,
-                         name="hippocampus-bounded-sync")
-    t.start()
-    if not done.wait(timeout):
-        raise RuntimeError(
-            f"sync provider call timed out after {timeout}s "
-            "(detached; provider hung?)")
-    if "err" in box:
-        raise box["err"]
-    return box["out"]
+from ._bounded import bounded_sync_call as _bounded_sync_call
 
 class ProviderRegistry:
     """User-selectable provider pool. Names are stable string IDs."""

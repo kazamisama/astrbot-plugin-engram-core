@@ -31,6 +31,26 @@ from hippocampus import (MemoryService, MemoryConfig, Cue,
                          __version__ as HIPPO_VERSION,
                          EXPORT_FORMAT_VERSION)
 
+
+def _run_async_gen_in_thread(factory):
+    """Collect an async generator on a private loop in a worker thread.
+
+    Used by command dispatch: the handler body is synchronous heavy work
+    wrapped in an async generator, so simply awaiting it would still block
+    the AstrBot event loop. Running the whole generator on a private loop
+    keeps the bot responsive and returns the yielded result objects.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        async def _collect():
+            out = []
+            async for item in factory():
+                out.append(item)
+            return out
+        return loop.run_until_complete(_collect())
+    finally:
+        loop.close()
+
 # Back-compat re-export: v08-v13 smoke files (and any external
 # caller) do `from main import format_xxx / export_engrams / ...`.
 # Keep the original v1.3 re-export surface stable. B6 only
@@ -134,17 +154,29 @@ class HippocampusStar(Star):
                     if convbuf is not None:
                         # v1.76.4 (M5): idle flush may trigger an LLM
                         # summary; run it off the event loop.
-                        await _a.to_thread(convbuf.flush_idle_now)
+                        # v1.76.15: bound the await too so a multi-channel
+                        # flush cannot hold this loop task forever.
+                        try:
+                            await _a.wait_for(
+                                _a.to_thread(convbuf.flush_idle_now),
+                                timeout=120.0)
+                        except _a.TimeoutError:
+                            print("[hippocampus] conv idle flush timed out "
+                                  "after 120s; work continues in background")
                     # FIX (v1.42) BUG-7: time-trigger flush for the diary
                     # write buffer so low-traffic channels do not let lines
                     # sit in memory longer than the configured SLA.
                     ds = getattr(self.service, "diary_store", None)
                     if ds is not None and hasattr(ds, "flush_now"):
                         try:
-                            n = await _a.to_thread(ds.flush_now)
+                            n = await _a.wait_for(
+                                _a.to_thread(ds.flush_now), timeout=30.0)
                             if n:
                                 print("[hippocampus] diary buffer flushed "
                                       + str(n) + " lines")
+                        except _a.TimeoutError:
+                            print("[hippocampus] diary buffer flush timed "
+                                  "out after 30s")
                         except Exception as dex:
                             print("[hippocampus] diary buffer flush error: "
                                   + repr(dex))
@@ -197,9 +229,15 @@ class HippocampusStar(Star):
                     try:
                         # v1.76.4 (M5): diary generation runs the LLM;
                         # keep the event loop responsive while it works.
-                        n = await _a.to_thread(self.service.run_daily_diary)
+                        # v1.76.15: bound the await as well.
+                        n = await _a.wait_for(
+                            _a.to_thread(self.service.run_daily_diary),
+                            timeout=1800.0)
                         if n:
                             print("[hippocampus] daily diary wrote " + str(n) + " entries")
+                    except _a.TimeoutError:
+                        print("[hippocampus] daily diary run timed out after "
+                              "1800s; work continues in background")
                     except Exception as ex:
                         print("[hippocampus] daily diary run error: " + repr(ex))
                 except _a.CancelledError:
@@ -221,12 +259,24 @@ class HippocampusStar(Star):
             from handlers.persona_resolver import stamp_persona_id, stamp_scope_id
             cfg = getattr(self.service, "cfg", None) if self.service else None
             enabled = bool(getattr(cfg, "persona_isolation_enabled", True)) if cfg else True
-            await stamp_persona_id(self.context, event, enabled=enabled)
-            await stamp_scope_id(self.context, event, cfg=cfg)
+
+            async def _inner():
+                await stamp_persona_id(self.context, event, enabled=enabled)
+                await stamp_scope_id(self.context, event, cfg=cfg)
+
+            await asyncio.wait_for(_inner(), timeout=self._STAMP_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] persona stamp timed out after "
+                  + str(self._STAMP_HARD_TIMEOUT) + "s; continuing unscoped")
         except Exception as ex:
             print("[hippocampus] persona stamp error: " + repr(ex))
 
     # ---------- event hook ----------
+    # v1.76.15: persona stamping calls AstrBot core APIs from every hook
+    # and command. Bound it so a hung conversation/persona manager degrades
+    # to "no persona scope" instead of a stuck hook/task.
+    _STAMP_HARD_TIMEOUT: float = 10.0
+
     # v1.76.14 (2026-09-07 20:32 recurrence): the whole hook body is
     # bounded, not just HandleInject's inner wait_for. The 19:39 freeze
     # entered inject_memory and then the loop died within milliseconds --
@@ -318,11 +368,47 @@ class HippocampusStar(Star):
     # Each wrapper yields whatever the handler returns. Decorator
     # names mirror AstrBot's command syntax; routing table lives in
     # CommandRouter.
+    #
+    # v1.76.15: handlers are async generators whose bodies execute heavy
+    # synchronous code. The old wrappers awaited them directly on the
+    # event loop, so a /mem rebuild or /mem search --mode=dual could
+    # freeze the whole bot. _dispatch_command runs the generator on a
+    # private loop in a worker thread and only resumes on the main loop
+    # to yield the already-built result objects.
+    _COMMAND_HARD_TIMEOUT: float = 180.0
+    _COMMAND_HEAVY_TIMEOUT: float = 900.0
+    _HEAVY_COMMANDS = {
+        "mem rebuild", "mem replay", "mem diary", "mem consolidate",
+        "mem export", "mem import", "mem graph", "mem debug",
+    }
+
+    async def _dispatch_command(self, command_name: str, event, args, kwargs):
+        timeout = (self._COMMAND_HEAVY_TIMEOUT
+                   if command_name in self._HEAVY_COMMANDS
+                   else self._COMMAND_HARD_TIMEOUT)
+
+        def _factory():
+            return self._commands.dispatch(command_name, event, args, kwargs)
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(_run_async_gen_in_thread, _factory),
+                timeout=timeout)
+        except asyncio.TimeoutError:
+            yield event.plain_result(
+                "[hippocampus] command timed out after " + str(timeout)
+                + "s; work continues in background")
+            return
+        except Exception as ex:
+            yield event.plain_result("[hippocampus] command error: " + repr(ex))
+            return
+        for r in results or []:
+            yield r
 
     @filter.command("recall")
     async def cmd_recall(self, event: AstrMessageEvent, query: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "recall", event, (query,), {}):
             yield r
 
@@ -332,54 +418,66 @@ class HippocampusStar(Star):
 
     @filter.command("mem stats")
     async def cmd_mem_stats(self, event: AstrMessageEvent):
-        yield event.plain_result(render_stats(self.service))
+        try:
+            text = await asyncio.wait_for(
+                asyncio.to_thread(render_stats, self.service),
+                timeout=self._COMMAND_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            yield event.plain_result(
+                "[hippocampus] mem stats timed out after "
+                + str(self._COMMAND_HARD_TIMEOUT) + "s")
+            return
+        except Exception as ex:
+            yield event.plain_result("[hippocampus] mem stats error: " + repr(ex))
+            return
+        yield event.plain_result(text)
 
     @filter.command("mem search")
     async def cmd_mem_search(self, event: AstrMessageEvent, arg: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem search", event, (arg,), {}):
             yield r
 
     @filter.command("mem model")
     async def cmd_mem_model(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem model", event, (), {}):
             yield r
 
     @filter.command("mem model use embedding")
     async def cmd_mem_use_emb(self, event: AstrMessageEvent, name: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem model use embedding", event, (name,), {}):
             yield r
 
     @filter.command("mem model use llm")
     async def cmd_mem_use_llm(self, event: AstrMessageEvent, name: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem model use llm", event, (name,), {}):
             yield r
 
     @filter.command("mem rebuild")
     async def cmd_mem_rebuild(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem rebuild", event, (), {}):
             yield r
 
     @filter.command("mem prospective")
     async def cmd_mem_prospective(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem prospective", event, (), {}):
             yield r
 
     @filter.command("mem session")
     async def cmd_mem_session(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem session", event, (), {}):
             yield r
 
@@ -387,7 +485,7 @@ class HippocampusStar(Star):
     async def cmd_mem_profile(self, event: AstrMessageEvent,
                               actor: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem profile", event, (), {"actor": actor}):
             yield r
 
@@ -395,7 +493,7 @@ class HippocampusStar(Star):
     async def cmd_mem_persona(self, event: AstrMessageEvent,
                               actor: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem persona", event, (), {"actor": actor}):
             yield r
 
@@ -403,7 +501,7 @@ class HippocampusStar(Star):
     async def cmd_mem_activate(self, event: AstrMessageEvent,
                                seeds: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem activate", event, (), {"seeds": seeds}):
             yield r
 
@@ -411,21 +509,21 @@ class HippocampusStar(Star):
     async def cmd_mem_remember(self, event: AstrMessageEvent,
                                arg: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem remember", event, (), {"arg": arg}):
             yield r
 
     @filter.command("mem cluster")
     async def cmd_mem_cluster(self, event: AstrMessageEvent, eid: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem cluster", event, (eid,), {}):
             yield r
 
     @filter.command("mem cluster-list")
     async def cmd_mem_cluster_list(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem cluster-list", event, (), {}):
             yield r
 
@@ -433,7 +531,7 @@ class HippocampusStar(Star):
     async def cmd_mem_confidence(self, event: AstrMessageEvent,
                                  query: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem confidence", event, (), {"query": query}):
             yield r
 
@@ -441,49 +539,49 @@ class HippocampusStar(Star):
     async def cmd_mem_decaycurve(self, event: AstrMessageEvent,
                                  arg: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem decaycurve", event, (), {"arg": arg}):
             yield r
 
     @filter.command("mem consolidate")
     async def cmd_mem_consolidate(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem consolidate", event, (), {}):
             yield r
 
     @filter.command("mem diary")
     async def cmd_mem_diary(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem diary", event, (), {}):
             yield r
 
     @filter.command("mem forget")
     async def cmd_mem_forget(self, event: AstrMessageEvent, eid: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem forget", event, (eid,), {}):
             yield r
 
     @filter.command("mem export")
     async def cmd_mem_export(self, event: AstrMessageEvent, path: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem export", event, (path,), {}):
             yield r
 
     @filter.command("mem import")
     async def cmd_mem_import(self, event: AstrMessageEvent, path: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem import", event, (path,), {}):
             yield r
 
     @filter.command("mem graph")
     async def cmd_mem_graph(self, event: AstrMessageEvent, query: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem graph", event, (query,), {}):
             yield r
 
@@ -491,7 +589,7 @@ class HippocampusStar(Star):
     async def cmd_mem_narrative(self, event: AstrMessageEvent,
                                 topic: str):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem narrative", event, (topic,), {}):
             yield r
 
@@ -499,35 +597,35 @@ class HippocampusStar(Star):
     async def cmd_mem_debug(self, event: AstrMessageEvent,
                             query: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem debug", event, (), {"query": query}):
             yield r
 
     @filter.command("mem replay")
     async def cmd_mem_replay(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem replay", event, (), {}):
             yield r
 
     @filter.command("mem valence")
     async def cmd_mem_valence(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem valence", event, (), {}):
             yield r
 
     @filter.command("mem streams")
     async def cmd_mem_streams(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem streams", event, (), {}):
             yield r
 
     @filter.command("mem tier")
     async def cmd_mem_tier(self, event: AstrMessageEvent, arg: str = ""):
         await self._stamp_persona(event)
-        async for r in self._commands.dispatch(
+        async for r in self._dispatch_command(
                 "mem tier", event, (), {"arg": arg}):
             yield r
 
@@ -747,6 +845,14 @@ class HippocampusStar(Star):
                 dtask.cancel()
         except Exception as e:
             print(f"[hippocampus] terminate flush error: {e!r}")
+        # v1.76.15: stop the backup daemon so hot reload cannot leave an
+        # old scheduler running against a closed/reopened database.
+        initializer = getattr(self, "_initializer", None)
+        if initializer is not None and hasattr(initializer, "shutdown"):
+            try:
+                initializer.shutdown()
+            except Exception as e:
+                print(f"[hippocampus] initializer shutdown error: {e!r}")
         if self.service is not None:
             try:
                 await self.service.stop()

@@ -186,6 +186,10 @@ class AtomStore:
             existing_sources = set(json.loads(row["source_engram_ids"] or "[]"))
             new_sources = set(atom.source_engram_ids)
             merged_sources = sorted(existing_sources | new_sources)
+            # v1.76.15: keep only the most recent source ids so long-lived
+            # atom rows do not grow their JSON array forever.
+            if len(merged_sources) > 200:
+                merged_sources = merged_sources[-200:]
             merged_evidence = max(int(row["evidence_count"]), int(atom.evidence_count))
             merged_last_seen = max(float(row["last_seen"]), float(atom.last_seen))
             merged_confidence = max(float(row["confidence"]), float(atom.confidence))

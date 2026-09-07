@@ -650,9 +650,7 @@ class MemoryService:
                 scored.append((ch.text, s))
         # Fallback: cover diaries that have an engram but no chunks yet.
         try:
-            for d in self.store.list_active(limit=50000):
-                if (getattr(d, "memory_type", "") or "") != "diary":
-                    continue
+            for d in self.store.list_active(limit=2000, memory_type="diary"):
                 if d.id in seen_diary_ids:
                     continue
                 if (persona_id is not None
@@ -811,9 +809,7 @@ class MemoryService:
             return None
         day_tag = "day:" + str(day_label)
         try:
-            for r in self.store.list_active(limit=200000):
-                if (getattr(r, "memory_type", "") or "") != "diary":
-                    continue
+            for r in self.store.list_active(limit=20000, memory_type="diary"):
                 if (getattr(r, "channel_id", "") or "") != channel_id:
                     continue
                 if (getattr(r, "persona_id", "") or "") != (persona_id or ""):
@@ -948,8 +944,11 @@ class MemoryService:
     def _index_graph_v2(self, e: Engram, *, name_map=None,
                         graph_facts=None) -> None:
         from .graph_extractor import GraphExtractorV2
-        extracted = GraphExtractorV2().extract(
-            e, name_map=name_map or {}, facts=graph_facts)
+        extracted = GraphExtractorV2(
+            max_topics=int(getattr(self.cfg, "graph_max_topics", 4) or 4),
+            max_persons=int(getattr(self.cfg, "graph_max_persons", 6) or 6),
+            max_facts=int(getattr(self.cfg, "graph_max_facts", 6) or 6),
+        ).extract(e, name_map=name_map or {}, facts=graph_facts)
         if not extracted.entries:
             return
         node_map = self.graph_store.upsert_nodes_v2(extracted.nodes)
@@ -1875,6 +1874,12 @@ class MemoryService:
             self._start_decay_loop()
         except Exception as ex:
             print("[hippocampus] decay loop start error: " + repr(ex))
+        # v1.76.15: the prospective scheduler existed but was never started;
+        # pending triggers accumulated forever. Start it when enabled.
+        try:
+            self._start_prospective_loop()
+        except Exception as ex:
+            print("[hippocampus] prospective loop start error: " + repr(ex))
         if not (self.cfg.enable_atom_extraction or self.cfg.enable_graph_indexing):
             return
         self._ensure_atom_layer()
@@ -1950,6 +1955,10 @@ class MemoryService:
             self._stop_decay_loop()
         except Exception:
             pass
+        try:
+            await self._stop_prospective_loop()
+        except Exception:
+            pass
         if self.atom_lifecycle is None:
             return
         import asyncio as _asyncio
@@ -1970,6 +1979,14 @@ class MemoryService:
             self._stop_decay_loop()
         except Exception:
             pass
+        ptask = getattr(self, "_prospective_task", None)
+        if ptask is not None:
+            self._prospective_task = None
+            if not ptask.done():
+                try:
+                    ptask.cancel()
+                except Exception:
+                    pass
         if self.atom_lifecycle is None:
             return
         import asyncio as _asyncio
@@ -1984,6 +2001,10 @@ class MemoryService:
         self._self_threaded_stop()
     async def stop_background_tasks_async(self) -> None:
         # Awaitable variant for callers that already have a running loop.
+        try:
+            await self._stop_prospective_loop()
+        except Exception:
+            pass
         if self.atom_lifecycle is None:
             return
         try:
@@ -2053,6 +2074,24 @@ class MemoryService:
                 self.run_memory_consolidation()
         except Exception as ex:
             print("[hippocampus] memory consolidation sweep error: " + repr(ex))
+        # v1.76.15: bound working-memory cells and journal/source tables on
+        # the same maintenance cadence (no extra wakeups).
+        try:
+            out["working_cells_evicted"] = self.working.evict_idle()
+        except Exception as ex:
+            print("[hippocampus] working-memory eviction error: " + repr(ex))
+        try:
+            src_days = float(getattr(self.cfg, "source_retention_days", 90.0) or 0.0)
+            out["memory_sources_purged"] = self.store.purge_memory_sources(
+                src_days * 86400.0)
+        except Exception as ex:
+            print("[hippocampus] memory source purge error: " + repr(ex))
+        try:
+            op_days = float(getattr(self.cfg, "write_op_retention_days", 7.0) or 0.0)
+            out["write_ops_purged"] = self.store.purge_completed_write_ops(
+                op_days * 86400.0)
+        except Exception as ex:
+            print("[hippocampus] write-op purge error: " + repr(ex))
         # v1.72: force WAL checkpoint after decay sweep to prevent
         # unbounded WAL growth when multiple connections block auto-checkpoint.
         try:
@@ -2060,6 +2099,47 @@ class MemoryService:
         except Exception:
             pass
         return out
+
+    def _start_prospective_loop(self) -> None:
+        """Start the v0.2 prospective-trigger poller (was previously dead)."""
+        if self.prospective_scheduler is None or self.prospective_store is None:
+            return
+        interval = float(getattr(self.cfg, "prospective_check_interval", 5.0) or 0.0)
+        if interval <= 0:
+            return
+        if self._prospective_task is not None and not self._prospective_task.done():
+            return
+        import asyncio as _asyncio
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            print("[hippocampus] prospective loop: no running asyncio loop; "
+                  "auto-trigger disabled")
+            return
+
+        async def _loop():
+            while True:
+                try:
+                    await _asyncio.sleep(interval)
+                    await _asyncio.to_thread(self.prospective_scheduler.step)
+                except _asyncio.CancelledError:
+                    break
+                except Exception as ex:
+                    print("[hippocampus] prospective loop error: " + repr(ex))
+
+        self._prospective_task = _asyncio.create_task(_loop())
+
+    async def _stop_prospective_loop(self) -> None:
+        task = getattr(self, "_prospective_task", None)
+        if task is None:
+            return
+        self._prospective_task = None
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
 
     def _start_decay_loop(self) -> None:
         """Run run_memory_decay() on a fixed interval in a daemon thread.
@@ -2153,9 +2233,7 @@ class MemoryService:
         if self.persona_store is None or not actor_id:
             return None
         cap = int(getattr(self.cfg, "persona_max_source", 20) or 20)
-        rows = [e for e in self.store.all(limit=5000)
-                if (e.actor_id or "") == actor_id]
-        rows = rows[:max(1, cap)]
+        rows = self.store.list_active(limit=max(1, cap), actor_id=actor_id)
         if not rows:
             return None
         platform = ""
@@ -2328,6 +2406,14 @@ class MemoryService:
             self._stop_decay_loop()
         except Exception:
             pass
+        ptask = getattr(self, "_prospective_task", None)
+        if ptask is not None:
+            self._prospective_task = None
+            if not ptask.done():
+                try:
+                    ptask.cancel()
+                except Exception:
+                    pass
         for name in ("store", "semantic", "atom_store", "graph_store",
                      "prospective_store", "profile", "persona_store",
                      "relation_store", "diary_store", "lease_store",

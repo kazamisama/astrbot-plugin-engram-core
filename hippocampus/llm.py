@@ -1,33 +1,8 @@
 from __future__ import annotations
-import json, threading, urllib.request, urllib.error
+import json, urllib.request, urllib.error
 from abc import ABC, abstractmethod
 from ._async_bridge import run_sync, DEFAULT_LLM_SYNC_TIMEOUT
-
-
-def _bounded_sync_call(fn, args, timeout: float):
-    """v1.76.14: bound a plain sync bridge callable on a fresh daemon
-    thread; on expiry raise RuntimeError and detach (see providers.py)."""
-    box: dict = {}
-    done = threading.Event()
-
-    def _worker() -> None:
-        try:
-            box["out"] = fn(*args)
-        except BaseException as ex:
-            box["err"] = ex
-        finally:
-            done.set()
-
-    t = threading.Thread(target=_worker, daemon=True,
-                         name="hippocampus-bounded-sync-llm")
-    t.start()
-    if not done.wait(timeout):
-        raise RuntimeError(
-            f"sync LLM bridge call timed out after {timeout}s "
-            "(detached; provider hung?)")
-    if "err" in box:
-        raise box["err"]
-    return box["out"]
+from ._bounded import bounded_sync_call as _bounded_sync_call
 
 class LLMProvider(ABC):
     @abstractmethod

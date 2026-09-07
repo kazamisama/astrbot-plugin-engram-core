@@ -132,6 +132,23 @@ class PluginPageApi:
             return None
         return getattr(init, "backup_manager", None)
 
+    # v1.76.15: dashboard handlers execute synchronous SQLite/LLM work.
+    # Run them off the Quart/AstrBot event loop and bound the await.
+    _PAGE_BLOCKING_TIMEOUT: float = 120.0
+
+    async def _run_blocking(self, fn, *args, timeout: float | None = None,
+                            **kwargs):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(fn, *args, **kwargs),
+                timeout=timeout or self._PAGE_BLOCKING_TIMEOUT)
+        except asyncio.TimeoutError:
+            return self.utils.error(
+                "operation timed out after "
+                + str(timeout or self._PAGE_BLOCKING_TIMEOUT) + "s")
+        except Exception as ex:
+            return self.utils.error(repr(ex))
+
     def register_routes(self) -> None:
         """Register all endpoints. The plugin's context must expose
         `register_web_api(route, handler, methods, desc)`; a missing
@@ -234,11 +251,12 @@ class PluginPageApi:
         })
 
     async def _stats(self) -> dict[str, Any]:
-        return self.stats_handler.get_stats(self._service())
+        return await self._run_blocking(self.stats_handler.get_stats, self._service())
 
     async def _list_memories(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.memory_handler.list_memories(
+        return await self._run_blocking(
+            self.memory_handler.list_memories,
             self._service(),
             q=str(args.get("q", "") or args.get("actor_id", "")),
             k=_as_int(args.get("k"), 50),
@@ -248,12 +266,14 @@ class PluginPageApi:
 
     async def _memory_detail(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.memory_handler.get_memory_detail(
+        return await self._run_blocking(
+            self.memory_handler.get_memory_detail,
             self._service(), eid=str(args.get("eid", "")))
 
     async def _delete_memory(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.memory_handler.delete_memory(
+        return await self._run_blocking(
+            self.memory_handler.delete_memory,
             self._service(),
             eid=str(body.get("eid", "")),
             hard=_as_bool(body.get("hard"), False),
@@ -261,17 +281,20 @@ class PluginPageApi:
 
     async def _memory_source(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.memory_handler.get_memory_source(
+        return await self._run_blocking(
+            self.memory_handler.get_memory_source,
             self._service(), eid=str(args.get("eid", "")))
 
     async def _resummarize_memory(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.memory_handler.resummarize_memory(
+        return await self._run_blocking(
+            self.memory_handler.resummarize_memory,
             self._service(), eid=str(body.get("eid", "")))
 
     async def _restore_memory(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.memory_handler.restore_memory(
+        return await self._run_blocking(
+            self.memory_handler.restore_memory,
             self._service(), eid=str(body.get("eid", "")))
 
     async def _batch_delete_memories(self) -> dict[str, Any]:
@@ -279,7 +302,8 @@ class PluginPageApi:
         eids = body.get("eids")
         if not isinstance(eids, list):
             eids = []
-        return self.memory_handler.batch_delete_memories(
+        return await self._run_blocking(
+            self.memory_handler.batch_delete_memories,
             self._service(), eids=eids, hard=_as_bool(body.get("hard"), False))
 
     async def _update_memory(self) -> dict[str, Any]:
@@ -292,12 +316,14 @@ class PluginPageApi:
                 "summary", "content", "memory_type", "tier",
                 "importance", "strength", "topics", "tags",
                 "persona_id") if k in body}
-        return self.memory_handler.update_memory(
+        return await self._run_blocking(
+            self.memory_handler.update_memory,
             self._service(), eid=eid, fields=fields)
 
     async def _test_recall(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.recall_handler.test_recall(
+        return await self._run_blocking(
+            self.recall_handler.test_recall,
             self._service(),
             query=str(body.get("query", "")),
             mode=str(body.get("mode", "dual")),
@@ -307,11 +333,12 @@ class PluginPageApi:
         )
 
     async def _graph_overview(self) -> dict[str, Any]:
-        return self.graph_handler.graph_overview(self._service())
+        return await self._run_blocking(self.graph_handler.graph_overview, self._service())
 
     async def _graph_data(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.graph_handler.graph_data(
+        return await self._run_blocking(
+            self.graph_handler.graph_data,
             self._service(), limit=_as_int(args.get("limit"), 300),
             full=_as_bool(args.get("full"), False),
             scope_id=(args.get("scope_id") or None),
@@ -319,36 +346,42 @@ class PluginPageApi:
 
     async def _graph_query(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.graph_handler.graph_query(
+        return await self._run_blocking(
+            self.graph_handler.graph_query,
             self._service(), name=str(body.get("name", "")))
 
     async def _graph_entity_delete(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.graph_handler.delete_entity(
+        return await self._run_blocking(
+            self.graph_handler.delete_entity,
             self._service(), eid=str(body.get("eid", "")))
 
     async def _graph_relation_delete(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.graph_handler.delete_relation(
+        return await self._run_blocking(
+            self.graph_handler.delete_relation,
             self._service(), rid=str(body.get("rid", "")))
 
     async def _graph_relation_update(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.graph_handler.update_relation(
+        return await self._run_blocking(
+            self.graph_handler.update_relation,
             self._service(), rid=str(body.get("rid", "")),
             confidence=body.get("confidence"))
 
     async def _list_backups(self) -> dict[str, Any]:
-        return self.backup_handler.list_backups(self._backup_manager())
+        return await self._run_blocking(self.backup_handler.list_backups, self._backup_manager())
 
     async def _restore_backup(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.backup_handler.restore_backup(
+        return await self._run_blocking(
+            self.backup_handler.restore_backup,
             self._backup_manager(), backup_id=str(body.get("backup_id", "")))
 
     async def _list_diaries(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.diary_handler.list_diaries(
+        return await self._run_blocking(
+            self.diary_handler.list_diaries,
             self._service(),
             channel_id=str(args.get("channel_id", "")),
             persona_id=str(args.get("persona_id", "")),
@@ -359,36 +392,41 @@ class PluginPageApi:
         )
 
     async def _diary_options(self) -> dict[str, Any]:
-        return self.diary_handler.options(self._service())
+        return await self._run_blocking(self.diary_handler.options, self._service())
 
     async def _diary_detail(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.diary_handler.get_detail(
+        return await self._run_blocking(
+            self.diary_handler.get_detail,
             self._service(), eid=str(args.get("eid", "")))
 
     async def _delete_diary(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.diary_handler.delete_diary(
+        return await self._run_blocking(
+            self.diary_handler.delete_diary,
             self._service(),
             eid=str(body.get("eid", "")),
             hard=_as_bool(body.get("hard"), False))
 
     async def _list_personas(self) -> dict[str, Any]:
-        return self.persona_handler.list_personas(self._service())
+        return await self._run_blocking(self.persona_handler.list_personas, self._service())
 
     async def _persona_detail(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.persona_handler.get_persona_detail(
+        return await self._run_blocking(
+            self.persona_handler.get_persona_detail,
             self._service(), actor_id=str(args.get("actor_id", "")))
 
     async def _build_persona(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.persona_handler.build_persona(
+        return await self._run_blocking(
+            self.persona_handler.build_persona,
             self._service(), actor_id=str(body.get("actor_id", "")))
 
     async def _update_persona(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.persona_handler.update_persona(
+        return await self._run_blocking(
+            self.persona_handler.update_persona,
             self._service(),
             actor_id=str(body.get("actor_id", "")),
             summary=str(body.get("summary", "")),
@@ -396,7 +434,8 @@ class PluginPageApi:
 
     async def _export_memories(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.transfer_handler.export_memories(
+        return await self._run_blocking(
+            self.transfer_handler.export_memories,
             self._service(), fmt=str(body.get("format", "json")))
 
     async def _preview_memory_import(self) -> dict[str, Any]:
@@ -421,22 +460,26 @@ class PluginPageApi:
             derive_indexes=derive_indexes)
 
     async def _list_prompts(self) -> dict[str, Any]:
-        return self.prompt_handler.list_prompts(self._service())
+        return await self._run_blocking(self.prompt_handler.list_prompts, self._service())
 
     async def _get_prompt(self) -> dict[str, Any]:
         args = await _query_args()
-        return self.prompt_handler.get_prompt(self._service(), str(args.get("name", "")))
+        return await self._run_blocking(
+            self.prompt_handler.get_prompt, self._service(), str(args.get("name", "")))
 
     async def _update_prompt(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.prompt_handler.update_prompt(
+        return await self._run_blocking(
+            self.prompt_handler.update_prompt,
             self._service(), str(body.get("name", "")), str(body.get("content", "")))
 
     async def _reset_prompt(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.prompt_handler.reset_prompt(self._service(), str(body.get("name", "")))
+        return await self._run_blocking(
+            self.prompt_handler.reset_prompt, self._service(), str(body.get("name", "")))
 
     async def _delete_persona(self) -> dict[str, Any]:
         body = await _json_body()
-        return self.persona_handler.delete_persona(
+        return await self._run_blocking(
+            self.persona_handler.delete_persona,
             self._service(), actor_id=str(body.get("actor_id", "")))

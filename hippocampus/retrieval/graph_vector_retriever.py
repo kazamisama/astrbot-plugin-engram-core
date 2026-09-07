@@ -18,19 +18,23 @@ class GraphVectorRetriever:
     re-embed of tokens). All entity names are embedded with the same
     EmbeddingProvider so the space is consistent.
 
-    For 10K entities this costs O(N) embed calls; in v1.4 we keep it simple
-    and accept that cost. B11 will move to a persisted entity embedding
-    table.
+    v1.76.15: the scan is capped to the most-mentioned `max_entities`
+    entities (default 64) instead of 1024, so one dual-route query can no
+    longer issue a huge batch of provider embedding calls.
     """
 
-    def __init__(self, graph: GraphStore, embedder: EmbeddingProvider) -> None:
+    DEFAULT_MAX_ENTITIES = 64
+
+    def __init__(self, graph: GraphStore, embedder: EmbeddingProvider,
+                 max_entities: int = DEFAULT_MAX_ENTITIES) -> None:
         self._graph = graph
         self._embedder = embedder
+        self._max_entities = max(1, int(max_entities))
 
     def search(self, query_vec: list[float], k: int = 16) -> list[EntityMatch]:
         if not query_vec:
             return []
-        entities = self._all_entities()
+        entities = self._all_entities(limit=self._max_entities)
         if not entities:
             return []
         scored: list[tuple[Entity, float]] = []
@@ -56,7 +60,7 @@ class GraphVectorRetriever:
 
     # -- internals -----------------------------------------------------
 
-    def _all_entities(self) -> list[Entity]:
+    def _all_entities(self, limit: int = 64) -> list[Entity]:
         import sqlite3
         from ..semantic import SemanticStore  # noqa: F401
         path = self._graph._db_path  # type: ignore[attr-defined]
@@ -65,7 +69,8 @@ class GraphVectorRetriever:
         try:
             try:
                 rows = conn.execute(
-                    "SELECT * FROM entities ORDER BY mention_count DESC LIMIT 1024"
+                    "SELECT * FROM entities ORDER BY mention_count DESC LIMIT ?",
+                    (max(1, int(limit)),),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return []

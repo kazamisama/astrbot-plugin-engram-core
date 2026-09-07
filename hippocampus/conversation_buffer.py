@@ -109,7 +109,7 @@ class ConversationRecord:
 
 
 class _ChannelBuf:
-    __slots__ = ("meta", "lines", "first_ts", "last_ts")
+    __slots__ = ("meta", "lines", "first_ts", "last_ts", "last_msg_ts")
 
     def __init__(self, meta: dict, now: float) -> None:
         self.meta = {
@@ -127,6 +127,7 @@ class _ChannelBuf:
         self.lines: list = []
         self.first_ts = now
         self.last_ts = now
+        self.last_msg_ts = now
 
 
 class ConversationBuffer:
@@ -158,6 +159,12 @@ class ConversationBuffer:
     def _min_messages(self) -> int:
         return int(getattr(self.cfg, "summary_min_messages", 0) or 0)
 
+    def _below_min_grace_seconds(self) -> float:
+        return float(getattr(self.cfg, "summary_min_messages_grace_seconds", 21600.0) or 0.0)
+
+    def _max_channels(self) -> int:
+        return int(getattr(self.cfg, "summary_max_channels", 512) or 512)
+
     def _below_min(self, buf: _ChannelBuf) -> bool:
         min_n = self._min_messages()
         return min_n > 0 and len(buf.lines) < min_n
@@ -167,6 +174,10 @@ class ConversationBuffer:
         if buf is None or not self._is_idle(buf, now):
             return
         if self._below_min(buf):
+            grace = self._below_min_grace_seconds()
+            if grace > 0 and now - buf.last_msg_ts >= grace:
+                self._bufs.pop(ch, None)
+                return
             buf.last_ts = now
             return
         self._flush_key(ch)
@@ -215,6 +226,7 @@ class ConversationBuffer:
             is_bot=bool(meta.get("is_bot", False)),
         ))
         buf.last_ts = now
+        buf.last_msg_ts = now
         # fill late-arriving identity stamps (e.g. group_name resolved async)
         for k in ("peer_name", "group_name", "peer_actor_id", "group_id", "session_id", "persona_id", "scope_id"):
             if not buf.meta.get(k) and meta.get(k):
@@ -223,6 +235,23 @@ class ConversationBuffer:
         cap = int(getattr(self.cfg, "summary_max_messages", 0) or 0)
         if cap > 0 and len(buf.lines) >= cap:
             self._flush_key(ch)
+        self._evict_excess(now)
+
+    def _evict_excess(self, now: float) -> None:
+        max_channels = self._max_channels()
+        if max_channels <= 0 or len(self._bufs) <= max_channels:
+            return
+        # Keep the most recently active channels; drop the oldest.
+        while len(self._bufs) > max_channels:
+            oldest_ch = min(
+                self._bufs.keys(),
+                key=lambda ch: self._bufs[ch].last_msg_ts,
+            )
+            self._bufs.pop(oldest_ch, None)
+
+    def buffered_channel_count(self) -> int:
+        with self._lock:
+            return len(self._bufs)
 
     def flush_all(self) -> None:
         with self._lock:

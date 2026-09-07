@@ -6,6 +6,8 @@ class MemoryConfig:
     sqlite_path: str = "data/hippocampus.db"
     embedding_dim: int = 64
     working_memory_capacity: int = 32
+    working_memory_max_cells: int = 512          # hard cap on per-session working-memory cells
+    working_memory_idle_seconds: float = 86400.0  # drop cells untouched for this long
     pattern_separation_threshold: float = 0.92
     pattern_similar_threshold: float = 0.75
     recall_candidate_k: int = 50
@@ -146,6 +148,11 @@ class MemoryConfig:
     enable_graph_indexing: bool = True
     # --- v1.31: WebUI graph rendering ---
     graph_max_relations_per_pair: int = 4  # cap relations shown between one entity pair (top-N by confidence)
+    # --- v1.76.15: graph-v2 write caps (disk growth control) ---
+    graph_max_topics: int = 4
+    graph_max_persons: int = 6
+    graph_max_facts: int = 6
+    graph_vector_entity_limit: int = 64
     # --- v1.4 B3: background maintenance loops ---
     # 0 = disabled. Caller is expected to call run_decay() / run_gc()
     # manually, or to invoke MemoryService.start_background_tasks().
@@ -157,6 +164,7 @@ class MemoryConfig:
     backup_keep_last: int = 7
     backup_keep_weekly: int = 1
     backup_keep_monthly: int = 1
+    write_op_retention_days: float = 7.0          # TTL for completed memory_write_ops rows
     # --- v1.5: auto memory injection into LLM context (on_llm_request) ---
     auto_inject_enabled: bool = True
     auto_inject_top_k: int = 3
@@ -184,11 +192,14 @@ class MemoryConfig:
     summary_idle_seconds_group: float = 300.0     # group chat cooldown before flush
     summary_max_messages: int = 30                # hard cap on buffered msgs before forced flush; 0=off
     summary_min_messages: int = 20                # minimum buffered msgs before an idle flush may summarize; 0=off
+    summary_min_messages_grace_seconds: float = 21600.0  # drop sub-min channels idle for this long
+    summary_max_channels: int = 512               # hard cap on in-memory channel buffers (LRU)
     summary_min_chars: int = 0                   # drop shorter inbound lines from the buffer
     summary_compress_ratio: float = 0.15         # target_chars = total_chars * ratio
     summary_compress_floor: int = 0              # min summary chars; 0=unbounded
     summary_compress_cap: int = 1200
     source_retention_min_importance: float = 0.7  # keep raw transcript for summaries >= this
+    source_retention_days: float = 90.0           # TTL for retained raw transcripts; 0=forever
     summary_compress_cap_group: int = 400             # max summary chars
     summary_idle_flush_interval_seconds: float = 60.0  # background sweep period for idle channels
     summary_fallback_enabled: bool = False       # LLM 失败时是否回退截断转写写入；默认关（不回退、不写入）

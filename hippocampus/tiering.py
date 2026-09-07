@@ -80,18 +80,51 @@ class TieringEngine:
     # ---- background sweep ----
     def reclassify_all(self, limit: int = 1_000_000) -> dict:
         """Recompute + persist the cached tier for every engram. Returns a
-        {hot, warm, cold, changed} count dict. Never deletes anything."""
+        {hot, warm, cold, changed} count dict. Never deletes anything.
+
+        v1.76.15: one SQL UPDATE instead of materializing the engrams
+        table and per-row upserting (which also re-ran FTS triggers).
+        """
         now = time.time()
         counts = {HOT: 0, WARM: 0, COLD: 0, "changed": 0}
-        rows = self._store.all(limit=limit)
-        for e in rows:
-            new_tier = classify(e, self._cfg, now)
-            counts[new_tier] += 1
-            if getattr(e, "tier", "") != new_tier:
-                e.tier = new_tier
-                counts["changed"] += 1
-                try:
-                    self._store.upsert(e)
-                except Exception as ex:
-                    print("[hippocampus] tier reclassify upsert error: " + repr(ex))
+        hot_age = float(getattr(self._cfg, "tier_hot_max_age_days", 3.0))
+        warm_age = float(getattr(self._cfg, "tier_warm_max_age_days", 30.0))
+        hot_str = float(getattr(self._cfg, "tier_hot_min_strength", 0.5))
+        cold_floor = float(getattr(self._cfg, "tier_cold_strength_floor", 0.1))
+        # age expression mirrors classify(): ref = last_accessed if >0 else
+        # created_at; a zero/absent ref is treated as age 0.
+        age_expr = (
+            "CASE WHEN COALESCE(last_accessed, 0.0) > 0.0 "
+            "OR COALESCE(created_at, 0.0) > 0.0 "
+            "THEN (? - CASE WHEN COALESCE(last_accessed, 0.0) > 0.0 "
+            "THEN last_accessed ELSE created_at END) / 86400.0 "
+            "ELSE 0.0 END"
+        )
+        tier_expr = (
+            "CASE "
+            "WHEN COALESCE(forgotten_at, 0.0) > 0.0 THEN ? "
+            "WHEN COALESCE(strength, 0.0) < ? THEN ? "
+            f"WHEN {age_expr} <= ? AND COALESCE(strength, 0.0) >= ? THEN ? "
+            f"WHEN {age_expr} <= ? THEN ? "
+            "ELSE ? END"
+        )
+        try:
+            with self._store._lock, self._store._conn:
+                before = self._store._conn.total_changes
+                self._store._conn.execute(
+                    "UPDATE engrams SET tier = " + tier_expr,
+                    (now, cold_floor, COLD, now, hot_age, hot_str, HOT,
+                     now, warm_age, WARM, COLD))
+                changed = int(self._store._conn.total_changes) - int(before)
+                rows = self._store._conn.execute(
+                    "SELECT tier, COUNT(*) AS c FROM engrams GROUP BY tier"
+                ).fetchall()
+        except Exception as ex:
+            print("[hippocampus] tier reclassify sql error: " + repr(ex))
+            return counts
+        for r in rows:
+            key = str(r["tier"] or "")
+            if key in counts:
+                counts[key] = int(r["c"])
+        counts["changed"] = max(0, changed)
         return counts

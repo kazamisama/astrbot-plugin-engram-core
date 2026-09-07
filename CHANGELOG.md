@@ -3,6 +3,28 @@
 
 ## [Unreleased]
 
+### Changed
+- **v1.76.15 audit fixes (memory + event-loop hardening)**:
+  - Command dispatch and Dashboard page-API handlers now run heavy sync work
+    in worker threads with `asyncio.wait_for` timeouts (previously `/mem
+    rebuild`, `/mem search --mode=dual`, `/stats`, `/recall/test`, graph
+    routes, etc. could freeze the AstrBot event loop).
+  - `WorkingMemory` cells now have a hard LRU cap and idle TTL.
+  - `ConversationBuffer` drops below-min channels after a grace period and
+    caps total buffered channels.
+  - Decay and tier reclassification use single SQL `UPDATE` statements
+    instead of materializing every engram into Python.
+  - Completed `memory_write_ops` and old `memory_sources` rows are purged
+    on the decay-maintenance cadence.
+  - Graph-v2 write caps and graph vector entity caps are configurable
+    (`graph_max_topics/persons/facts`, `graph_vector_entity_limit`).
+  - Ingest/inject worker concurrency is bounded; provider sync calls use a
+    shared bounded runner instead of leaking one thread per timeout.
+  - The prospective scheduler task is actually started/stopped; backup
+    thread is shut down on plugin terminate.
+  - `_stamp_persona` is bounded (10s) in all hook and command paths.
+  - Version bump: 1.76.14 → 1.76.15.
+
 ### Fixed
 - **Recurring freeze hardening (v1.76.14, 2026-09-07 recurrence)**: the
   v1.76.13 caps only bounded the *caller* of `run_sync`; a bridge coroutine

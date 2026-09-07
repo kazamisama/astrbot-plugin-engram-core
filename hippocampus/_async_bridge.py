@@ -28,6 +28,7 @@ reason to stall the LLM request.
 from __future__ import annotations
 import asyncio
 import threading
+import time as _time
 from concurrent.futures import TimeoutError as _FutTimeoutError
 from typing import Any, Awaitable
 
@@ -49,6 +50,12 @@ _lock = threading.Lock()
 # and builds a fresh one, so a single bad upstream call can never chain
 # into a permanent all-calls-timeout state.
 _wedged = False
+# v1.76.15: rebuilding the worker leaks the old thread when the wedge is in
+# sync code (join cannot interrupt it). Cap rebuilds so a repeatedly-wedged
+# provider cannot create an unbounded number of worker threads/loops.
+_REBUILD_MAX = 4
+_REBUILD_WINDOW_SECONDS = 300.0
+_rebuild_times: list[float] = []
 
 
 def _ensure_worker() -> asyncio.AbstractEventLoop:
@@ -69,12 +76,22 @@ def _ensure_worker() -> asyncio.AbstractEventLoop:
         return loop
 
 
-def _rebuild_worker() -> None:
+def _rebuild_worker() -> bool:
     """Stop the old worker thread/loop and let _ensure_worker() build a
     fresh one. Safe even when the old loop is already dead. In-flight
     futures on the old loop are not awaited here: their callers are the
-    ones that already timed out (or will time out at their own caps)."""
+    ones that already timed out (or will time out at their own caps).
+
+    Returns False when the rebuild backoff is exhausted.
+    """
     global _loop, _thread
+    now = _time.monotonic()
+    with _lock:
+        while _rebuild_times and now - _rebuild_times[0] > _REBUILD_WINDOW_SECONDS:
+            _rebuild_times.pop(0)
+        if len(_rebuild_times) >= _REBUILD_MAX:
+            return False
+        _rebuild_times.append(now)
     old_loop: asyncio.AbstractEventLoop | None = None
     old_thread: threading.Thread | None = None
     with _lock:
@@ -87,6 +104,7 @@ def _rebuild_worker() -> None:
             pass
     if old_thread is not None and old_thread.is_alive():
         old_thread.join(timeout=1.0)
+    return True
 
 
 def run_sync(awaitable: Awaitable[Any], *, timeout: float | None = None) -> Any:
@@ -101,7 +119,11 @@ def run_sync(awaitable: Awaitable[Any], *, timeout: float | None = None) -> Any:
     global _wedged
     effective = DEFAULT_SYNC_TIMEOUT if timeout is None else timeout
     if _wedged:
-        _rebuild_worker()
+        if not _rebuild_worker():
+            _wedged = False
+            raise RuntimeError(
+                "run_sync worker rebuild backoff exhausted "
+                "(provider repeatedly wedged; backing off)")
         _wedged = False
     loop = _ensure_worker()
     try:

@@ -51,7 +51,14 @@ class GraphRetriever:
             self._embedder = embedder
         self._max_hops = max(1, int(max_hops))
         self._keyword = GraphKeywordRetriever(self._graph)
-        self._vector = GraphVectorRetriever(self._graph, self._embedder)
+        if service is not None:
+            vec_limit = int(getattr(service.cfg, "graph_vector_entity_limit",
+                                    GraphVectorRetriever.DEFAULT_MAX_ENTITIES)
+                            or GraphVectorRetriever.DEFAULT_MAX_ENTITIES)
+        else:
+            vec_limit = GraphVectorRetriever.DEFAULT_MAX_ENTITIES
+        self._vector = GraphVectorRetriever(self._graph, self._embedder,
+                                            max_entities=vec_limit)
 
     # -- public --------------------------------------------------------
 
