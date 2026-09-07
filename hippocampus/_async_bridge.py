@@ -40,6 +40,15 @@ DEFAULT_LLM_SYNC_TIMEOUT: float = 60.0   # LLM bridge (summarizer/diary/consolid
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 _lock = threading.Lock()
+# v1.76.14 (2026-09-07 recurrence): fut.cancel() can only interrupt a
+# coroutine at an await point. A bridge coroutine stuck in *sync* code
+# (or awaiting a future bound to a different loop) survives the cancel
+# and keeps the worker loop blocked forever -- every later run_sync call
+# then burns its full timeout. The fix: on timeout mark the worker as
+# wedged; the next run_sync tears the old worker (thread + loop) down
+# and builds a fresh one, so a single bad upstream call can never chain
+# into a permanent all-calls-timeout state.
+_wedged = False
 
 
 def _ensure_worker() -> asyncio.AbstractEventLoop:
@@ -60,26 +69,58 @@ def _ensure_worker() -> asyncio.AbstractEventLoop:
         return loop
 
 
+def _rebuild_worker() -> None:
+    """Stop the old worker thread/loop and let _ensure_worker() build a
+    fresh one. Safe even when the old loop is already dead. In-flight
+    futures on the old loop are not awaited here: their callers are the
+    ones that already timed out (or will time out at their own caps)."""
+    global _loop, _thread
+    old_loop: asyncio.AbstractEventLoop | None = None
+    old_thread: threading.Thread | None = None
+    with _lock:
+        old_loop, old_thread = _loop, _thread
+        _loop, _thread = None, None
+    if old_loop is not None and not old_loop.is_closed():
+        try:
+            old_loop.call_soon_threadsafe(old_loop.stop)
+        except Exception:
+            pass
+    if old_thread is not None and old_thread.is_alive():
+        old_thread.join(timeout=1.0)
+
+
 def run_sync(awaitable: Awaitable[Any], *, timeout: float | None = None) -> Any:
     """Block until *awaitable* completes on the worker loop and return its result.
 
     timeout=None means DEFAULT_SYNC_TIMEOUT (v1.76.13; no longer "wait
     forever" -- pass a large value explicitly to opt out). On expiry the
-    underlying task is cancelled (best-effort, so the worker loop can keep
-    serving later calls) and a RuntimeError is raised.
+    underlying task is cancelled (best-effort) and a RuntimeError is
+    raised; v1.76.14: the worker is also marked wedged so the NEXT call
+    schedules on a fresh loop instead of queuing behind a hung one.
     """
-    loop = _ensure_worker()
-    fut = asyncio.run_coroutine_threadsafe(_as_coro(awaitable), loop)
+    global _wedged
     effective = DEFAULT_SYNC_TIMEOUT if timeout is None else timeout
+    if _wedged:
+        _rebuild_worker()
+        _wedged = False
+    loop = _ensure_worker()
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_as_coro(awaitable), loop)
+    except RuntimeError:
+        # Loop vanished under us (rebuild race): retry once on a fresh worker.
+        _rebuild_worker()
+        loop = _ensure_worker()
+        fut = asyncio.run_coroutine_threadsafe(_as_coro(awaitable), loop)
     try:
         return fut.result(timeout=effective)
     except _FutTimeoutError:
         # Unstick the worker loop: later run_sync calls must not queue
         # behind a hung coroutine. Only helps when the coroutine is
         # awaiting (cancellation lands at the next await point); a
-        # sync-blocked bridge fn would stay wedged, but the per-call
-        # timeout above still releases *our* caller.
+        # sync-blocked bridge fn would stay wedged -- that is why the
+        # NEXT run_sync call rebuilds the worker instead of reusing it.
         fut.cancel()
+        _wedged = True
         raise RuntimeError(
             f"run_sync timed out after {effective}s "
             "(coroutine cancelled: upstream provider hung?)") from None

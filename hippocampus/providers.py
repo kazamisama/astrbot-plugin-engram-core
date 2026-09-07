@@ -1,8 +1,38 @@
 from __future__ import annotations
-import json, urllib.request, urllib.error
+import json, threading, urllib.request, urllib.error
 from .embeddings import EmbeddingProvider
 from .llm import LLMProvider, RuleLLMProvider, OpenAILLMProvider, AstrBotLLMProvider
 from ._async_bridge import run_sync, DEFAULT_SYNC_TIMEOUT
+
+
+def _bounded_sync_call(fn, args, timeout: float):
+    """Run a plain sync callable on a fresh daemon thread and wait at most
+    *timeout* seconds for it. On expiry raise RuntimeError and DETACH (the
+    daemon thread keeps running but cannot consume a shared pool slot and
+    cannot take the process down). Used to bound provider fns that carry no
+    timeout of their own -- without this, a hung sync fn blocks the calling
+    thread (possibly the astrbot event loop) indefinitely."""
+    box: dict = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            box["out"] = fn(*args)
+        except BaseException as ex:  # re-raised in caller
+            box["err"] = ex
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True,
+                         name="hippocampus-bounded-sync")
+    t.start()
+    if not done.wait(timeout):
+        raise RuntimeError(
+            f"sync provider call timed out after {timeout}s "
+            "(detached; provider hung?)")
+    if "err" in box:
+        raise box["err"]
+    return box["out"]
 
 class ProviderRegistry:
     """User-selectable provider pool. Names are stable string IDs."""
@@ -110,7 +140,12 @@ class ProxyEmbeddingProvider(EmbeddingProvider):
     def name(self) -> str: return self._id
     def _call(self, text: str) -> list[float]:
         import inspect
-        out = self._fn(text)
+        # v1.76.14: the FIRST call is already bounded -- an async fn
+        # returns its coroutine immediately (cheap), a sync fn executes
+        # inside _bounded_sync_call's daemon thread. Without this, a
+        # sync provider with no timeout of its own blocked the calling
+        # thread (possibly the astrbot event loop) indefinitely.
+        out = _bounded_sync_call(self._fn, (text,), DEFAULT_SYNC_TIMEOUT)
         if inspect.isawaitable(out):
             # v1.76.13: explicit hard timeout -- a hung embedding
             # provider (no HTTP timeout of its own) must raise here

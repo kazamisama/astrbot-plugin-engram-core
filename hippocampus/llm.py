@@ -1,6 +1,33 @@
 from __future__ import annotations
-import json, urllib.request, urllib.error
+import json, threading, urllib.request, urllib.error
 from abc import ABC, abstractmethod
+from ._async_bridge import run_sync, DEFAULT_LLM_SYNC_TIMEOUT
+
+
+def _bounded_sync_call(fn, args, timeout: float):
+    """v1.76.14: bound a plain sync bridge callable on a fresh daemon
+    thread; on expiry raise RuntimeError and detach (see providers.py)."""
+    box: dict = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            box["out"] = fn(*args)
+        except BaseException as ex:
+            box["err"] = ex
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True,
+                         name="hippocampus-bounded-sync-llm")
+    t.start()
+    if not done.wait(timeout):
+        raise RuntimeError(
+            f"sync LLM bridge call timed out after {timeout}s "
+            "(detached; provider hung?)")
+    if "err" in box:
+        raise box["err"]
+    return box["out"]
 
 class LLMProvider(ABC):
     @abstractmethod
@@ -75,9 +102,12 @@ class ProxyLLMProvider(LLMProvider):
     def name(self) -> str: return self._id
     def chat(self, system: str, user: str, **kw) -> str:
         import inspect
-        out = self._fn(system=system, user=user, **kw)
+        # v1.76.14: first call bounded (async fn returns coroutine fast;
+        # sync fn executes in _bounded_sync_call's daemon thread).
+        out = _bounded_sync_call(
+            lambda: self._fn(system=system, user=user, **kw),
+            (), DEFAULT_LLM_SYNC_TIMEOUT)
         if inspect.isawaitable(out):
-            from ._async_bridge import run_sync, DEFAULT_LLM_SYNC_TIMEOUT
             # v1.76.13: hard cap so a hung LLM bridge cannot wedge the
             # shared worker loop (which would also stall embeddings).
             out = run_sync(out, timeout=DEFAULT_LLM_SYNC_TIMEOUT)
@@ -94,9 +124,11 @@ class AstrBotLLMProvider(LLMProvider):
         if self._bridge is None: return ""
         try:
             import inspect
-            out = self._bridge(system=system, user=user, **kw)
+            # v1.76.14: first call bounded (see ProxyLLMProvider.chat).
+            out = _bounded_sync_call(
+                lambda: self._bridge(system=system, user=user, **kw),
+                (), DEFAULT_LLM_SYNC_TIMEOUT)
             if inspect.isawaitable(out):
-                from ._async_bridge import run_sync, DEFAULT_LLM_SYNC_TIMEOUT
                 out = run_sync(out, timeout=DEFAULT_LLM_SYNC_TIMEOUT)
             return out or ""
         except Exception:

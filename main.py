@@ -227,8 +227,27 @@ class HippocampusStar(Star):
             print("[hippocampus] persona stamp error: " + repr(ex))
 
     # ---------- event hook ----------
+    # v1.76.14 (2026-09-07 20:32 recurrence): the whole hook body is
+    # bounded, not just HandleInject's inner wait_for. The 19:39 freeze
+    # entered inject_memory and then the loop died within milliseconds --
+    # before the 10s circuit breaker could fire (a frozen loop cannot
+    # schedule the wait_for timer). stamp_persona_id / resolve_persona_id
+    # call AstrBot core APIs (sp.get_async, conversation_manager,
+    # persona_manager) that may block; wrap every hook so a wedged call
+    # degrades to "skip this op" and the event/LLM request is released.
+    _HOOK_HARD_TIMEOUT: float = 30.0
+    _OBSERVE_HOOK_HARD_TIMEOUT: float = 90.0
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def observe_message(self, event: AstrMessageEvent):
+        try:
+            await asyncio.wait_for(self._do_observe_message(event),
+                                   timeout=self._OBSERVE_HOOK_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] observe_message hook timed out after "
+                  + str(self._OBSERVE_HOOK_HARD_TIMEOUT) + "s; released")
+
+    async def _do_observe_message(self, event: AstrMessageEvent):
         await self._stamp_persona(event)
         await self._observer.handle_message(event)
 
@@ -237,6 +256,14 @@ class HippocampusStar(Star):
     async def observe_poke(self, event: AstrMessageEvent):
         """Record poke notices with real actor names so summaries don't lose
         who poked whom. handle_poke self-filters to poke notices only."""
+        try:
+            await asyncio.wait_for(self._do_observe_poke(event),
+                                   timeout=self._OBSERVE_HOOK_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] observe_poke hook timed out after "
+                  + str(self._OBSERVE_HOOK_HARD_TIMEOUT) + "s; released")
+
+    async def _do_observe_poke(self, event: AstrMessageEvent):
         try:
             await self._stamp_persona(event)
             await self._observer.handle_poke(event)
@@ -249,10 +276,16 @@ class HippocampusStar(Star):
         """Auto-inject recalled memories into req.prompt. No-op unless
         auto_inject_enabled is on; never aborts the LLM request."""
         try:
-            await self._stamp_persona(event)
-            await self._inject.handle_inject(event, req)
-        except Exception as ex:
-            print("[hippocampus] inject_memory hook error: " + repr(ex))
+            await asyncio.wait_for(self._do_inject_memory(event, req),
+                                   timeout=self._HOOK_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] inject_memory hook timed out after "
+                  + str(self._HOOK_HARD_TIMEOUT)
+                  + "s - proceeding WITHOUT injection (LLM request released)")
+
+    async def _do_inject_memory(self, event: AstrMessageEvent, req):
+        await self._stamp_persona(event)
+        await self._inject.handle_inject(event, req)
 
     # ---------- v1.17 B-1: capture the bot's own reply into the buffer ----------
     @filter.on_llm_response()
@@ -260,6 +293,14 @@ class HippocampusStar(Star):
         """Feed the bot's own LLM reply into the conversation buffer so
         summaries include the bot's turns. No-op unless summary mode is on;
         never raises out of the hook."""
+        try:
+            await asyncio.wait_for(self._do_observe_bot_reply(event, resp),
+                                   timeout=self._OBSERVE_HOOK_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] observe_bot_reply hook timed out after "
+                  + str(self._OBSERVE_HOOK_HARD_TIMEOUT) + "s; released")
+
+    async def _do_observe_bot_reply(self, event: AstrMessageEvent, resp):
         try:
             text = ""
             for attr in ("completion_text", "text"):

@@ -85,13 +85,23 @@ class PluginInitializer:
                         provider = getter(llm_pid)
                 if provider is None:
                     provider = self.context.get_using_provider()
-                resp = await provider.text_chat(
-                    system_prompt=system, prompt=user, **kw)
+                # v1.76.14: hard-bounded INSIDE the bridge. AstrBot's
+                # provider.text_chat may carry no timeout of its own; a
+                # run_sync caller-side cap alone releases the caller but
+                # can leave this coroutine wedged on the shared worker
+                # loop. 45s (LLM bridge cap is 60s) keeps the worker
+                # healthy while still allowing slow completions.
+                resp = await asyncio.wait_for(
+                    provider.text_chat(system_prompt=system, prompt=user, **kw),
+                    timeout=45.0)
                 if hasattr(resp, "text"):
                     return resp.text or ""
                 if hasattr(resp, "completion_text"):
                     return resp.completion_text or ""
                 return str(resp)
+            except asyncio.TimeoutError:
+                print("[hippocampus] LLM bridge timed out after 45.0s")
+                return ""
             except Exception as e:
                 print(f"[hippocampus] LLM bridge error: {e!r}")
                 return ""

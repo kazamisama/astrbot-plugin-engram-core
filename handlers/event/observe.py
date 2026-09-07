@@ -49,6 +49,15 @@ def _is_synthetic(meta: dict) -> bool:
 class ObserveHandler:
     """Capture every inbound message and feed it to MemoryService.observe()."""
 
+    # v1.76.14 (2026-09-07 recurrence): ingest work runs in a worker
+    # thread and is serialized by _get_ingest_lock(). It is bounded
+    # *inside* by the bridge timeouts (embed 10s / LLM 45-60s), but a
+    # second guard on the await itself keeps a wedged thread (e.g. a
+    # sync SQLite operation in uninterruptible kernel state, or a
+    # future bridge regression) from stalling every subsequent message
+    # of the channel: on expiry we log once and release the pipeline.
+    _OBSERVE_HARD_TIMEOUT: float = 75.0
+
     def __init__(self, service: "MemoryService | None") -> None:
         self.service = service
         self._aggregator = None
@@ -155,9 +164,16 @@ class ObserveHandler:
         # v1.76.4 (M5): the summary/LLM/sqlite path is synchronous and can
         # block the AstrBot event loop for seconds on a flush. Run it on a
         # worker thread, serialized per ObserveHandler so channel message
-        # order is preserved.
+        # order is preserved. v1.76.14: bounded by _OBSERVE_HARD_TIMEOUT.
         async with self._get_ingest_lock():
-            await asyncio.to_thread(self._process_inbound_meta, meta, cfg)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._process_inbound_meta, meta, cfg),
+                    timeout=self._OBSERVE_HARD_TIMEOUT)
+            except asyncio.TimeoutError:
+                print("[hippocampus] observe_message timed out after "
+                      + str(self._OBSERVE_HARD_TIMEOUT) + "s; released "
+                      "(ingest continues in background)")
 
     def _process_inbound_meta(self, meta: dict, cfg) -> None:
         """Blocking part of handle_message(); never called concurrently."""
@@ -229,7 +245,14 @@ class ObserveHandler:
             except Exception:
                 meta["group_name"] = ""
         async with self._get_ingest_lock():
-            await asyncio.to_thread(self._process_bot_meta, meta, cfg, summary_on)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._process_bot_meta, meta, cfg, summary_on),
+                    timeout=self._OBSERVE_HARD_TIMEOUT)
+            except asyncio.TimeoutError:
+                print("[hippocampus] observe_bot_reply timed out after "
+                      + str(self._OBSERVE_HARD_TIMEOUT) + "s; released "
+                      "(ingest continues in background)")
 
     def _process_bot_meta(self, meta: dict, cfg, summary_on: bool) -> None:
         # v1.20 B-3: cache bot's own line for the daily diary.
@@ -324,7 +347,14 @@ class ObserveHandler:
                 meta["group_name"] = ""
         summary_on = bool(cfg is not None and getattr(cfg, "summary_mode_enabled", False))
         async with self._get_ingest_lock():
-            await asyncio.to_thread(self._process_poke_meta, meta, summary_on)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._process_poke_meta, meta, summary_on),
+                    timeout=self._OBSERVE_HARD_TIMEOUT)
+            except asyncio.TimeoutError:
+                print("[hippocampus] observe_poke timed out after "
+                      + str(self._OBSERVE_HARD_TIMEOUT) + "s; released "
+                      "(ingest continues in background)")
 
     def _process_poke_meta(self, meta: dict, summary_on: bool) -> None:
         try:

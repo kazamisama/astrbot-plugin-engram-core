@@ -4,6 +4,33 @@
 ## [Unreleased]
 
 ### Fixed
+- **Recurring freeze hardening (v1.76.14, 2026-09-07 recurrence)**: the
+  v1.76.13 caps only bounded the *caller* of `run_sync`; a bridge coroutine
+  stuck in sync code / cross-loop await survives `fut.cancel()` and keeps
+  the shared worker loop blocked, so every later embedding/LLM call still
+  burned its full timeout (and any such call made on the AstrBot event loop
+  thread froze the whole bot for 20-60s per call). Now:
+  - `handlers/recall.py` `emb_bridge_for_context`: every AstrBot embedding
+    provider await is hard-bounded inside the bridge (`asyncio.wait_for`,
+    10s) so the worker loop can never be stuck by the provider.
+  - `handlers/init.py` `_llm_bridge`: `provider.text_chat` bounded at 45s.
+  - `_async_bridge.run_sync`: on timeout the worker is marked wedged and
+    the NEXT call rebuilds a fresh worker thread+loop instead of reusing a
+    possibly-permanently-blocked one (self-healing after one bad call).
+  - Proxy embedding/LLM sync fns now also ride the bounded worker
+    (a sync fn with no timeout used to block the caller thread forever).
+  - `ObserveHandler` ingest paths (`handle_message` / `handle_bot_message`
+    / `handle_poke`) are bounded by `_OBSERVE_HARD_TIMEOUT=75s` and release
+    the pipeline on expiry (worker continues detached), so a wedged ingest
+    thread can no longer stall every subsequent channel message.
+  - `main.py` hook shells (`inject_memory` / `observe_message` /
+    `observe_poke` / `observe_bot_reply`) now wrap the WHOLE hook body
+    (`_stamp_persona` included) in `asyncio.wait_for` (30s/90s). 2026-09-07
+    20:32 recurrence: the freeze entered inject_memory and the asyncio loop
+    died within milliseconds -- BEFORE the 10s inner breaker could fire (a
+    frozen loop cannot schedule the wait_for timer), and AstrBot core API
+    calls in stamp_persona_id (sp.get_async / conversation_manager /
+    persona_manager) were outside every guard.
 - **Auto-injection circuit breaker (2026-09-07 astrbot "judge replied but bot
   never answered" freeze)**: `_async_bridge.run_sync` now carries a hard
   timeout by default (`DEFAULT_SYNC_TIMEOUT=20s` for embedding / short ops,

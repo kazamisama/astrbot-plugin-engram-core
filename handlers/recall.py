@@ -1,6 +1,16 @@
 from __future__ import annotations
 import asyncio
 
+# v1.76.14 (2026-09-07 recurrence): AstrBot's embedding provider may have
+# no HTTP timeout of its own, and its coroutine may be bound to the
+# AstrBot event loop while we await it here on the bridge worker loop.
+# Either way the await can hang indefinitely; run_sync's caller-side cap
+# then releases the caller, but the coroutine stays stuck ON THE WORKER
+# LOOP (fut.cancel() only lands at an await point and, cross-loop, may
+# never even be delivered). Bounding the await INSIDE the bridge is what
+# actually keeps the worker loop healthy.
+EMB_BRIDGE_TIMEOUT: float = 10.0
+
 
 async def emb_bridge_for_context(context, text: str,
                                  provider_id: str = "") -> list[float]:
@@ -15,6 +25,7 @@ async def emb_bridge_for_context(context, text: str,
 
     The official EmbeddingProvider exposes `async get_embedding(text)`;
     we still probe a few aliases so this keeps working across versions.
+    Every provider await is hard-bounded by EMB_BRIDGE_TIMEOUT.
     """
     method_names = ("get_embedding", "embedding", "embed", "encode")
 
@@ -25,7 +36,11 @@ async def emb_bridge_for_context(context, text: str,
         try:
             out = fn(text)
             if asyncio.iscoroutine(out):
-                out = await out
+                out = await asyncio.wait_for(out, timeout=EMB_BRIDGE_TIMEOUT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] emb bridge " + name + " timed out after "
+                  + str(EMB_BRIDGE_TIMEOUT) + "s; skipping provider")
+            return None
         except Exception as e:
             print("[hippocampus] emb bridge " + name + " raised: " + repr(e))
             return None
