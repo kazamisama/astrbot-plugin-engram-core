@@ -100,6 +100,16 @@ class InjectHandler:
             self._inject_lock = asyncio.Lock()
         return self._inject_lock
 
+    # v1.76.13 (2026-09-07 astrbot freeze): hard cap on the whole
+    # injection. If recall hangs (embedding HTTP without a provider
+    # timeout, SQLite lock, dead fs, ...) the hook must give up and
+    # release the LLM request WITHOUT injection instead of stalling
+    # the on_llm_request chain forever. 10s default; configurable via
+    # auto_inject_timeout (1-120s, clamped).
+    _INJECT_HARD_TIMEOUT: float = 10.0
+    _INJECT_TIMEOUT_MIN: float = 1.0
+    _INJECT_TIMEOUT_MAX: float = 120.0
+
     async def handle_inject(self, event, req) -> None:
         svc = self.service
         if svc is None or req is None:
@@ -107,10 +117,28 @@ class InjectHandler:
         cfg = getattr(svc, "cfg", None)
         if cfg is None or not getattr(cfg, "auto_inject_enabled", False):
             return
+        timeout = float(getattr(cfg, "auto_inject_timeout", 0.0) or 0.0)
+        if timeout <= 0.0:
+            timeout = self._INJECT_HARD_TIMEOUT
+        timeout = max(self._INJECT_TIMEOUT_MIN,
+                      min(timeout, self._INJECT_TIMEOUT_MAX))
+        try:
+            await asyncio.wait_for(self._run_inject(event, req), timeout=timeout)
+        except asyncio.TimeoutError:
+            # Circuit breaker tripped: log once and let the LLM request
+            # proceed. The worker thread keeps running detached; the
+            # per-call run_sync timeout inside it also unblocks it.
+            print(f"[hippocampus] auto inject timed out after {timeout:.1f}s "
+                  "- proceeding WITHOUT injection (LLM request released)")
+        except Exception as ex:
+            print("[hippocampus] auto inject error: " + repr(ex))
+
+    async def _run_inject(self, event, req) -> None:
         # v1.76.4 (M5): recall / persona / diary lookups are synchronous
         # SQLite + embedding work. Run them off the event loop while
         # serializing with this handler's lock (req mutation + _seen_diary
-        # and service.recall cache are shared state).
+        # and service.recall cache are shared state). v1.76.13: bounded
+        # by handle_inject's asyncio.wait_for.
         async with self._get_inject_lock():
             await asyncio.to_thread(self._handle_inject_sync, event, req)
 

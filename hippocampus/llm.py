@@ -77,8 +77,10 @@ class ProxyLLMProvider(LLMProvider):
         import inspect
         out = self._fn(system=system, user=user, **kw)
         if inspect.isawaitable(out):
-            from ._async_bridge import run_sync
-            out = run_sync(out)
+            from ._async_bridge import run_sync, DEFAULT_LLM_SYNC_TIMEOUT
+            # v1.76.13: hard cap so a hung LLM bridge cannot wedge the
+            # shared worker loop (which would also stall embeddings).
+            out = run_sync(out, timeout=DEFAULT_LLM_SYNC_TIMEOUT)
         return out
 
 class AstrBotLLMProvider(LLMProvider):
@@ -94,8 +96,8 @@ class AstrBotLLMProvider(LLMProvider):
             import inspect
             out = self._bridge(system=system, user=user, **kw)
             if inspect.isawaitable(out):
-                from ._async_bridge import run_sync
-                out = run_sync(out)
+                from ._async_bridge import run_sync, DEFAULT_LLM_SYNC_TIMEOUT
+                out = run_sync(out, timeout=DEFAULT_LLM_SYNC_TIMEOUT)
             return out or ""
         except Exception:
             return ""

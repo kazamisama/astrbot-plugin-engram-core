@@ -4,6 +4,16 @@
 ## [Unreleased]
 
 ### Fixed
+- **Auto-injection circuit breaker (2026-09-07 astrbot "judge replied but bot
+  never answered" freeze)**: `_async_bridge.run_sync` now carries a hard
+  timeout by default (`DEFAULT_SYNC_TIMEOUT=20s` for embedding / short ops,
+  `DEFAULT_LLM_SYNC_TIMEOUT=60s` for the LLM bridge) and cancels the hung
+  coroutine on expiry instead of waiting forever; `InjectHandler.handle_inject`
+  is wrapped in `asyncio.wait_for` (default 10s) so a stuck recall (embedding
+  HTTP without its own provider timeout, SQLite lock, ...) can no longer stall
+  the `on_llm_request` hook chain -- the LLM request is released without
+  injection. New config: `auto_inject_timeout` (1-120s, default 10s, exposed
+  in the WebUI config schema).
 - Persisted prompt overrides now propagate to the actual LLM consumers
   (encoder / summarizer / diary / consolidation) via `cfg._prompt_namespace`.
 - `SpreadingActivation.activate_with_context()` accepts `session_id` again,

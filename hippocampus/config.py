@@ -162,6 +162,10 @@ class MemoryConfig:
     auto_inject_top_k: int = 3
     auto_inject_position: str = "before"
     auto_inject_relative_time: bool = True  # prefix recalled memories with a zh relative-time label
+    # v1.76.13: hard cap (seconds) per auto-injection run. On expiry the
+    # on_llm_request hook gives up, logs, and releases the LLM request
+    # WITHOUT injection (circuit breaker for hung embedding / SQLite work).
+    auto_inject_timeout: float = 10.0
     # --- v1.36: persona-scoped memory isolation ---
     persona_isolation_enabled: bool = True
     # --- v1.76.6: livingmemory-style memory scope + identity aliases ---

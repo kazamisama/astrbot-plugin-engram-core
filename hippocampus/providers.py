@@ -2,7 +2,7 @@ from __future__ import annotations
 import json, urllib.request, urllib.error
 from .embeddings import EmbeddingProvider
 from .llm import LLMProvider, RuleLLMProvider, OpenAILLMProvider, AstrBotLLMProvider
-from ._async_bridge import run_sync
+from ._async_bridge import run_sync, DEFAULT_SYNC_TIMEOUT
 
 class ProviderRegistry:
     """User-selectable provider pool. Names are stable string IDs."""
@@ -112,7 +112,10 @@ class ProxyEmbeddingProvider(EmbeddingProvider):
         import inspect
         out = self._fn(text)
         if inspect.isawaitable(out):
-            out = run_sync(out)
+            # v1.76.13: explicit hard timeout -- a hung embedding
+            # provider (no HTTP timeout of its own) must raise here
+            # instead of blocking the astrbot hook chain forever.
+            out = run_sync(out, timeout=DEFAULT_SYNC_TIMEOUT)
         return out
     def embed(self, text: str) -> list[float]:
         out = self._call(text)
