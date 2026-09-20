@@ -198,7 +198,13 @@ class MemoryConfig:
     summary_compress_ratio: float = 0.15         # target_chars = total_chars * ratio
     summary_compress_floor: int = 0              # min summary chars; 0=unbounded
     summary_compress_cap: int = 1200
-    source_retention_min_importance: float = 0.7  # keep raw transcript for summaries >= this
+    # v1.76.20: was 0.7, which NO summary could ever reach -- `store_summary`
+    # stamps every engram importance 0.6 unless the LLM returns its own value,
+    # so `importance >= 0.7` was never true and the raw-transcript branch never
+    # fired once (memory_sources had 0 rows on the live store while 399
+    # engrams existed). The effect is that "原文" for past conversations does
+    # not exist anywhere and can never be recalled. 0.5 sits below 0.6.
+    source_retention_min_importance: float = 0.5  # keep raw transcript for summaries >= this
     source_retention_days: float = 90.0           # TTL for retained raw transcripts; 0=forever
     summary_compress_cap_group: int = 400             # max summary chars
     summary_idle_flush_interval_seconds: float = 60.0  # background sweep period for idle channels

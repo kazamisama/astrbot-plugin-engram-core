@@ -574,9 +574,15 @@
       },
       "source_retention_min_importance": {
         "type": "float",
-        "default": 0.7,
+        "default": 0.5,
         "description": "保留原文最低重要性",
-        "hint": "达到该重要性的总结会保存原文，供审计与重新总结。"
+        "hint": "达到该重要性的总结会保存原文，供审计与重新总结。注意：v1.76.20 前默认 0.7，而总结生成的重要性恒为 0.6，因此该分支从未触发、原文一条都没保存过。"
+      },
+      "source_retention_days": {
+        "type": "float",
+        "default": 90.0,
+        "description": "记忆原文保留天数",
+        "hint": "保留的原文多久后清除，0 = 永久保留。此前该值只能读默认值，面板无法设置。"
       }
     }
   },

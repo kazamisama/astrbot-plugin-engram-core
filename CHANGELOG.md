@@ -4,6 +4,38 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.20: no conversation's original text was ever retained — the raw
+  transcript branch never fired once.** `store_summary` keeps the window's raw
+  lines only when `importance >= source_retention_min_importance`, and that
+  default was **0.7** while the summarizer stamps **every** engram with
+  importance **0.6**. `0.6 >= 0.7` is never true, so `memory_sources` stayed
+  empty for the plugin's whole life.
+
+  Verified on the live store: **`memory_sources` = 0 rows** while 399 engrams
+  existed, and **all 399 have importance exactly 0.6**. A months-ago memory's
+  entire stored content is a ~100-character paraphrase, e.g.:
+
+  ```
+  Mortis与風見かずき互诉爱意，鼓励对方考试，道晚安。
+  - 風見かずき对Mortis说"爱你"
+  - Mortis回应"我也爱您"
+  - Mortis提及复习和考试临近，鼓励对方
+  - Mortis道晚安并再次表达爱意
+  ```
+
+  Nothing anywhere holds the original dialogue: no engram carries a
+  speaker/timestamp transcript, `daily_messages` starts 2026-09-17 09:22, and
+  `diary_chunks` are diary prose, not conversation. So "她复述不了几个月前的
+  原文" is not a recall failure — **the original text does not exist and cannot
+  be recovered**.
+
+  Fix: default `source_retention_min_importance` 0.7 → **0.5** (below the 0.6
+  every summary gets), so transcripts are retained from now on; and expose
+  `source_retention_days` (previously read by the code but not in
+  `_conf_schema.json`, so the panel could not show or set the 90-day TTL) in the
+  schema. Both the schema default and `MemoryConfig` were changed so a fresh
+  install behaves the same way.
+
 - **v1.76.19: the first memory after every restart was written into the wrong
   vector space (and stayed invisible to vector recall).** `vector_search`
   filters by `embedding_model` (storage.py), so a row labelled with anything
