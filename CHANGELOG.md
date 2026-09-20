@@ -39,6 +39,33 @@
   Tests that relied on the old (broken) `get_config` path now pass their config
   to `initialize()`, which is the real contract.
 
+- **v1.76.17b: bounded the summarizer's provider retries, and made its slowness
+  visible.** Investigating "why does the summarizer's LLM call time out at 45s
+  when the chat's calls succeed" turned up two things:
+  - The plugin never passes `request_max_retries`, so it inherits AstrBot's
+    full chain: its OpenAI source retries each request
+    `REQUEST_RETRY_ATTEMPTS = 5` times with `wait_exponential`, inside a
+    10-iteration outer loop in `text_chat`, with a 120s HTTP timeout per
+    attempt (`sources/openai_source.py`, `sources/request_retry.py`). One
+    plugin summarization could therefore spin for many minutes. The bridge now
+    passes `request_max_retries=1` — the plugin treats any failure as "skip and
+    use the fallback", so retrying is wasted work.
+  - The timeout log now reports the provider id/model, the prompt sizes and the
+    retry bound, and calls slower than 15s are logged too. Slowness here is off
+    the reply path and was previously invisible; prompt size is the first thing
+    to check next time.
+  - The deferred embedding activation now starts at +5s instead of +0.5s:
+    AstrBot instantiates providers lazily, so probing immediately produced
+    "Provider Qwen3-Embedding-8B was not found. Its provider or model ID may
+    have been changed." (warning at 23:44:27.570, provider built at
+    23:44:28.188). The bridge recovered via `get_all_embedding_providers()`,
+    but it was a wasted probe plus a spurious WARN. Note the id itself is
+    correct — `cmd_config.json` `provider[2]` carries it.
+  - Still unexplained: on the live bot a single summarizer request hung past
+    45s with *no* retry warnings logged (so not retry amplification) while the
+    chat's calls to the same provider/model completed in ~6s. The added
+    diagnostics are there to catch it next time.
+
 - **v1.76.16 memory-recall repair (root cause of "记忆没有被正确召回")**:
   - **`HippocampalStore.decay_pass` compounded the decay.** It multiplied the
     *already-decayed* strength by `exp(-(now - anchor)/tau)`, where

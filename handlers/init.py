@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from typing import Any
 from hippocampus import (MemoryService,
                          ProxyEmbeddingProvider, ProxyLLMProvider,
@@ -153,31 +154,67 @@ class PluginInitializer:
         emb_pid = getattr(cfg, "embedding_provider_id", "") or ""
         llm_pid = getattr(cfg, "llm_provider_id", "") or ""
 
-        async def _llm_bridge_coro(system: str, user: str, **kw) -> str:
+        def _prov_desc(p) -> str:
+            """Identify the provider for diagnostics (best effort)."""
             try:
-                provider = None
+                if p is None:
+                    return "provider=None"
+                pc = getattr(p, "provider_config", None)
+                if isinstance(pc, dict):
+                    return ("provider=" + str(pc.get("id") or "?")
+                            + " model=" + str(pc.get("model") or "?"))
+                return "provider=" + type(p).__name__
+            except Exception:
+                return "provider=?"
+
+        async def _llm_bridge_coro(system: str, user: str, **kw) -> str:
+            provider = None
+            try:
                 if llm_pid:
                     getter = getattr(self.context, "get_provider_by_id", None)
                     if getter is not None:
                         provider = getter(llm_pid)
                 if provider is None:
                     provider = self.context.get_using_provider()
+                # v1.76.17: bound AstrBot's own retry chain. Its OpenAI source
+                # retries each request REQUEST_RETRY_ATTEMPTS (5) times with
+                # exponential backoff inside a 10-iteration outer loop in
+                # text_chat, and the HTTP timeout is 120s per attempt -- so one
+                # plugin summarization could spin for many minutes. The plugin
+                # treats any failure as "skip / use the fallback", so retrying
+                # is wasted work; 1 attempt surfaces the real error instead.
+                kw.setdefault("request_max_retries", 1)
                 # v1.76.14: hard-bounded INSIDE the bridge. AstrBot's
                 # provider.text_chat may carry no timeout of its own; a
                 # run_sync caller-side cap alone releases the caller but
                 # can leave this coroutine wedged on the shared worker
                 # loop. 45s (LLM bridge cap is 60s) keeps the worker
                 # healthy while still allowing slow completions.
+                _t0 = time.monotonic()
                 resp = await asyncio.wait_for(
                     provider.text_chat(system_prompt=system, prompt=user, **kw),
                     timeout=45.0)
+                _spent = time.monotonic() - _t0
+                if _spent >= 15.0:
+                    # The summarizer is off the reply path, so slowness here is
+                    # invisible without this line. Prompt size is the first
+                    # thing to check when a call takes tens of seconds.
+                    print("[hippocampus] LLM bridge slow: "
+                          + ("%.1fs " % _spent) + _prov_desc(provider)
+                          + " sys_chars=" + str(len(system or ""))
+                          + " usr_chars=" + str(len(user or "")))
                 if hasattr(resp, "text"):
                     return resp.text or ""
                 if hasattr(resp, "completion_text"):
                     return resp.completion_text or ""
                 return str(resp)
             except asyncio.TimeoutError:
-                print("[hippocampus] LLM bridge timed out after 45.0s")
+                print("[hippocampus] LLM bridge timed out after 45.0s ("
+                      + _prov_desc(provider)
+                      + ", sys_chars=" + str(len(system or ""))
+                      + ", usr_chars=" + str(len(user or ""))
+                      + ", request_max_retries="
+                      + str(kw.get("request_max_retries")) + ")")
                 return ""
             except Exception as e:
                 print(f"[hippocampus] LLM bridge error: {e!r}")
@@ -355,7 +392,14 @@ class PluginInitializer:
             return
         cfg = svc.cfg
         pid = getattr(cfg, "embedding_provider_id", "") or ""
-        delays = (0.5, 5.0, 20.0, 60.0)
+        # v1.76.17: start at 5s, not 0.5s. AstrBot instantiates providers
+        # lazily, so probing immediately after the plugin loads can hit
+        # "Provider <id> was not found" before the embedding provider exists
+        # (observed on the live bot: the warning at 23:44:27.570, the provider
+        # built at 23:44:28.188). The bridge recovers via
+        # get_all_embedding_providers(), but that is a wasted probe and a
+        # spurious WARN.
+        delays = (5.0, 15.0, 45.0, 120.0)
         for attempt, delay in enumerate(delays, start=1):
             await asyncio.sleep(delay)
             if not (cfg.embedding_name == "hash"

@@ -440,7 +440,7 @@ def test_deferred_activation_switches_to_astrmock():
     class _HostLLM:
         async def text_chat(self, system_prompt="", prompt="", **kw):
             llm_calls.append((system_prompt, prompt,
-                              asyncio.get_running_loop()))
+                              asyncio.get_running_loop(), dict(kw)))
 
             class _R:
                 text = "hello-from-host"
@@ -484,8 +484,8 @@ def test_deferred_activation_switches_to_astrmock():
                 "the global config must not leak into cfg.extra"
             assert init._pending_emb_activation is True, \
                 "activation must be deferred while __init__ holds the loop"
-            for _ in range(60):             # let the deferred task run
-                await asyncio.sleep(0.1)
+            for _ in range(200):            # let the deferred task run (first
+                await asyncio.sleep(0.1)    # probe is at +5s in v1.76.17)
                 if init.service.current_embedding() == "astrmock":
                     break
             svc = init.service
@@ -505,9 +505,18 @@ def test_deferred_activation_switches_to_astrmock():
         assert out == "hello-from-host", out
         assert llm_calls and llm_calls[0][2] is loop, \
             "the LLM bridge must await the host provider on the host loop"
+        # AstrBot's OpenAI source retries each request 5x (inner) inside a
+        # 10-iteration outer loop with a 120s HTTP timeout per attempt, so an
+        # unbounded plugin call can spin for minutes. The bridge must pass its
+        # own bound.
+        kw = llm_calls[0][3]
+        assert kw.get("request_max_retries") == 1, \
+            f"the LLM bridge must bound provider retries, got {kw!r}"
         print("  deferred activation switched to astrmock on the host loop, "
               "without a rebuild: OK")
         print("  LLM bridge awaited the host provider on the host loop: OK")
+        print("  LLM bridge bounds the provider retry chain "
+              "(request_max_retries=1): OK")
         try:
             svc.close()
         except Exception:
