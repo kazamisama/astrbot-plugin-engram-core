@@ -162,6 +162,8 @@ _FIELDS: dict[str, _FieldSpec] = {
     "auto_inject_top_k": _FieldSpec(int, (0, 50), label_zh="自动注入条数", label_en="Auto inject top k"),
     "auto_inject_position": _FieldSpec(str, label_zh="自动注入位置", label_en="Auto inject position"),
     "auto_inject_relative_time": _FieldSpec(bool, label_zh="注入相对时间", label_en="Inject relative time label"),
+    "auto_inject_use_content": _FieldSpec(bool, label_zh="注入完整记忆正文（含要点）", label_en="Inject full engram content (incl. key facts)"),
+    "auto_inject_content_max_chars": _FieldSpec(int, (0, 20000), label_zh="单条注入正文字符上限（0=不限）", label_en="Per-engram content char cap (0=off)"),
     "auto_inject_timeout": _FieldSpec(float, (1.0, 120.0), label_zh="自动注入超时秒数（超时跳过注入）", label_en="Auto inject timeout (s, skip on expiry)"),
     "persona_isolation_enabled": _FieldSpec(bool, label_zh="人格记忆隔离", label_en="Persona memory isolation"),
     "memory_scope_mode": _FieldSpec(str, choices=("legacy", "session", "user", "global"), label_zh="记忆作用域模式", label_en="Memory scope mode"),

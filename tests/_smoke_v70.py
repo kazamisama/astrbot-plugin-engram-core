@@ -13,8 +13,8 @@ blocks enabled, asserting:
   ①  declared order is preserved: persona -> relation -> memory -> diary
   ②  every TextPart is wrapped in <engram-context>...</engram-context>
   ③  every TextPart is marked temp (mark_as_temp was called)
-  ④  the inner [用户画像] / [人物关系] / [近期对话] / [最近日记] label
-      is still present (backward compatibility)
+  ④  the inner [用户画像] / [人物关系] / [长期记忆] / [最近日记] label
+      is still present (v1.76.21 renamed it from [近期对话])
   ⑤  the real user message is not modified
 
 v28 and v31 only exercise the fallback (string-concat) path because
@@ -171,7 +171,7 @@ def test_textpart_path_order_and_wrapping():
     parts = req.extra_user_content_parts
     # ① exactly 4 parts, declared order preserved
     assert len(parts) == 4, len(parts)
-    inner_labels = ["[用户画像]", "[人物关系]", "[近期对话]", "[最近日记]"]
+    inner_labels = ["[用户画像]", "[人物关系]", "[长期记忆]", "[最近日记]"]
     for i, label in enumerate(inner_labels):
         assert label in parts[i].text, (
             f"block {i} missing inner label {label!r}: {parts[i].text!r}"
@@ -235,7 +235,7 @@ def test_textpart_path_position_after():
         assert p.text.rstrip().endswith("</engram-context>"), p.text[-40:]
         assert getattr(p, "_is_temp", False) is True
     assert "[人物关系]" in engram_blocks[0].text
-    assert "[近期对话]" in engram_blocks[1].text
+    assert "[长期记忆]" in engram_blocks[1].text
     assert "[最近日记]" in engram_blocks[2].text
     print("  after-position: engram blocks appended after prior, declared order kept: OK")
 
@@ -256,7 +256,7 @@ def test_textpart_path_disabled_blocks_skipped():
 
     parts = req.extra_user_content_parts
     assert len(parts) == 1, len(parts)
-    assert "[近期对话]" in parts[0].text
+    assert "[长期记忆]" in parts[0].text
     assert "[用户画像]" not in parts[0].text
     assert "[人物关系]" not in parts[0].text
     assert "[最近日记]" not in parts[0].text

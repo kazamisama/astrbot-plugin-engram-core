@@ -40,6 +40,8 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
 
 v1.66+ engram-core 在 `on_llm_request` 钩子里把召回的记忆作为独立 TextPart 写入 `req.extra_user_content_parts`（每块包在 `<engram-context>` 里，v1.67.1+）。其它插件（xml_structured_output、heartflow、proactive_chat 等）也会写同一个 list。为避免**累加**与**命名空间冲突**两类问题，约定如下：
 
+> v1.76.22：一次请求的**第一个** `<engram-context>` 块内会带一句 `_SELF_RECALL_NOTE`（「这是你自己的记忆，不要当成可以忽略的背景」）。它只在第一个块上出现一次，不改变块的根标签与内部 `[xxx]` 标签，也不影响 `strip_injected_blocks` 的匹配。详见 `CHANGELOG.md` 与 `docs/TODO.md` §2.8。
+
 ### 命名空间约定
 
 所有外部插件写入 `extra_user_content_parts` 时应：
@@ -73,7 +75,7 @@ strip_injected_blocks(parts_list, root_tag="xml-extra", inner_labels=("memo-bloc
 parts_list.append(TextPart(text=block, type="text").mark_as_temp())
 ```
 
-匹配规则：`.text` 去除首尾空白后，以 `<root_tag>` 或 `<root_tag ...>`（允许属性）开头、以 `</root_tag>` 结尾，且（当 `inner_labels` 非空时）至少含一个内部标签。`inner_labels` 传空表示只按根标签匹配——根标签对本插件唯一时这是安全的。engram-core 自身走同一个函数（`root_tag="engram-context"` + 内部 `[用户画像]` / `[人物关系]` / `[近期对话]` / `[最近日记]` 标签），不会动其它插件的 TextPart。
+匹配规则：`.text` 去除首尾空白后，以 `<root_tag>` 或 `<root_tag ...>`（允许属性）开头、以 `</root_tag>` 结尾，且（当 `inner_labels` 非空时）至少含一个内部标签。`inner_labels` 传空表示只按根标签匹配——根标签对本插件唯一时这是安全的。engram-core 自身走同一个函数（`root_tag="engram-context"` + 内部 `[用户画像]` / `[人物关系]` / `[长期记忆]` / `[最近日记]` 标签；重命名前的 `[近期对话]` 仍在匹配列表里，用于清除旧版本注入的残留块），不会动其它插件的 TextPart。
 
 ### priority 约定
 

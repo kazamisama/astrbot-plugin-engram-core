@@ -144,7 +144,7 @@ def test_enabled_before():
     asyncio.run(h.handle_inject(_FakeEvent("我刚才说到哪了"), req))
     # v1.67.1 (issue #8): block is wrapped in <engram-context>...</engram-context>
     assert req.prompt.startswith("<engram-context>"), req.prompt
-    assert "[近期对话]" in req.prompt  # inner label preserved
+    assert "[长期记忆]" in req.prompt  # inner label preserved (v1.76.21 rename)
     assert "用户喜欢侦探小说" in req.prompt
     assert "用户在做 AstrBot 插件" in req.prompt
     assert "第三条不该出现" not in req.prompt  # top_k=2 cap

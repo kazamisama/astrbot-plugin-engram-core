@@ -216,7 +216,7 @@ def test_reinject_with_other_plugin_blocks_preserved():
     # new engram block appended
     new_engram = [p for p in parts if (p.text or "").startswith("<engram-context>\n")]
     assert len(new_engram) == 1
-    assert "[近期对话]" in new_engram[0].text
+    assert "[长期记忆]" in new_engram[0].text
     # no leftover old engram block
     assert not any("old\n" in (p.text or "") for p in parts)
     print("  cross-plugin blocks preserved, only our prior blocks removed: OK")

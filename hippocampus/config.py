@@ -170,6 +170,14 @@ class MemoryConfig:
     auto_inject_top_k: int = 3
     auto_inject_position: str = "before"
     auto_inject_relative_time: bool = True  # prefix recalled memories with a zh relative-time label
+    # v1.76.21: inject the full engram body (summary + "- key fact" bullets)
+    # instead of the narrative summary alone. `content` is a strict superset
+    # of `summary` for every stored engram, so injecting only `summary` was
+    # silently dropping every key fact the summarizer had extracted.
+    auto_inject_use_content: bool = True
+    # Soft per-engram character cap for the injected body, applied at line
+    # boundaries (see InjectHandler._engram_body). 0 = no cap.
+    auto_inject_content_max_chars: int = 800
     # v1.76.13: hard cap (seconds) per auto-injection run. On expiry the
     # on_llm_request hook gives up, logs, and releases the LLM request
     # WITHOUT injection (circuit breaker for hung embedding / SQLite work).

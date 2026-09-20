@@ -211,7 +211,7 @@ async def test_inject_e2e_real_service():
         await h.handle_inject(_Evt2(), req)
         assert len(req.extra_user_content_parts) == 1, req.extra_user_content_parts
         txt = req.extra_user_content_parts[0].text
-        assert "<engram-context>" in txt and "[近期对话]" in txt, txt
+        assert "<engram-context>" in txt and "[长期记忆]" in txt, txt
         assert req.prompt == "她最喜欢什么颜色"
         # re-injection defense: second firing must not duplicate
         await h.handle_inject(_Evt2(), req)

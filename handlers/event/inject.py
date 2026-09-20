@@ -29,6 +29,74 @@ _INJECT_SLOTS = threading.BoundedSemaphore(_INJECT_MAX_CONCURRENCY)
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 
+# v1.76.21: block label for recalled episodic/semantic engrams. The old
+# "[近期对话]" claimed the entries were recent conversation, while every
+# entry carries its own real relative-time marker ("[3个月前]", "[2 天前]")
+# on the very same line — the two contradicted each other. The block holds
+# long-term memory recalled from any age, so name it that.
+_MEMORY_BLOCK_LABEL = "[长期记忆]"
+# Kept as a legacy label purely for the re-injection defence below: blocks
+# injected by <= v1.76.20 carry it and still have to be stripped.
+_LEGACY_MEMORY_BLOCK_LABEL = "[近期对话]"
+
+
+def _engram_body(engram, *, use_content: bool, max_chars: int) -> str:
+    """Body text to inject for one recalled engram.
+
+    v1.76.21: prefer ``content`` over ``summary``. ``content`` is the
+    summary followed by the summarizer's "- key fact" bullet lines (true
+    for all 399 stored engrams when this was written), so injecting
+    ``summary`` alone silently dropped every extracted key fact.
+
+    ``max_chars`` is a SOFT cap applied at whole-line boundaries: lines are
+    kept until the budget is spent, so a bullet is never cut mid-sentence.
+    The first line (the summary) is always kept even when it alone exceeds
+    the cap — a truncated summary is worth less than a slightly
+    over-budget one. ``max_chars <= 0`` disables the cap.
+    """
+    summary = (getattr(engram, "summary", "") or "").strip()
+    content = (getattr(engram, "content", "") or "").strip() if use_content else ""
+    body = content or summary
+    if not body or max_chars <= 0 or len(body) <= max_chars:
+        return body
+    kept: list[str] = []
+    used = 0
+    for line in body.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        if kept and used + len(line) + 1 > max_chars:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(kept)
+
+
+# v1.76.22: the <engram-context> wrapper used to say only what the block is
+# NOT ("injected background, not the user's message"). On the live bot that
+# negative framing got promoted into a positive licence: the model reasoned
+# "memories are background; the current conversation governs" and used it to
+# justify not drawing on a correctly-recalled memory. Structurally the blocks
+# are fine -- what was missing is the other half of the sentence: they are the
+# assistant's OWN recall and are meant to be used.
+#
+# This is candidate 8.3 from docs/TODO.md §2.8, which was declined on
+# 2026-07-03 for three reasons -- all of which this implementation avoids:
+#   * "跨插件协调成本" -- this is NOT a global system-prompt template change;
+#     it travels inside our own temp TextPart, so no other plugin is involved.
+#   * "~50 token/请求" -- exactly one note per REQUEST, not one per block (see
+#     the preamble flag below), so the budget is the documented ~50 tokens.
+#   * the trigger did not exist yet -- §2.8's own "下次评估点" was "LLM 把
+#     <engram-context> 标签当作文本复读 / 误解的首次真机报告", and that report
+#     has now happened.
+# Note the wording deliberately differs from the declined 8.3 draft, which
+# repeated "这是自动注入的背景" -- that is the very reading that caused the
+# trouble. This states the positive half instead.
+_SELF_RECALL_NOTE = (
+    "（以下内容是记忆系统自动附上的，不是你收到的用户消息，不要逐条回应；"
+    "也不要当成可以忽略的背景——它是你自己的记忆，与当前话题相关时按事实使用。）"
+)
+
 
 class InjectHandler:
     """Auto-inject recalled memories into the outgoing LLM request."""
@@ -52,15 +120,24 @@ class InjectHandler:
             pass
 
     @staticmethod
-    def _wrap_engram(body: str) -> str:
+    def _wrap_engram(body: str, *, preamble: bool = False) -> str:
         """Wrap an injected block in <engram-context> for LLM-side distinction.
 
         v1.67.1 (issue #8): the XML tag signals to the LLM that the
         content is injected background, not part of the user's actual
         message. Without it, the LLM was treating each TextPart block
         as a parallel user question and answering them all.
+
+        v1.76.22: the structural signal above was necessary but not
+        sufficient — on its own it reads as "this is background", which the
+        live model turned into "background is ignorable". ``preamble=True``
+        prepends ``_SELF_RECALL_NOTE`` to supply the missing half: these are
+        the assistant's own memories and are meant to be used. The caller sets
+        it on the FIRST block of a request only, so the note costs its ~50
+        tokens once per request rather than once per block.
         """
-        return f"<engram-context>\n{body}\n</engram-context>"
+        note = (_SELF_RECALL_NOTE + "\n") if preamble else ""
+        return f"<engram-context>\n{note}{body}\n</engram-context>"
 
     # v1.67.2 (re-injection defense): triple match used to identify
     # our own previously-injected blocks. All three must be present
@@ -72,7 +149,8 @@ class InjectHandler:
     # its own root tag + inner labels and delegates.
     _ENGRAM_ROOT_TAG = "engram-context"
     _ENGRAM_INNER_LABELS = (
-        "[用户画像]", "[人物关系]", "[近期对话]",
+        "[用户画像]", "[人物关系]", _MEMORY_BLOCK_LABEL,
+        _LEGACY_MEMORY_BLOCK_LABEL,  # v1.76.21: strips pre-rename blocks
         "[今日回顾]",  # legacy v1.72 keep-strip label
         "[最近日记]",   # v1.72+: truthful label (diary is for prev day)
     )
@@ -212,17 +290,32 @@ class InjectHandler:
                 k=top_k))
             engrams = getattr(result, "engrams", None) or []
             show_time = bool(getattr(cfg, "auto_inject_relative_time", True))
+            use_content = bool(getattr(cfg, "auto_inject_use_content", True))
+            # Never let a malformed cap raise: this whole body sits in a
+            # try/except that would abandon injection entirely, so an
+            # unusable value must degrade to the default, not to nothing.
+            try:
+                body_cap = int(getattr(cfg, "auto_inject_content_max_chars", 800))
+            except (TypeError, ValueError):
+                body_cap = 800
+            if body_cap < 0:
+                body_cap = 0  # negative reads as "no cap", not as "cap at 0"
             lines = []
             for e in engrams[:top_k]:
-                summ = (getattr(e, "summary", "") or "").strip()
-                if not summ:
+                body = _engram_body(e, use_content=use_content, max_chars=body_cap)
+                if not body:
                     continue
                 label = relative_label(getattr(e, "created_at", 0.0)) if show_time else ""
+                # v1.76.21: body may span several lines (summary + key-fact
+                # bullets). Indent the continuation lines so a bullet cannot
+                # be misread as a separate memory entry, since only the
+                # first line carries the "[3个月前]" style time marker.
+                rendered = body.replace("\n", "\n  ")
                 if label:
-                    lines.append("- [" + label + "] " + summ)
+                    lines.append("- [" + label + "] " + rendered)
                 else:
-                    lines.append("- " + summ)
-            memory_block = ("[近期对话]\n" + "\n".join(lines)) if lines else ""
+                    lines.append("- " + rendered)
+            memory_block = ((_MEMORY_BLOCK_LABEL + "\n" + "\n".join(lines)) if lines else "")
 
             # v1.19 B-2: relation injection (option-4 pipeline filter).
             relation_block = ""
@@ -285,15 +378,24 @@ class InjectHandler:
             # on it.
             blocks: list[tuple[str, str]] = []
             if persona_block:
-                blocks.append(("persona", self._wrap_engram(persona_block)))
+                blocks.append(("persona", persona_block))
             if relation_block:
-                blocks.append(("relation", self._wrap_engram(relation_block)))
+                blocks.append(("relation", relation_block))
             if memory_block:
-                blocks.append(("memory", self._wrap_engram(memory_block)))
+                blocks.append(("memory", memory_block))
             if diary_block:
-                blocks.append(("diary", self._wrap_engram(diary_block)))
+                blocks.append(("diary", diary_block))
             if not blocks:
                 return
+            # v1.76.22: attach the self-recall note to the first block of this
+            # request only — one note per request, not one per block. Block
+            # order is preserved, and _strip_prior_engram_blocks still matches
+            # every block because the note sits after the opening tag and
+            # before the inner [xxx] label.
+            blocks = [
+                (kind, self._wrap_engram(body, preamble=(idx == 0)))
+                for idx, (kind, body) in enumerate(blocks)
+            ]
             # v1.66: use structured TextPart instead of raw prompt concatenation.
             # Each block becomes its own TextPart (marked temp so it never
             # enters conversation history). This follows the social_context /

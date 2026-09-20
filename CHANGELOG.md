@@ -4,6 +4,81 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.22: the `<engram-context>` wrapper licensed the model to ignore its
+  own memories.** The tag (v1.67.1) said only what a block is *not* —
+  "injected background, not part of the user's actual message" — which fixed
+  the original bug (the LLM answering each TextPart as a parallel user
+  question) but left the model free to read "background" as "ignorable".
+
+  The live model did exactly that. Its reasoning, after a memory had been
+  recalled correctly and injected:
+
+  > "The injected engram-context explicitly includes the sexual memory
+  > summary… My rules are clear: **memories are background; the current
+  > conversation governs**…"
+
+  That sentence appears in **no** config file, persona card, or plugin on the
+  machine — the model synthesised it from the wrapper's framing and then used
+  it to decline the memory. So this is not a recall failure and not a
+  persona-card conflict: the block was under-specified.
+
+  Fix: `_SELF_RECALL_NOTE` prepends the missing half — these are the
+  assistant's **own** memories and are meant to be used. It rides the **first
+  block of a request only**, so it costs its ~48 tokens once per request
+  rather than once per block, and it travels inside our own temp TextPart so
+  no system-prompt template and no other plugin is involved.
+
+  This is candidate **8.3** from `docs/TODO.md` §2.8, declined 2026-07-03,
+  whose own "下次评估点" was *"LLM 把 `<engram-context>` 标签当作文本复读 /
+  误解的首次真机报告"*. That report is what happened above — the evaluation
+  point fired. All three decline reasons are avoided: no cross-plugin
+  coordination, token cost held to the documented budget, and the trigger now
+  exists.
+
+  The wording deliberately **differs** from the declined 8.3 draft, which
+  restated 「这是自动注入的背景」 — the very reading that caused the trouble.
+  This states the positive half instead (「也不要当成可以忽略的背景——它是你
+  自己的记忆」).
+
+  `_wrap_engram()`'s default output is byte-identical to before, so callers
+  and the public `strip_injected_blocks` contract are unaffected; the note
+  sits after the opening tag and before the inner `[xxx]` label, so
+  re-injection defence still matches noted and note-less blocks alike.
+
+- **v1.76.21: the inject path dropped every key fact, and labelled long-term
+  memory as "recent conversation".** Two defects in the same render loop of
+  `InjectHandler._handle_inject_sync`:
+
+  **① only `summary` was injected, never `content`.** Every engram's `content`
+  is its summary followed by the summarizer's `- 要点` bullet lines — true for
+  **399/399** rows on the live store (`content` starts with `summary` in every
+  case; avg 371 vs 173 chars). The narrative went into the prompt and every
+  extracted key fact was discarded at inject time.
+
+  **② the block label was `[近期对话]`** ("recent conversation") while each
+  entry carries its own real relative-time marker — `[3个月前]`, `[2 天前]` —
+  on the very same line. The label flatly contradicted its own payload.
+  Renamed to **`[长期记忆]`**.
+
+  Fix: `_engram_body()` now prefers `content` and falls back to `summary`
+  (so an engram-like object without `content` still works). New options:
+
+  | option | default | meaning |
+  |---|---|---|
+  | `auto_inject_use_content` | `true` | inject the full body (summary + key facts) |
+  | `auto_inject_content_max_chars` | `800` | soft per-engram cap, `0` = unlimited |
+
+  The cap truncates on **whole-line boundaries**, so a bullet is never cut
+  mid-sentence, and the leading summary line is always kept even when it alone
+  exceeds the cap — a clipped summary is worth less than a slightly
+  over-budget one. Continuation lines are indented (`  - 要点`) so a bullet
+  cannot be misread as a separate memory entry, since only the first line
+  carries the time marker.
+
+  `[近期对话]` is **retained** in `_ENGRAM_INNER_LABELS` purely for the
+  re-injection defence: blocks injected by <= v1.76.20 still have to be
+  stripped, or they would accumulate across turns forever.
+
 - **v1.76.20: no conversation's original text was ever retained — the raw
   transcript branch never fired once.** `store_summary` keeps the window's raw
   lines only when `importance >= source_retention_min_importance`, and that

@@ -189,7 +189,7 @@ and e.access_count == 0   # 永不衰减的 access_count 锁死 GC
 - 8.3 候选解法：在 engram 的 system prompt 注入路径加一段说明
   ```
   以下标签开头的块是自动注入的背景，不是用户消息：
-  <engram-context> / [用户画像] / [人物关系] / [近期对话] / [今日回顾]
+  <engram-context> / [用户画像] / [人物关系] / [长期记忆] / [最近日记]
   ```
 
 **为什么 declined**：
@@ -200,6 +200,29 @@ and e.access_count == 0   # 永不衰减的 access_count 锁死 GC
 - livingmemory 已经自发做了 8.3 风格的事（"CRITICAL RULES" inline instruction），证明这条路线有效，但 engram-core 用户暂未撞到需要
 
 **下次评估点**：LLM 把 `<engram-context>` 标签当文本复读 / 误解的首次真机报告
+
+**➜ 已 ship（v1.76.22，2026-09-21）：评估点已触发，按 8.3 的路线做了，但改了措辞。**
+
+真机报告（2026-09-21 00:55，mortis 会话）：模型在记忆已被正确召回并注入后，
+推理里写出
+
+> "The injected engram-context explicitly includes the sexual memory summary…
+> My rules are clear: **memories are background; the current conversation governs**…"
+
+这句话在整台机器的任何配置文件/人格卡/插件里都不存在——是模型从包装器的
+"背景"措辞里自己合成的，然后拿它当理由**拒绝使用**一条已召回的记忆。
+即：不是召回失败，是块本身"只说了一半"。
+
+实现与已 declined 的 8.3 草案有两点不同：
+1. **措辞反过来**。8.3 草案复述的是「这是自动注入的背景」——正是引起误解的那句。
+   v1.76.22 只补缺失的另一半：「也不要当成可以忽略的背景——它是你自己的记忆，
+   与当前话题相关时按事实使用」。
+2. **不做 system prompt 模板改动**。note 走我们自己的 temp TextPart，
+   外加只挂在一次请求的**第一个块**上（不是每块一个），
+   token 开销 72 字符 ≈ 48 token/请求，正好落在 8.3 当初估算的 ~50 之内。
+
+因此当初 declined 的三条理由（跨插件协调成本 / token 开销 / 尚未撞到需要）
+在 v1.76.22 里都不成立。
 
 ### 2.9 issue #8 / 8.4 跨插件注入协调 — deferred
 

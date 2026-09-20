@@ -109,6 +109,18 @@
         "description": "注入相对时间标签",
         "hint": "自动注入记忆时，在每条记忆前加上“刚刚/3 小时前/2 天前”等中文相对时间，让 LLM 感知记忆新旧。默认开启。"
       },
+      "auto_inject_use_content": {
+        "type": "bool",
+        "default": true,
+        "description": "注入完整记忆正文（含要点）",
+        "hint": "开启后注入记忆的完整正文（叙述摘要 + 总结器提取的「- 要点」条目），而不只是摘要叙述。此前只注入摘要，导致所有已提取的要点在注入时被丢弃。默认开启；关闭则回到只注入摘要。"
+      },
+      "auto_inject_content_max_chars": {
+        "type": "int",
+        "default": 800,
+        "description": "单条注入正文字符上限（0=不限）",
+        "hint": "每条记忆注入正文的长度上限，按整行截断（不会把一条要点切成半句），且永远保留首行摘要。默认 800；填 0 表示不限制。"
+      },
       "persona_isolation_enabled": {
         "type": "bool",
         "default": true,
