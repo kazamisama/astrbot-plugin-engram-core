@@ -4,6 +4,28 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.18: the recall path ignored the configured score weights.** The
+  injection path (`handlers/event/inject.py` → `MemoryService.recall` →
+  `PatternCompleter.recall`) hardcoded
+  `0.55*base + 0.25*strength + 0.15*recency` while the config advertised
+  `score_alpha` / `score_beta` / `score_gamma` ("检索相关性权重 / 重要性权重 /
+  时间新鲜度权重"). Those knobs were only read by a different recall method, so
+  tuning them never affected the path that actually feeds the prompt. They could
+  not be plugged in as-is either: `base` is an RRF score whose magnitude is
+  ~1/(60+rank+1), about 0.016 at best, so `alpha=0.5` would have contributed
+  ~0.008 against a 0.25 strength term. Relevance is now scaled to 0..1 first and
+  the weights are normalised to sum to 1, keeping the base score within 0..1.
+
+  **This is a consistency fix, not a recall-quality fix, and that distinction is
+  measured rather than assumed.** Six probes against the live store (real
+  SiliconFlow embedder, real config, DB copy) hit the expected memory under both
+  the old constants and the new weights — 5/6 either way, and unchanged across
+  three weight presets. An earlier conclusion that ranking was burying correct
+  memories was a **test artifact**: the probes queried `persona_id="mortis"` for
+  memories owned by the `sherri` persona, which persona isolation correctly
+  excludes. The one consistent miss is a retrieval/wording miss, not a ranking
+  one.
+
 - **v1.76.17: the plugin never read its own config — every WebUI setting was
   ignored.** This is why no new engrams were being created. Two defects
   compounded:

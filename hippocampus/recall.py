@@ -103,15 +103,50 @@ class PatternCompleter:
                 fused = hot_warm
 
         # 时序/强度/topic 重排
+        #
+        # v1.76.18: honour the configured weights from the config.
+        #
+        # This path used to hardcode `0.55*base + 0.25*strength + 0.15*recency`
+        # while the config advertised `score_alpha` / `score_beta` /
+        # `score_gamma` ("检索相关性权重 / 重要性权重 / 时间新鲜度权重"). Those
+        # knobs were only read by a different recall method, so tuning them had
+        # no effect on the injection path -- the one that actually feeds the
+        # prompt.
+        #
+        # They could not simply be plugged in either: `base` is an RRF score
+        # whose magnitude is ~1/(60+rank+1), about 0.016 at best, so with
+        # alpha=0.5 relevance would contribute ~0.008 against a 0.25 strength
+        # term. Relevance is therefore scaled to 0..1 first, putting it on the
+        # same footing as strength and recency; the weights are normalised to
+        # sum to 1 so the base score stays within 0..1.
+        #
+        # NOTE (measured, not assumed): on the live store this is
+        # behaviour-neutral -- six real probes hit the expected memory under
+        # both the old constants and these weights (5/6 either way). It is a
+        # consistency fix so the documented knobs work, NOT a recall-quality
+        # fix. An earlier suspicion that ranking was burying correct memories
+        # turned out to be a test artifact: the probes queried
+        # persona_id="mortis" for memories owned by the "sherri" persona, which
+        # persona isolation correctly excludes.
         now = time.time()
         scored = []
         mood_on = self._cfg.mood_congruence_enabled and cue.valence_hint is not None
         act_on = bool(cue.activation)
         freq_w = float(getattr(self._cfg, "frequency_recall_weight", 0.0) or 0.0)
+        alpha = float(getattr(self._cfg, "score_alpha", 0.5) or 0.0)
+        beta = float(getattr(self._cfg, "score_beta", 0.25) or 0.0)
+        gamma = float(getattr(self._cfg, "score_gamma", 0.25) or 0.0)
+        if alpha <= 0.0 and beta <= 0.0 and gamma <= 0.0:
+            alpha, beta, gamma = 0.5, 0.25, 0.25
+        _tot = alpha + beta + gamma
+        if _tot > 0.0:
+            alpha, beta, gamma = alpha / _tot, beta / _tot, gamma / _tot
+        base_max = max((b for _, b in fused), default=0.0)
         for e, base in fused:
             age = max(0.0, now - e.created_at)
             recency = 1.0 / (1.0 + age / 3600.0)
-            score = 0.55 * base + 0.25 * e.strength + 0.15 * recency
+            relevance = (base / base_max) if base_max > 0.0 else 0.0
+            score = alpha * relevance + beta * e.strength + gamma * recency
             if cue.topics and any(t in (e.topics or []) for t in cue.topics):
                 score += 0.05
             # v1.1: mood-congruent recall (Bower 1981) - same-valence engrams get a small boost

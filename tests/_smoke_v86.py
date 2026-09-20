@@ -748,6 +748,69 @@ def test_star_accepts_the_host_config_kwarg():
     print("  HippocampusStar/initializer accept the host config kwarg: OK")
 
 
+def test_recall_uses_the_configured_score_weights():
+    """The injection path must honour score_alpha/beta/gamma.
+
+    It used to hardcode 0.55/0.25/0.15 while the config advertised
+    "检索相关性权重 / 重要性权重 / 时间新鲜度权重", so tuning those knobs had
+    no effect on the path that actually feeds the prompt. With
+    alpha=1,beta=0,gamma=0 the ranking must be pure retrieval relevance.
+    """
+    import tempfile
+
+    from hippocampus import MemoryConfig, MemoryService
+    from hippocampus.types import Cue
+
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        cfg = MemoryConfig(sqlite_path=db, embedding_name="hash", llm_name="rule")
+        cfg.memory_decay_enabled = False
+        cfg.tiering_enabled = False
+        cfg.enable_semantic = False
+        cfg.enable_profile = False
+        cfg.enable_persona = False
+        cfg.enable_atom_extraction = False
+        cfg.dedup_enabled = False
+        cfg.working_memory_capacity = 0
+        cfg.score_alpha, cfg.score_beta, cfg.score_gamma = 1.0, 0.0, 0.0
+        cfg.frequency_recall_weight = 0.0
+        svc = MemoryService(cfg)
+
+        from hippocampus.types import Engram
+        now = time.time()
+        # A: matches the query strongly, but is old and weak.
+        a = Engram(content="coffee beans coffee beans coffee beans",
+                   summary="coffee beans coffee beans coffee beans",
+                   actor_id="u", strength=0.05, created_at=now - 90 * 86400.0)
+        # B: barely matches, but is fresh and strong.
+        b = Engram(content="coffee beans and then a great deal of unrelated "
+                           "filler text that dilutes the term",
+                   summary="coffee beans and then a great deal of unrelated "
+                           "filler text that dilutes the term",
+                   actor_id="u", strength=1.0, created_at=now)
+        svc.store.upsert(a)
+        svc.store.upsert(b)
+
+        res = svc.recall(Cue(text="coffee beans", actor_id="u", k=2, mode="fts"))
+        ids = [e.id for e in res.engrams]
+        assert ids and ids[0] == a.id, (
+            "with alpha=1,beta=0,gamma=0 the stronger-match, weaker memory must "
+            f"win; got {[(e.id[:8], round(s, 4)) for e, s in zip(res.engrams, res.scores)]}")
+        assert all(0.0 < s <= 1.0 for s in res.scores), res.scores
+        print("  recall honours score_alpha/beta/gamma (pure relevance ranks "
+              "the better match first): OK")
+        try:
+            svc.close()
+        except Exception:
+            pass
+    finally:
+        try:
+            os.unlink(db)
+        except Exception:
+            pass
+
+
 def main():
     test_sweeps_do_not_compound()
     test_sweep_time_is_recorded()
@@ -757,6 +820,7 @@ def main():
     test_summary_min_messages_is_not_a_retention_policy()
     test_conversation_buffer_survives_a_reload()
     test_buffer_flush_updates_the_snapshot()
+    test_recall_uses_the_configured_score_weights()
     test_host_loop_routing()
     test_proxy_embedding_probe_flag()
     test_star_accepts_the_host_config_kwarg()
