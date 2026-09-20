@@ -43,7 +43,22 @@ class PluginInitializer:
         self._pending_emb_activation = False
 
     def initialize(self, config_dict: dict | None = None) -> None:
-        cfg_dict = config_dict or {}
+        # v1.76.16 CRITICAL: use the config the host handed us.
+        #
+        # This used to do `cfg_dict = self.context.get_config("hippocampus")`,
+        # which does NOT return this plugin's config. Context.get_config(umo)
+        # takes a *session* id, and AstrBotConfigManager.get_conf() looks the
+        # umo up in its routing table and falls back to confs["default"] -- the
+        # GLOBAL AstrBot config (cmd_config.json). Passing "hippocampus" thus
+        # returned the global config: every field in this plugin's WebUI panel
+        # was silently ignored and MemoryConfig defaults applied instead. That
+        # is why the live bot logged "summary skipped: LLM unavailable and
+        # fallback disabled" while the config file said
+        # summary_fallback_enabled = true, and why tier_recall_include_cold
+        # never took effect (cold memories stayed excluded from recall).
+        cfg_dict = config_dict if isinstance(config_dict, dict) else {}
+        if not cfg_dict:
+            cfg_dict = self._load_own_config_dict()
         # v1.76.16: record AstrBot's own event loop BEFORE anything probes a
         # host provider. The host embedding provider's aiohttp objects belong
         # to this loop; awaiting them anywhere else hangs until the cap.
@@ -54,10 +69,6 @@ class PluginInitializer:
             pass          # sync init path: no host loop to bind to
         except Exception as exc:
             print(f"[hippocampus] set_host_loop failed: {exc!r}")
-        try:
-            cfg_dict = self.context.get_config("hippocampus") or {}
-        except Exception:
-            cfg_dict = {}
         # B9: respect bot_language (default "zh", also accepts "en")
         # so t("help.full_text") and similar resolve to the right
         # language at plugin startup. Re-init is idempotent.
@@ -66,6 +77,7 @@ class PluginInitializer:
         except Exception:
             i18n_init("zh")
         self._init_service(cfg_dict)
+        self._log_effective_config()
         if self.service is not None:
             print(banner_text(self.service))
             self._install_bridges()
@@ -73,6 +85,57 @@ class PluginInitializer:
             self._register_agent_tools()
             # B10: kick off backup scheduler (no-op if interval=0 or disabled)
             self._start_backup_scheduler()
+
+    def _load_own_config_dict(self) -> dict:
+        """Read this plugin's own config file as a fallback.
+
+        Only used when the host did not pass `config` to the Star constructor
+        (see initialize() for why context.get_config() must not be used here).
+        The file lives at <astrbot root>/data/config/<plugin name>_config.json.
+        """
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))        # .../handlers
+            plugin_dir = os.path.dirname(here)                       # .../plugins/<name>
+            root = os.path.dirname(os.path.dirname(os.path.dirname(plugin_dir)))
+            name = os.path.basename(plugin_dir)
+            path = os.path.join(root, "data", "config", name + "_config.json")
+            if not os.path.exists(path):
+                return {}
+            import json
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                print("[hippocampus] config read from " + path)
+                return data
+        except Exception as e:
+            print("[hippocampus] own-config load failed: " + repr(e))
+        return {}
+
+    def _log_effective_config(self) -> None:
+        """Log the settings that actually took effect.
+
+        The WebUI panel and this plugin's effective config can silently
+        diverge (they did for months), and that divergence is invisible in
+        every other log line. One line here makes it checkable at a glance.
+        """
+        try:
+            c = getattr(self.service, "cfg", None)
+            if c is None:
+                return
+
+            def g(name):
+                return getattr(c, name, "<missing>")
+
+            print("[hippocampus] effective config: summary_mode=" + str(g("summary_mode_enabled"))
+                  + " min_msgs=" + str(g("summary_min_messages"))
+                  + " max_msgs=" + str(g("summary_max_messages"))
+                  + " fallback=" + str(g("summary_fallback_enabled"))
+                  + " include_cold=" + str(g("tier_recall_include_cold"))
+                  + " tiering=" + str(g("tiering_enabled"))
+                  + " decay=" + str(g("memory_decay_enabled"))
+                  + " embedding_dim=" + str(g("embedding_dim")))
+        except Exception as e:
+            print("[hippocampus] effective-config log failed: " + repr(e))
 
     def _init_service(self, cfg_dict: dict) -> None:
         # B7: route every MemoryConfig field through ConfigManager

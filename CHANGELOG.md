@@ -4,6 +4,41 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.17: the plugin never read its own config — every WebUI setting was
+  ignored.** This is why no new engrams were being created. Two defects
+  compounded:
+  - `HippocampusStar.__init__(self, context)` did not accept the `config` kwarg.
+    AstrBot instantiates plugins as
+    `star_cls_type(context=..., config=<plugin config>)` and, on TypeError,
+    silently retries `star_cls_type(context=...)`
+    (`astrbot/core/star/star_manager.py`). The first form therefore raised, so
+    the plugin's entire config was dropped on every load.
+  - `PluginInitializer.initialize()` then did
+    `cfg_dict = self.context.get_config("hippocampus")`. `Context.get_config(umo)`
+    takes a *session* id, and `AstrBotConfigManager.get_conf()` looks the umo up
+    in its routing table and falls back to `confs["default"]` — the GLOBAL
+    AstrBot config (`cmd_config.json`). The plugin therefore ran on
+    `MemoryConfig` defaults: 80 keys of the global config leaked into
+    `cfg.extra`, and no Engram-panel setting ever reached the service. Verified
+    against the live install: `get_config()` yields
+    `summary_fallback_enabled=False`, `tier_recall_include_cold=False`,
+    `tier_cold_fallback_min_hits=1`, `embedding_dim=64`,
+    `embedding_provider_id=""`, while the plugin's own file says
+    `true / true / 3 / 4096 / Qwen3-Embedding-8B`.
+  Consequences on the live bot: the summarizer logged "summary skipped: LLM
+  unavailable and fallback disabled" while the config file said `true`, so every
+  flushed conversation window was **discarded instead of stored** when its
+  summarizer LLM call timed out (398 engrams, newest 12:00, while 117 messages
+  arrived after 19:20); and the v1.76.16 cold-tier fix (`tier_recall_include_cold`)
+  was never actually in effect.
+  Fix: accept and forward AstrBot's `config`; read the plugin's own
+  `<root>/data/config/<plugin>_config.json` only as a fallback (never
+  `context.get_config()`); and log the effective settings at startup
+  (`[hippocampus] effective config: summary_mode=... min_msgs=... fallback=...
+  include_cold=...`) so panel-vs-runtime drift is visible instead of silent.
+  Tests that relied on the old (broken) `get_config` path now pass their config
+  to `initialize()`, which is the real contract.
+
 - **v1.76.16 memory-recall repair (root cause of "记忆没有被正确召回")**:
   - **`HippocampalStore.decay_pass` compounded the decay.** It multiplied the
     *already-decayed* strength by `exp(-(now - anchor)/tau)`, where

@@ -446,15 +446,23 @@ def test_deferred_activation_switches_to_astrmock():
                 text = "hello-from-host"
             return _R()
 
+    plugin_cfg = {
+        "storage_settings": {"sqlite_path": db},
+        "provider_settings": {"embedding_dim": 16},
+        "memory_settings": {"enable_backup": False,
+                            "diary_enabled": False,
+                            "memory_decay_enabled": False},
+    }
+
     class _Ctx:
         def get_config(self, key):
-            return {
-                "storage_settings": {"sqlite_path": db},
-                "provider_settings": {"embedding_dim": 16},
-                "memory_settings": {"enable_backup": False,
-                                    "diary_enabled": False,
-                                    "memory_decay_enabled": False},
-            }
+            # v1.76.16: Context.get_config(umo) returns the GLOBAL AstrBot
+            # config, never the plugin's. initialize() must not consult it.
+            # This deliberately returns a global-shaped config with a
+            # conflicting value; if it were used, embedding_dim would be 64.
+            return {"config_version": 1,
+                    "provider_settings": {"embedding_dim": 64, "prompt_prefix": ""},
+                    "agent_runner": {"x": 1}}
 
         def get_all_embedding_providers(self):
             return [_HostEmb()]
@@ -467,7 +475,13 @@ def test_deferred_activation_switches_to_astrmock():
         init = PluginInitializer(_Ctx())
 
         async def _startup():
-            init.initialize()               # synchronous, like AstrBot does
+            # exactly what HippocampusStar.__init__ passes now
+            init.initialize(plugin_cfg)
+            assert init.service.cfg.embedding_dim == 16, \
+                ("initialize() must use the config the host passed, not "
+                 "context.get_config() (which returns the global config)")
+            assert "agent_runner" not in (init.service.cfg.extra or {}), \
+                "the global config must not leak into cfg.extra"
             assert init._pending_emb_activation is True, \
                 "activation must be deferred while __init__ holds the loop"
             for _ in range(60):             # let the deferred task run
@@ -699,6 +713,32 @@ def test_terminate_never_runs_an_llm_on_the_event_loop():
     print(f"  terminate() snapshots without an LLM flush ({dt * 1000:.0f} ms): OK")
 
 
+def test_star_accepts_the_host_config_kwarg():
+    """HippocampusStar.__init__ must accept `config`, or the host drops it.
+
+    AstrBot instantiates `star_cls_type(context=..., config=<plugin config>)`
+    and, on TypeError, silently retries `star_cls_type(context=...)`. Taking
+    only `context` therefore meant the host threw the plugin's whole config
+    away on every load, and the plugin fell back to the global AstrBot config
+    -- every WebUI setting was ignored.
+    """
+    import inspect
+
+    import main
+    from handlers.init import PluginInitializer
+
+    sig = inspect.signature(main.HippocampusStar.__init__)
+    assert "config" in sig.parameters, (
+        "HippocampusStar.__init__ must accept the config kwarg, otherwise "
+        "AstrBot's TypeError fallback drops the plugin config")
+    assert sig.parameters["config"].default is None
+
+    sig2 = inspect.signature(PluginInitializer.initialize)
+    names = list(sig2.parameters)
+    assert names[:2] == ["self", "config_dict"], names
+    print("  HippocampusStar/initializer accept the host config kwarg: OK")
+
+
 def main():
     test_sweeps_do_not_compound()
     test_sweep_time_is_recorded()
@@ -710,6 +750,7 @@ def main():
     test_buffer_flush_updates_the_snapshot()
     test_host_loop_routing()
     test_proxy_embedding_probe_flag()
+    test_star_accepts_the_host_config_kwarg()
     test_deferred_activation_switches_to_astrmock()
     test_terminate_never_runs_an_llm_on_the_event_loop()
     # needs the astrbot shim, so run it last

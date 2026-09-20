@@ -88,13 +88,31 @@ class HippocampusStar(Star):
     # attribute so smoke v12/v16 can assert alignment with metadata.yaml.
     _registered_version = HIPPO_VERSION
 
-    def __init__(self, context: Context) -> None:
-        super().__init__(context)
+    def __init__(self, context: Context, config: dict | None = None) -> None:
+        # v1.76.16 CRITICAL: accept the `config` kwarg.
+        #
+        # AstrBot instantiates plugins as
+        #     star_cls_type(context=..., config=<the plugin's own config>)
+        # and, on TypeError, silently retries with
+        #     star_cls_type(context=...)
+        # (astrbot/core/star/star_manager.py). This class used to take only
+        # `context`, so the first form raised TypeError and the plugin's config
+        # was dropped on every load -- every setting in the WebUI's Engram panel
+        # was ignored and MemoryConfig defaults were used instead. The fallback
+        # in PluginInitializer then made it worse by calling
+        # context.get_config("hippocampus"), which returns the GLOBAL AstrBot
+        # config (see handlers/init.py initialize()).
+        try:
+            super().__init__(context, config)
+        except TypeError:
+            # a host/shim whose Star base takes only context
+            super().__init__(context)
         self.context = context
+        self.config = config
 
         # 1. Build service + register tools (init path consolidated)
         self._initializer = PluginInitializer(context)
-        self._initializer.initialize()
+        self._initializer.initialize(config)
         self.service: Any = self._initializer.service
         self._tools = self._initializer.tools
 

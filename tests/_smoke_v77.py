@@ -316,8 +316,13 @@ def test_backup_api_and_single_scheduler():
         def register_tool(self, *_a, **_k):
             pass
 
-    p = PluginInitializer(Ctx())
-    p.initialize()
+    ctx = Ctx()
+    p = PluginInitializer(ctx)
+    # v1.76.16: the config is passed in explicitly (what HippocampusStar
+    # forwards from AstrBot's `config=` kwarg). initialize() never calls
+    # context.get_config(): its argument is a session umo and it falls back to
+    # the GLOBAL AstrBot config, so the plugin's own settings were ignored.
+    p.initialize(ctx.get_config(None))
     names = [t.name for t in threading.enumerate() if "hippocampus-backup" in t.name]
     assert len(names) == 1, names
     # no host embedding provider => keep hash instead of switching to empty astrmock

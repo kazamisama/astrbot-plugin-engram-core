@@ -273,32 +273,22 @@ def test_plugin_initializer_uses_bot_language():
     banner("PluginInitializer.initialize reads cfg.bot_language")
     from handlers.init import PluginInitializer
     from hippocampus.i18n_backend import current_language
-    init = PluginInitializer(
-        types.SimpleNamespace(
-            get_config=lambda k: {"bot_language": "zh",
-                                  "sqlite_path": ":memory:"},
-            register_tool=None))
-    init.initialize()
+    # v1.76.16: the config is passed to initialize() (what HippocampusStar
+    # forwards from AstrBot's `config=` kwarg). It is deliberately NOT read
+    # from context.get_config(): that takes a session umo and falls back to the
+    # GLOBAL AstrBot config, so the plugin's own settings were never seen.
+    ctx = types.SimpleNamespace(register_tool=None)
+    init = PluginInitializer(ctx)
+    init.initialize({"bot_language": "zh", "sqlite_path": ":memory:"})
     assert current_language() == "zh"
-    init2 = PluginInitializer(
-        types.SimpleNamespace(
-            get_config=lambda k: {"bot_language": "en",
-                                  "sqlite_path": ":memory:"},
-            register_tool=None))
-    init2.initialize()
+    init2 = PluginInitializer(ctx)
+    init2.initialize({"bot_language": "en", "sqlite_path": ":memory:"})
     assert current_language() == "en"
-    init3 = PluginInitializer(
-        types.SimpleNamespace(
-            get_config=lambda k: {"sqlite_path": ":memory:"},
-            register_tool=None))
-    init3.initialize()
+    init3 = PluginInitializer(ctx)
+    init3.initialize({"sqlite_path": ":memory:"})
     assert current_language() == "zh"
-    init4 = PluginInitializer(
-        types.SimpleNamespace(
-            get_config=lambda k: {"bot_language": "ja",
-                                  "sqlite_path": ":memory:"},
-            register_tool=None))
-    init4.initialize()
+    init4 = PluginInitializer(ctx)
+    init4.initialize({"bot_language": "ja", "sqlite_path": ":memory:"})
     assert current_language() == "zh"
     print("  PluginInitializer reads bot_language (zh/en/default/unknown): OK")
 

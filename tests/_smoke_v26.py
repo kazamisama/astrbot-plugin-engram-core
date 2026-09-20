@@ -340,18 +340,17 @@ def test_page_api_registers_11_endpoints():
 def test_plugin_initializer_backup_manager_attr():
     banner("PluginInitializer: backup_manager set on initialize()")
     from handlers.init import PluginInitializer
-    # enable_backup=True via context.get_config
-    init = PluginInitializer(
-        types.SimpleNamespace(
-            get_config=lambda k: {
-                "sqlite_path": _new_db(),
-                "enable_backup": True,
-                "backup_interval_hours": 0,  # 0 = no thread, but manager still set
-                "bot_language": "zh"},
-            register_tool=None))
+    # v1.76.16: config is passed to initialize() (HippocampusStar forwards the
+    # `config=` AstrBot hands the Star), not read from context.get_config().
+    ctx = types.SimpleNamespace(register_tool=None)
+    db1 = _new_db()
+    init = PluginInitializer(ctx)
     # initialize will spawn a thread if interval>0; we pass 0 so no thread,
     # but backup_manager should still be created
-    init.initialize()
+    init.initialize({"sqlite_path": db1,
+                     "enable_backup": True,
+                     "backup_interval_hours": 0,
+                     "bot_language": "zh"})
     assert init.backup_manager is not None, "backup_manager not created"
     assert init.backup_manager.db_path is not None
     # cleanup: close service to release db lock
@@ -360,14 +359,10 @@ def test_plugin_initializer_backup_manager_attr():
         except Exception: pass
     # enable_backup=False
     db2 = _new_db()
-    init2 = PluginInitializer(
-        types.SimpleNamespace(
-            get_config=lambda k: {
-                "sqlite_path": db2,
-                "enable_backup": False,
-                "bot_language": "zh"},
-            register_tool=None))
-    init2.initialize()
+    init2 = PluginInitializer(ctx)
+    init2.initialize({"sqlite_path": db2,
+                      "enable_backup": False,
+                      "bot_language": "zh"})
     assert init2.backup_manager is None
     if init2.service is not None:
         try: init2.service.close()
