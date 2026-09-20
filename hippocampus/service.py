@@ -296,13 +296,24 @@ class MemoryService:
         Unlike `rebuild_embeddings()` -- which re-embeds EVERY row -- this
         touches only the mismatched ones, and the ids are selected in SQL so
         the whole table (embeddings included) is never materialized.
+
+        v1.76.23: the selector matched on `embedding_model != target` ONLY, so
+        a row that carries the *correct* label but no vector was invisible to
+        it forever -- it never entered vector recall again, while FTS quietly
+        kept covering it. Found live on 2026-09-21: an engram from 2026-07-11
+        with `embedding_model='astrmock'` and an empty `embedding_json`. The
+        predicate now also picks up null/empty-vector rows regardless of
+        label. `LENGTH(...) <= 4` covers '', '[]' and 'null'; a real 4096-dim
+        vector is thousands of characters, so there are no false positives.
         """
         target = self._current_embedding_name
         try:
             with self.store._lock:
                 rows = self.store._conn.execute(
                     "SELECT id FROM engrams "
-                    "WHERE COALESCE(embedding_model, '') != ? "
+                    "WHERE (COALESCE(embedding_model, '') != ? "
+                    "       OR embedding_json IS NULL "
+                    "       OR LENGTH(TRIM(COALESCE(embedding_json, ''))) <= 4) "
                     "  AND COALESCE(forgotten_at, 0.0) = 0.0 "
                     "LIMIT ?", (target, max(1, int(limit)))).fetchall()
         except Exception as ex:

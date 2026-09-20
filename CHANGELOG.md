@@ -4,6 +4,40 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.23: `reembed_stale()` could never repair a vectorless row.** The
+  selector matched on `embedding_model != target` **only**:
+
+  ```sql
+  WHERE COALESCE(embedding_model, '') != ?
+  ```
+
+  A row carrying the *correct* model label but an empty `embedding_json`
+  therefore never matched, was never re-embedded, and stayed invisible to
+  vector recall permanently — while FTS kept covering it, which is exactly why
+  it went unnoticed. `reembed_stale()` is the function written to repair
+  post-restart embedding damage, so this was a hole in the repair path itself.
+
+  Found live on 2026-09-21 while auditing a backfill:
+
+  ```
+  id=55cc73461ca8  2026-07-11 11:18  persona=mortis  memory_type=episodic
+  embedding_model='astrmock'         embedding_json=''      summary=37 chars
+  ```
+
+  The predicate now also selects null/empty-vector rows regardless of label:
+
+  ```sql
+  WHERE (COALESCE(embedding_model, '') != ?
+         OR embedding_json IS NULL
+         OR LENGTH(TRIM(COALESCE(embedding_json, ''))) <= 4)
+  ```
+
+  `LENGTH(...) <= 4` covers `''`, `'[]'` and `'null'`; a real 4096-dim vector is
+  thousands of characters, so there are no false positives, and soft-forgotten
+  rows remain excluded. Covered by `tests/_smoke_v89.py` (empty vector,
+  `'[]'`, wrong label, already-good row untouched, forgotten row skipped,
+  idempotent second pass).
+
 - **v1.76.22: the `<engram-context>` wrapper licensed the model to ignore its
   own memories.** The tag (v1.67.1) said only what a block is *not* —
   "injected background, not part of the user's actual message" — which fixed
