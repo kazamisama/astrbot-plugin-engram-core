@@ -150,3 +150,67 @@ def run_sync(awaitable: Awaitable[Any], *, timeout: float | None = None) -> Any:
 
 async def _as_coro(awaitable: Awaitable[Any]) -> Any:
     return await awaitable
+
+
+# ---------------------------------------------------------------------------
+# v1.76.16: host-loop routing.
+#
+# run_sync() always drives coroutines on a PRIVATE worker loop. That is wrong
+# for host objects that belong to another loop: AstrBot's embedding provider
+# wraps an aiohttp ClientSession, and awaiting its connection objects from a
+# foreign loop does not fail fast -- it hangs until the caller's cap. That is
+# the real root cause of the astrmock embedding bridge timing out (10s at boot,
+# 59x at runtime) while the store held 4096-dim vectors, leaving the plugin
+# silently pinned to its 64-dim `hash` placeholder.
+#
+# call_on_host_loop() schedules the coroutine onto the loop the provider
+# actually lives on, using the standard thread-safe primitive. It refuses (so
+# the caller can fall back to run_sync) when there is no usable host loop, and
+# -- critically -- when the CALLER is the host loop thread, where blocking on
+# the result would deadlock the very loop that has to run the coroutine.
+# ---------------------------------------------------------------------------
+_host_loop: "asyncio.AbstractEventLoop | None" = None
+
+
+def set_host_loop(loop: "asyncio.AbstractEventLoop | None") -> None:
+    """Register the host's own event loop (AstrBot's). None clears it."""
+    global _host_loop
+    _host_loop = loop
+
+
+def get_host_loop() -> "asyncio.AbstractEventLoop | None":
+    return _host_loop
+
+
+def host_loop_usable() -> bool:
+    """True when call_on_host_loop() can safely be used from THIS thread.
+
+    Checked before the coroutine is created, so a refusal never leaves an
+    un-awaited coroutine behind.
+    """
+    loop = _host_loop
+    if loop is None or loop.is_closed() or not loop.is_running():
+        return False
+    try:
+        return asyncio.get_running_loop() is not loop
+    except RuntimeError:
+        return True          # no running loop on this thread -> safe to block
+
+
+def call_on_host_loop(awaitable: Awaitable[Any], *, timeout: float) -> Any:
+    """Drive *awaitable* on the registered host loop and block for the result.
+
+    Raises RuntimeError if the host loop is not usable from this thread or the
+    call times out. Callers treat that as "skip this op" and fall back to
+    run_sync() -- never as a reason to stall the LLM request.
+    """
+    if not host_loop_usable():
+        raise RuntimeError("host loop not usable from this thread")
+    fut = asyncio.run_coroutine_threadsafe(_as_coro(awaitable), _host_loop)
+    try:
+        return fut.result(timeout=timeout)
+    except _FutTimeoutError:
+        fut.cancel()
+        raise RuntimeError(
+            f"host-loop call timed out after {timeout}s "
+            "(provider hung?)") from None

@@ -417,7 +417,12 @@ class HippocampalStore:
         params = [session_id]
         fc = "" if include_forgotten else " AND forgotten_at = 0 "
         sql = "SELECT * FROM engrams WHERE session_id = ?" + fc
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        # v1.76.16: rowid DESC tiebreak. created_at is a float with limited
+        # clock resolution, so engrams written in the same tick compared equal
+        # and "newest first" was whatever order SQLite happened to return
+        # (tests/_smoke_v66 flaked ~1 in 25 runs on exactly this). rowid is
+        # insertion order, so it is the correct tiebreaker for "newest".
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(int(k))
         with self._lock, self._conn:
             cur = self._conn.execute(sql, params)
@@ -441,7 +446,7 @@ class HippocampalStore:
         if min_strength > 0:
             sql += " AND strength >= ?"
             params.append(float(min_strength))
-        sql += " ORDER BY last_accessed DESC LIMIT ?"
+        sql += " ORDER BY last_accessed DESC, rowid DESC LIMIT ?"
         params.append(int(k))
         with self._lock, self._conn:
             cur = self._conn.execute(sql, params)
@@ -523,43 +528,89 @@ class HippocampalStore:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [e for e, _ in scored[:k]]
 
+    # v1.76.16: timestamp of the previous decay sweep, so each pass decays by
+    # the gap since the LAST pass instead of re-applying each engram's whole
+    # age (see decay_pass).
+    _DECAY_PASS_META_KEY = "decay:last_pass_at"
+
     def decay_pass(self, tau_base: float, floor: float,
-                   importance_modulator: float = 4.0) -> int:
+                   importance_modulator: float = 4.0,
+                   elapsed_seconds: float | None = None) -> int:
         """Bulk Ebbinghaus decay. Returns count that fell below floor.
 
         v1.76.15: single SQL UPDATE instead of materializing the whole
-        engrams table into Python. Same math as the previous loop; one
-        statement produces one write transaction (and one fsync).
+        engrams table into Python; one statement produces one write
+        transaction (and one fsync).
+
+        v1.76.16 ROOT-CAUSE FIX: decay by the time elapsed since the PREVIOUS
+        pass, not by each engram's whole age since its anchor.
+
+        The old expression multiplied the already-decayed strength by
+        exp(-(now - anchor)/tau), where anchor = max(last_accessed, created_at)
+        and the decay itself never advances it. The maintenance loop calls this
+        every memory_decay_interval_seconds (1800s), so a memory anchored N
+        sweeps back lost exp(-D*N^2/2/tau) instead of exp(-D*N/tau)
+        (D = sweep period): one day of age cost it exp(-48*age/tau). Strength
+        hit 0 within ~2-3 days regardless of importance, every engram fell
+        below tier_cold_strength_floor, and since cold is excluded from normal
+        recall (tier_recall_include_cold=False) it was never recalled again --
+        so touch() never ran, the anchor never advanced, and the row stayed at
+        0.0 forever. Measured on the live store before this fix: age 1.21d ->
+        0.2410, age 3.21d -> 0.0000, avg strength 0.0151, 391/398 below floor.
+
+        `elapsed_seconds` overrides the recorded gap; when omitted the gap
+        since the last recorded pass is used. The first pass on a store with no
+        recorded timestamp keeps the original per-engram-age semantics, so a
+        brand-new DB still decays by real age exactly once and every later pass
+        is incremental.
         """
         import time
         now = time.time()
         tau = max(float(tau_base), 1.0)
         mod = max(0.0, float(importance_modulator))
         floor = float(floor)
+
+        anchor = (
+            "CASE WHEN COALESCE(created_at, 0.0) <= 0.0 "
+            "AND COALESCE(last_accessed, 0.0) <= 0.0 THEN ? "
+            "ELSE MAX(COALESCE(last_accessed, 0.0), "
+            "COALESCE(created_at, 0.0)) END"
+        )
+
+        if elapsed_seconds is None:
+            prev = self._meta_get(self._DECAY_PASS_META_KEY)
+            try:
+                prev_at = float(prev) if prev else 0.0
+            except (TypeError, ValueError):
+                prev_at = 0.0
+            if prev_at > 0.0:
+                elapsed_seconds = now - prev_at
+
+        if elapsed_seconds is None:
+            dt_expr = "MAX(0.0, ? - " + anchor + ")"
+            dt_params: tuple = (now, now)
+        else:
+            # Incremental: only the gap since the last pass, and never more
+            # than the engram's own age (a row created after that gap cannot
+            # have aged by it). Clamped so a long downtime or a skewed clock
+            # cannot evaporate the whole store in one sweep.
+            gap = max(0.0, min(float(elapsed_seconds), 86400.0 * 3650.0))
+            dt_expr = "MIN(?, MAX(0.0, ? - " + anchor + "))"
+            dt_params = (gap, now, now)
+
         with self._lock, self._conn:
             self._conn.execute(
-                """
-                UPDATE engrams
-                SET strength = MAX(0.0,
-                    strength * EXP(
-                        -MAX(0.0, ? - CASE
-                            WHEN COALESCE(created_at, 0.0) <= 0.0
-                             AND COALESCE(last_accessed, 0.0) <= 0.0
-                            THEN ?
-                            ELSE MAX(COALESCE(last_accessed, 0.0),
-                                     COALESCE(created_at, 0.0))
-                        END)
-                        / MAX(1.0, ? * (1.0 + ? * COALESCE(importance, 0.0)))
-                    )
-                )
-                WHERE COALESCE(forgotten_at, 0.0) = 0.0
-                """,
-                (now, now, tau, mod))
+                "UPDATE engrams SET strength = MAX(0.0, strength * EXP(-"
+                + dt_expr
+                + " / MAX(1.0, ? * (1.0 + ? * COALESCE(importance, 0.0)))))"
+                + " WHERE COALESCE(forgotten_at, 0.0) = 0.0",
+                dt_params + (tau, mod))
             row = self._conn.execute(
                 "SELECT COUNT(*) AS c FROM engrams "
                 "WHERE COALESCE(forgotten_at, 0.0) = 0.0 AND strength < ?",
                 (floor,)).fetchone()
-            return int(row["c"])
+        self._meta_set(self._DECAY_PASS_META_KEY, repr(now))
+        return int(row["c"])
 
     def gc_pass(self, floor: float, min_age_seconds: float = 86400.0) -> int:
         """Hard-delete engrams below floor, never recalled, and old enough."""

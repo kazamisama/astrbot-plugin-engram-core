@@ -8,6 +8,7 @@ __init__ and invoked by the thin wrapper in main.py.
 """
 from __future__ import annotations
 import asyncio
+import os
 import threading
 from typing import TYPE_CHECKING
 from ..format import _extract, _resolve_group_name, _bot_actor_id, _resolve_bot_name
@@ -71,6 +72,8 @@ class ObserveHandler:
         self.service = service
         self._aggregator = None
         self._conv_buffer = None
+        # v1.76.16: durable snapshot of the conversation buffer
+        self._conv_buffer_store = None
         self._summarizer = None
         self._ingest_lock = None
 
@@ -142,10 +145,55 @@ class ObserveHandler:
                 pass
         return self._summarizer
 
+    # ---- v1.76.16: conversation-buffer durability ----
+    def _conv_buffer_path(self) -> str:
+        """Snapshot lives beside the DB (same convention as backups/)."""
+        try:
+            db = getattr(self.service.cfg, "sqlite_path", "") or ""
+        except Exception:
+            db = ""
+        return os.path.join(os.path.dirname(db) or ".", "conv_buffer.json")
+
+    def persist_conv_buffer(self) -> None:
+        """Best-effort snapshot so a plugin reload cannot drop an open window.
+
+        Called after every feed and after every flush: the first keeps new lines
+        safe, the second makes sure a window that was already summarized cannot
+        come back from disk and be summarized a second time.
+        """
+        try:
+            buf = self._conv_buffer
+            store = self._conv_buffer_store
+            if buf is not None and store is not None:
+                store.save(buf.snapshot())
+        except Exception as e:
+            print(f"[hippocampus] conv buffer persist error: {e!r}")
+
+    def ensure_conv_buffer(self):
+        """Create (and restore) the buffer without needing an inbound message.
+
+        Without this a window restored from disk would sit there until the next
+        message in that channel; the idle-flush loop calls this so recovered
+        windows get summarized promptly.
+        """
+        try:
+            cfg = self.service.cfg if self.service is not None else None
+            if cfg is None or not getattr(cfg, "summary_mode_enabled", False):
+                return None
+        except Exception:
+            return None
+        return self._get_conv_buffer()
+
+    def _feed_conv_buffer(self, meta: dict) -> None:
+        """Feed one message and snapshot immediately (reload safety)."""
+        self._get_conv_buffer().feed(meta)
+        self.persist_conv_buffer()
+
     def _get_conv_buffer(self):
         """Per-channel conversation buffer; sink summarizes + stores one engram."""
         if self._conv_buffer is None:
             from hippocampus.conversation_buffer import ConversationBuffer
+            from hippocampus.conv_buffer_store import ConvBufferStore
 
             def _sink(rec):
                 try:
@@ -174,8 +222,25 @@ class ObserveHandler:
                     self.service.store_summary(summ, identity)
                 except Exception as ex:
                     print("[hippocampus] conv summary sink error: " + repr(ex))
+                finally:
+                    # the flush changed what the snapshot should contain
+                    self.persist_conv_buffer()
 
             self._conv_buffer = ConversationBuffer(self.service.cfg, _sink)
+            try:
+                self._conv_buffer_store = ConvBufferStore(self._conv_buffer_path())
+                pending = self._conv_buffer_store.load()
+                if pending:
+                    n = self._conv_buffer.restore(pending)
+                    if n:
+                        print("[hippocampus] restored " + str(n)
+                              + " buffered conversation window(s) from disk")
+                    else:
+                        print("[hippocampus] conv buffer snapshot had nothing "
+                              "restorable; clearing it")
+                        self._conv_buffer_store.clear()
+            except Exception as e:
+                print(f"[hippocampus] conv buffer restore error: {e!r}")
         return self._conv_buffer
 
     async def handle_message(self, event) -> None:
@@ -220,7 +285,7 @@ class ObserveHandler:
             if summary_mode:
                 # Conversation-level summarization owns ingest. Per-message
                 # ingest only happens in the debug fallback below.
-                self._get_conv_buffer().feed(meta)
+                self._feed_conv_buffer(meta)
             if debug_ingest or not summary_mode:
                 self._ingest_per_message(meta, cfg)
         except Exception as e:
@@ -288,7 +353,7 @@ class ObserveHandler:
         if not summary_on:
             return
         try:
-            self._get_conv_buffer().feed(meta)
+            self._feed_conv_buffer(meta)
         except Exception as e:
             print(f"[hippocampus] bot observe error: {e!r}")
 
@@ -384,7 +449,7 @@ class ObserveHandler:
             print(f"[hippocampus] poke daily cache error: {ce!r}")
         if summary_on:
             try:
-                self._get_conv_buffer().feed(meta)
+                self._feed_conv_buffer(meta)
             except Exception as e:
                 print(f"[hippocampus] poke observe error: {e!r}")
 

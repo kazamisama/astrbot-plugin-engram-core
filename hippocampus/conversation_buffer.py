@@ -14,6 +14,13 @@ Triggering (decided by the caller via flush callbacks):
     dependent: private vs group) is ready to flush.
   - scheduled / shutdown: flush_all() forces every channel.
 
+`summary_min_messages` is a *batching* hint, not a retention policy: a window
+below the minimum is held (so several short bursts merge into one meaningful
+summary) until `summary_min_messages_grace_seconds` of silence, and is then
+summarized anyway. Nothing is ever discarded here (v1.76.16) -- the only loss
+paths left are the `summary_max_channels` eviction of a whole channel and a
+process exit that skips the shutdown flush.
+
 This module stores nothing itself. On flush it calls `sink(record)` with a
 ConversationRecord describing the whole window; the caller (service/handler)
 turns that into a summarized engram. No AstrBot imports here so it is unit
@@ -176,7 +183,25 @@ class ConversationBuffer:
         if self._below_min(buf):
             grace = self._below_min_grace_seconds()
             if grace > 0 and now - buf.last_msg_ts >= grace:
-                self._bufs.pop(ch, None)
+                # v1.76.16: summarize the short window instead of discarding it.
+                #
+                # Dropping the buffer here was silent data loss: a channel that
+                # never reached `summary_min_messages` within the grace window
+                # had its entire window thrown away, never summarized, never
+                # stored. The live store showed a day with 306 captured
+                # messages (daily_messages) and 0 new engrams, with only
+                # "summary skipped" in the log because the LLM bridge timed out.
+                #
+                # `summary_min_messages` is a batching hint -- it decides how
+                # long a short window may wait to be merged with more messages,
+                # and must never decide whether the window is kept at all. With
+                # this change nothing is ever discarded here: a channel either
+                # reaches the minimum and flushes on idle, or it flushes at
+                # grace expiry.
+                #
+                # Set `summary_min_messages` to 1 to skip the wait entirely
+                # (then any non-empty window is flushed as soon as it is idle).
+                self._flush_key(ch)
                 return
             buf.last_ts = now
             return
@@ -270,6 +295,111 @@ class ConversationBuffer:
         now = self._now()
         for ch in list(self._bufs.keys()):
             self._settle_idle_buf(ch, now)
+
+    # ---- v1.76.16: on-disk survival across a plugin reload ----
+    # This buffer is the ONLY place a not-yet-summarized window exists, and it
+    # used to be pure memory. AstrBot reloaded the plugin 7 times in one day on
+    # the live bot, and every reload silently discarded the open windows: the
+    # messages were already captured (daily_messages) but never became memory
+    # -- observed at the 17:58 reload, which dropped a window whose last
+    # message was 17:54.31 (below summary_min_messages, not idle long enough
+    # yet, and terminate()'s flush_all() did not get to run).
+    #
+    # These two methods stay I/O-free on purpose (this module owns no storage);
+    # hippocampus/conv_buffer_store.py does the writing.
+    def snapshot(self) -> dict:
+        """Serializable view of every buffered window."""
+        with self._lock:
+            chans = {}
+            for ch, buf in self._bufs.items():
+                if not ch or not buf.lines:
+                    continue
+                chans[ch] = {
+                    "meta": {k: v for k, v in buf.meta.items()
+                             if v is None or isinstance(v, (str, int, float, bool))},
+                    "first_ts": buf.first_ts,
+                    "last_ts": buf.last_ts,
+                    "last_msg_ts": buf.last_msg_ts,
+                    "lines": [
+                        {"actor_id": ln.actor_id, "speaker": ln.speaker,
+                         "content": ln.content, "ts": ln.ts,
+                         "is_bot": bool(ln.is_bot)}
+                        for ln in buf.lines
+                    ],
+                }
+            return {"version": 1, "channels": chans}
+
+    def restore(self, data: dict, *,
+                max_age_seconds: float = 14 * 86400.0) -> int:
+        """Rehydrate windows written by snapshot(); returns how many.
+
+        Windows whose last message is older than *max_age_seconds* are skipped,
+        so a stale file left by a long outage cannot resurface as fresh memory.
+        Existing in-memory windows always win (never overwritten).
+        """
+        if not isinstance(data, dict):
+            return 0
+        chans = data.get("channels")
+        if not isinstance(chans, dict):
+            return 0
+        now = self._now()
+        restored = 0
+        with self._lock:
+            for ch, blob in chans.items():
+                if not ch or ch in self._bufs or not isinstance(blob, dict):
+                    continue
+                if len(self._bufs) >= self._max_channels():
+                    break
+                lines = []
+                for ln in (blob.get("lines") or []):
+                    if not isinstance(ln, dict):
+                        continue
+                    content = str(ln.get("content") or "").strip()
+                    if not self._accept(content):
+                        continue
+                    try:
+                        ts = float(ln.get("ts") or 0.0)
+                    except (TypeError, ValueError):
+                        ts = 0.0
+                    lines.append(ConvLine(
+                        actor_id=str(ln.get("actor_id") or ""),
+                        speaker=str(ln.get("speaker") or ""),
+                        content=content,
+                        ts=ts,
+                        is_bot=bool(ln.get("is_bot")),
+                    ))
+                if not lines:
+                    continue
+                try:
+                    last_msg_ts = float(blob.get("last_msg_ts") or 0.0)
+                except (TypeError, ValueError):
+                    last_msg_ts = 0.0
+                if last_msg_ts <= 0.0:
+                    last_msg_ts = lines[-1].ts
+                if max_age_seconds > 0 and last_msg_ts > 0.0 \
+                        and (now - last_msg_ts) > max_age_seconds:
+                    continue
+                meta = blob.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                try:
+                    first_ts = float(blob.get("first_ts") or 0.0)
+                except (TypeError, ValueError):
+                    first_ts = 0.0
+                if first_ts <= 0.0:
+                    first_ts = lines[0].ts or now
+                buf = _ChannelBuf(meta, first_ts)
+                buf.meta["channel_id"] = str(meta.get("channel_id") or ch)
+                buf.lines = lines
+                buf.first_ts = first_ts
+                try:
+                    buf.last_ts = float(blob.get("last_ts") or 0.0) or last_msg_ts
+                except (TypeError, ValueError):
+                    buf.last_ts = last_msg_ts
+                buf.last_msg_ts = last_msg_ts
+                self._bufs[ch] = buf
+                restored += 1
+        return restored
 
     # ---- internals ----
     def _flush_idle(self, now: float, exclude: str) -> None:

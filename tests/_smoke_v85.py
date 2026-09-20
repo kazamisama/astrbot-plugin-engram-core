@@ -65,16 +65,21 @@ def test_conversation_buffer_grace_and_cap():
     buf.feed({"channel_id": "g1", "chat_type": "group", "actor_id": "a", "content": "one"})
     clk.tick(1001)
     buf.flush_idle_now()
-    assert buf.buffered_channel_count() == 0, "sub-min channel must drop after grace"
-    assert len(flushed) == 0
+    # v1.76.16: a sub-min window is summarized at grace expiry, not discarded.
+    assert buf.buffered_channel_count() == 0, "sub-min channel must be released after grace"
+    assert len(flushed) == 1, "sub-min channel must be summarized, not dropped"
+    assert flushed[0].channel_id == "g1"
+    assert [ln.content for ln in flushed[0].lines] == ["one"], \
+        "the short window must keep its messages"
 
+    flushed.clear()
     clk.tick(1)
     for ch in ("g1", "g2", "g3"):
         buf.feed({"channel_id": ch, "chat_type": "group", "actor_id": "a", "content": "x"})
     assert buf.buffered_channel_count() == 2, "channel cap should evict oldest"
     buf.flush_all()
     assert {r.channel_id for r in flushed} == {"g2", "g3"}
-    print("conversation buffer grace + channel cap: OK")
+    print("conversation buffer grace-summarize + channel cap: OK")
 
 
 def test_write_op_and_source_purge():

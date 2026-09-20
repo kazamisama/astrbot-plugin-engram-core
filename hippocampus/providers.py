@@ -86,7 +86,8 @@ class ProxyEmbeddingProvider(EmbeddingProvider):
     coroutine results are driven to completion on a background loop so embed()
     stays a plain sync call even when invoked from an async event handler.
     """
-    def __init__(self, identity: str, fn, dim: int = 0) -> None:
+    def __init__(self, identity: str, fn, dim: int = 0,
+                 probe: bool = True) -> None:
         if not identity: raise ValueError("identity required")
         if not callable(fn): raise TypeError("fn must be callable")
         self._id = identity
@@ -97,8 +98,14 @@ class ProxyEmbeddingProvider(EmbeddingProvider):
         # here and failing would permanently drop this provider. Instead we
         # try once, but tolerate an empty/failed probe and resolve dim on the
         # first successful embed().
+        #
+        # v1.76.16: `probe=False` skips that one-shot probe entirely. The
+        # plugin passes it when AstrBot's event loop is running, because the
+        # probe executes during the plugin's synchronous __init__ -- i.e. with
+        # the host loop BLOCKED -- so it could only ever time out. Activation
+        # is decided later, on the host loop, by _activate_embedding_when_ready.
         self._dim = int(dim) if dim and dim > 0 else 0
-        if self._dim == 0:
+        if self._dim == 0 and probe:
             try:
                 sample = self._call("dim-probe")
                 if (isinstance(sample, list) and sample

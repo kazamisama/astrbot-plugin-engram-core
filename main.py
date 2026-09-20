@@ -150,7 +150,16 @@ class HippocampusStar(Star):
                         if diary_interval > 0:
                             interval = min(interval, max(5.0, diary_interval))
                     await _a.sleep(max(5.0, interval))
-                    convbuf = getattr(self._observer, "_conv_buffer", None)
+                    # v1.76.16: ensure_conv_buffer() also rehydrates any window
+                    # persisted before a reload, so a recovered conversation is
+                    # summarized even if that channel never speaks again.
+                    convbuf = None
+                    try:
+                        convbuf = self._observer.ensure_conv_buffer()
+                    except Exception as cbe:
+                        print("[hippocampus] conv buffer ensure error: "
+                              + repr(cbe))
+                        convbuf = getattr(self._observer, "_conv_buffer", None)
                     if convbuf is not None:
                         # v1.76.4 (M5): idle flush may trigger an LLM
                         # summary; run it off the event loop.
@@ -827,16 +836,52 @@ class HippocampusStar(Star):
 
     # ---------- lifecycle ----------
     async def terminate(self):
-        # Drain any buffered session-aggregate bursts before shutdown so
-        # the last in-memory batch is not lost. No-op when aggregation is
-        # disabled (the aggregator was never built).
+        # v1.76.16: NEVER do LLM work on the event loop from here.
+        #
+        # terminate() runs ON AstrBot's event loop, and the old
+        # `convbuf.flush_all()` therefore executed `_sink -> summarize -> LLM`
+        # synchronously right there. On the live bot that blocked the loop for
+        # ~49s -- caught by AstrBot's own diagnostic
+        # ("Event loop lag detected: 49.375s (threshold 15.000s)") and by three
+        # watchdog dumps ("Timeout (0:00:30)!") whose event-loop thread was
+        # parked in:
+        #   main.py terminate -> conversation_buffer.flush_all -> _flush_key
+        #     -> observe._sink -> summarizer.summarize -> _llm_summarize
+        #     -> LLMProvider.chat -> (bridge) -> host loop   <-- deadlock
+        # With the v1.76.16 host-loop bridge it is worse than slow: the bridge
+        # waits for the host loop, and the host loop is the thing blocked in
+        # terminate(), so it can only ever time out (observed:
+        # "summarizer llm error: host-loop call timed out after 50.0s").
+        #
+        # A 30-50s blocked loop cannot service the aiocqhttp WebSocket
+        # ping/handshake, so the API client drops and the next reply fails with
+        # `aiocqhttp.exceptions.ApiNotAvailable` -- the "messages never reached
+        # QQ" symptom. This bot reloads the plugin ~8x/day, i.e. one 50s
+        # outage window each time.
+        #
+        # The buffer is durable now (hippocampus/conv_buffer_store), so just
+        # snapshot it: the next startup restores the window and summarizes it
+        # off-loop, producing the same memory without the stall.
+        import asyncio as _a
         try:
+            persist = getattr(self._observer, "persist_conv_buffer", None)
+            if callable(persist):
+                persist()
+            else:
+                convbuf = getattr(self._observer, "_conv_buffer", None)
+                if convbuf is not None:
+                    print("[hippocampus] terminate: no durable conv-buffer "
+                          "store; skipping the shutdown LLM flush to keep the "
+                          "event loop free")
+            # The legacy session aggregator's sink calls service.observe()
+            # (encoder -> LLM). Keep it off the loop and bounded.
             agg = getattr(self._observer, "_aggregator", None)
             if agg is not None:
-                agg.flush_all()
-            convbuf = getattr(self._observer, "_conv_buffer", None)
-            if convbuf is not None:
-                convbuf.flush_all()
+                try:
+                    await _a.wait_for(_a.to_thread(agg.flush_all), timeout=20.0)
+                except Exception as e:
+                    print("[hippocampus] aggregator shutdown flush skipped: "
+                          + repr(e))
             task = getattr(self, "_idle_flush_task", None)
             if task is not None:
                 task.cancel()

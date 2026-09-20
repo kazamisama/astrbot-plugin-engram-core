@@ -171,7 +171,9 @@ _FIELDS: dict[str, _FieldSpec] = {
     "session_aggregate_enabled": _FieldSpec(bool, label_zh="启用会话聚合", label_en="Session aggregate enabled"),
     "session_aggregate_max_messages": _FieldSpec(int, (1, 100), label_zh="会话聚合最大条数", label_en="Session aggregate max messages"),
     "session_aggregate_idle_seconds": _FieldSpec(float, (0.0, 86400.0), label_zh="会话聚合静默秒数", label_en="Session aggregate idle seconds"),
-    "session_aggregate_min_chars": _FieldSpec(int, (1, 1000), label_zh="会话聚合最小字数", label_en="Session aggregate min chars"),
+    # v1.76.16: range was (1, 1000) while the MemoryConfig default is 0, so a
+    # config that (correctly) leaves it at 0 warned on every load.
+    "session_aggregate_min_chars": _FieldSpec(int, (0, 1000), label_zh="会话聚合最小字数", label_en="Session aggregate min chars"),
     # v1.17 B-1 conversation summarization
     "summary_mode_enabled": _FieldSpec(bool, label_zh="启用总结模式", label_en="Enable summary mode"),
     "per_message_ingest_debug": _FieldSpec(bool, label_zh="逐条入库(调试)", label_en="Per-message ingest (debug)"),
@@ -238,6 +240,13 @@ class ConfigManager:
         "provider_settings",
         "storage_settings",
         "memory_settings",
+        # v1.76.16: summary_settings was missing here, so AstrBot's nested
+        # object for the summary block was never hoisted and every field in it
+        # (summary_mode_enabled / *_idle_seconds / summary_min_messages /
+        # summary_fallback_enabled / ...) silently fell back to the
+        # MemoryConfig default. Anything the operator changed under "总结"
+        # in the WebUI was ignored.
+        "summary_settings",
         "backup_settings",
     )
 

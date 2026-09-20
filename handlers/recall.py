@@ -9,7 +9,14 @@ import asyncio
 # LOOP (fut.cancel() only lands at an await point and, cross-loop, may
 # never even be delivered). Bounding the await INSIDE the bridge is what
 # actually keeps the worker loop healthy.
-EMB_BRIDGE_TIMEOUT: float = 10.0
+#
+# v1.76.16: this MUST stay comfortably below InjectHandler._INJECT_HARD_TIMEOUT
+# (10.0s), otherwise the whole-injection cap fires first and the hook drops
+# the injection entirely (logged 59x as "auto inject timed out ... proceeding
+# WITHOUT injection") instead of taking the designed degradation path of
+# continuing with the FTS/keyword route only. At 10.0 the two were equal, so
+# the inner cap could never win.
+EMB_BRIDGE_TIMEOUT: float = 5.0
 
 
 async def emb_bridge_for_context(context, text: str,

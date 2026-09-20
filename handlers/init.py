@@ -20,7 +20,7 @@ from hippocampus import (MemoryService,
                          BackupManager)
 from hippocampus.config_manager import ConfigManager
 from hippocampus.i18n_backend import init as i18n_init
-from .recall import emb_bridge_for_context
+from .recall import emb_bridge_for_context, EMB_BRIDGE_TIMEOUT
 from .format import banner_text
 
 
@@ -38,9 +38,22 @@ class PluginInitializer:
         self.backup_manager: BackupManager | None = None
         self._backup_thread: threading.Thread | None = None
         self._backup_stop: threading.Event | None = None
+        # v1.76.16: set when the astrmock embedding activation had to be
+        # deferred to _activate_embedding_when_ready (see _install_bridges).
+        self._pending_emb_activation = False
 
     def initialize(self, config_dict: dict | None = None) -> None:
         cfg_dict = config_dict or {}
+        # v1.76.16: record AstrBot's own event loop BEFORE anything probes a
+        # host provider. The host embedding provider's aiohttp objects belong
+        # to this loop; awaiting them anywhere else hangs until the cap.
+        try:
+            from hippocampus._async_bridge import set_host_loop
+            set_host_loop(asyncio.get_running_loop())
+        except RuntimeError:
+            pass          # sync init path: no host loop to bind to
+        except Exception as exc:
+            print(f"[hippocampus] set_host_loop failed: {exc!r}")
         try:
             cfg_dict = self.context.get_config("hippocampus") or {}
         except Exception:
@@ -77,7 +90,7 @@ class PluginInitializer:
         emb_pid = getattr(cfg, "embedding_provider_id", "") or ""
         llm_pid = getattr(cfg, "llm_provider_id", "") or ""
 
-        async def _llm_bridge(system: str, user: str, **kw) -> str:
+        async def _llm_bridge_coro(system: str, user: str, **kw) -> str:
             try:
                 provider = None
                 if llm_pid:
@@ -107,9 +120,57 @@ class PluginInitializer:
                 print(f"[hippocampus] LLM bridge error: {e!r}")
                 return ""
 
-        async def _emb_bridge(text: str) -> list[float]:
-            return await emb_bridge_for_context(
-                self.context, text, provider_id=emb_pid)
+        def _llm_bridge(system: str, user: str, **kw) -> str:
+            """Sync LLM bridge; host loop first, worker loop as fallback.
+
+            v1.76.16: same root cause as the embedding bridge below. AstrBot's
+            chat provider also talks over an aiohttp session bound to AstrBot's
+            loop, so driving it from the private worker loop hung until the cap
+            -- the 12x "LLM bridge timed out after 45.0s" that made the
+            summarizer give up and (with summary_fallback_enabled off) discard
+            whole conversations instead of storing them.
+            """
+            from hippocampus._async_bridge import (DEFAULT_LLM_SYNC_TIMEOUT,
+                                                   call_on_host_loop,
+                                                   host_loop_usable, run_sync)
+            # Keep this below ProxyLLMProvider's own DEFAULT_LLM_SYNC_TIMEOUT
+            # caller cap so the provider's 45s inner bound surfaces first
+            # instead of racing the outer wait.
+            cap = max(5.0, DEFAULT_LLM_SYNC_TIMEOUT - 10.0)
+            if host_loop_usable():
+                return call_on_host_loop(
+                    _llm_bridge_coro(system=system, user=user, **kw),
+                    timeout=cap)
+            return run_sync(
+                _llm_bridge_coro(system=system, user=user, **kw),
+                timeout=cap)
+
+        def _emb_bridge_sync(text: str) -> list[float]:
+            """Sync embedding bridge (v1.76.16).
+
+            Prefer AstrBot's OWN loop. AstrBot's embedding provider wraps an
+            aiohttp ClientSession, and its connection objects belong to the
+            loop they were created on: awaiting them from our private worker
+            loop does not fail fast, it hangs until the caller's cap. That is
+            what made this bridge time out (10s at boot, 59x at runtime) and
+            left the plugin pinned to its 64-dim `hash` placeholder while the
+            store held 4096-dim vectors.
+
+            The worker-loop path is kept only for the cases where the host
+            loop genuinely cannot be used: the sync init path (no host loop),
+            or a call already ON the host loop, where blocking on the result
+            would deadlock the loop that has to run the coroutine.
+            """
+            from hippocampus._async_bridge import (call_on_host_loop,
+                                                   host_loop_usable, run_sync)
+            if host_loop_usable():
+                return call_on_host_loop(
+                    emb_bridge_for_context(self.context, text,
+                                           provider_id=emb_pid),
+                    timeout=EMB_BRIDGE_TIMEOUT)
+            return run_sync(
+                emb_bridge_for_context(self.context, text, provider_id=emb_pid),
+                timeout=EMB_BRIDGE_TIMEOUT)
 
         try:
             self.service.register_llm(
@@ -117,9 +178,17 @@ class PluginInitializer:
         except Exception as e:
             print(f"[hippocampus] register astrmock llm failed: {e!r}")
 
+        # v1.76.16: skip the one-shot dim probe when a host loop exists. The
+        # probe would run inside the plugin's synchronous __init__, i.e. with
+        # the host loop BLOCKED inside it, so it could only ever time out.
+        # Activation is decided after __init__ returns, on the host loop.
+        from hippocampus._async_bridge import get_host_loop
+        defer_activation = get_host_loop() is not None
+
         emb_provider = None
         try:
-            emb_provider = ProxyEmbeddingProvider("astrmock", _emb_bridge)
+            emb_provider = ProxyEmbeddingProvider(
+                "astrmock", _emb_bridge_sync, probe=not defer_activation)
             self.service.register_embedding("astrmock", emb_provider)
         except Exception as e:
             print(f"[hippocampus] register astrmock embedding failed: {e!r}")
@@ -138,8 +207,17 @@ class PluginInitializer:
         prev_rebuild = self.service.cfg.auto_rebuild_on_switch
         self.service.cfg.auto_rebuild_on_switch = False
         try:
-            if (self.service.cfg.embedding_name == "hash"
-                    and self.service.registry.has_embedding("astrmock")):
+            want_astrmock = (
+                self.service.cfg.embedding_name == "hash"
+                and self.service.registry.has_embedding("astrmock")
+                and emb_provider is not None)
+            if want_astrmock and defer_activation:
+                # v1.76.16: a running host loop means we are inside the
+                # plugin's synchronous __init__, with that loop blocked, so a
+                # probe here cannot succeed. Hand the decision to a task that
+                # runs once __init__ has returned.
+                self._pending_emb_activation = True
+            elif want_astrmock:
                 emb_ready = bool(
                     emb_provider is not None and getattr(emb_provider, "dim", 0) > 0)
                 if emb_ready:
@@ -181,10 +259,87 @@ class PluginInitializer:
                 loop = None
             if loop is not None:
                 loop.create_task(self.service.start())
+                # v1.76.16: __init__ is synchronous, so the host loop is
+                # blocked until it returns -- and the embedding probe can only
+                # answer once it is free. This task runs right after.
+                if getattr(self, "_pending_emb_activation", False):
+                    loop.create_task(self._activate_embedding_when_ready())
             else:
                 asyncio.run(self.service.start())
         except Exception as e:
             print(f"[hippocampus] start background task failed: {e!r}")
+
+    async def _activate_embedding_when_ready(self) -> None:
+        """Activate the host embedding provider once the host loop is free.
+
+        v1.76.16. Why this exists: the astrmock activation used to be a single
+        probe inside the plugin's synchronous __init__. At that moment AstrBot's
+        event loop is blocked inside __init__ itself, so awaiting the host
+        embedding provider could only ever time out -- and a failed probe
+        silently left the plugin on its 64-dim `hash` placeholder even though
+        the store held 4096-dim vectors from the host provider. The plugin then
+        stayed that way for the whole session (no retry), which is why vector
+        ("same meaning") recall could not see those memories.
+
+        Here we run as an asyncio task ON the host loop, so `await` genuinely
+        executes the provider's coroutine on the loop its objects belong to and
+        the probe can actually answer. Each attempt is bounded, and the
+        v1.76.4 guard is preserved: we only switch when the probe returns a
+        usable vector, so a non-working provider can never become the default.
+        """
+        svc = self.service
+        if svc is None:
+            return
+        cfg = svc.cfg
+        pid = getattr(cfg, "embedding_provider_id", "") or ""
+        delays = (0.5, 5.0, 20.0, 60.0)
+        for attempt, delay in enumerate(delays, start=1):
+            await asyncio.sleep(delay)
+            if not (cfg.embedding_name == "hash"
+                    and svc.registry.has_embedding("astrmock")):
+                return                       # operator pinned another provider
+            if svc.current_embedding() == "astrmock":
+                return                       # already active (e.g. /mem model)
+            try:
+                vec = await asyncio.wait_for(
+                    emb_bridge_for_context(self.context, "dim-probe",
+                                           provider_id=pid),
+                    timeout=EMB_BRIDGE_TIMEOUT + 5.0)
+            except asyncio.TimeoutError:
+                vec = []
+            except Exception as e:
+                print("[hippocampus] astrmock activation probe error: "
+                      + repr(e))
+                vec = []
+            if not vec:
+                if attempt < len(delays):
+                    continue
+                break
+            prev = cfg.auto_rebuild_on_switch
+            # Never rebuild here: set_embedding would re-embed the whole store
+            # synchronously, and doing that on the host loop would put us back
+            # on the worker-loop path we are fixing.
+            cfg.auto_rebuild_on_switch = False
+            try:
+                old = svc.current_embedding()
+                svc.set_embedding("astrmock")
+                legacy = svc.store.count_by_embedding_model(
+                    old, include_forgotten=False)
+                print("[hippocampus] astrmock embedding activated on the host "
+                      "loop (" + str(len(vec)) + "-dim, was " + old + ")"
+                      + ("; " + str(legacy) + " older vectors were not "
+                         "rebuilt. FTS recall still covers them; run /mem "
+                         "rebuild to restore vector recall." if legacy else ""))
+            except Exception as e:
+                print(f"[hippocampus] astrmock activation failed: {e!r}")
+            finally:
+                cfg.auto_rebuild_on_switch = prev
+            return
+        print("[hippocampus] astrmock embedding probe returned nothing after "
+              + str(len(delays)) + " attempts on the host loop; keeping "
+              + svc.current_embedding()
+              + ". Vector recall will only see vectors in that space "
+              "(keyword/FTS recall still covers everything).")
 
     def _register_agent_tools(self) -> None:
         """Register the v1.3+ agent tools with AstrBot. Real AstrBot

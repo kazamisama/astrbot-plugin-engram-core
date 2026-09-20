@@ -3,6 +3,144 @@
 
 ## [Unreleased]
 
+### Fixed
+- **v1.76.16 memory-recall repair (root cause of "记忆没有被正确召回")**:
+  - **`HippocampalStore.decay_pass` compounded the decay.** It multiplied the
+    *already-decayed* strength by `exp(-(now - anchor)/tau)`, where
+    `anchor = max(last_accessed, created_at)` and the decay never advances the
+    anchor. With the maintenance loop running every
+    `memory_decay_interval_seconds` (1800s) a memory anchored `N` sweeps back
+    lost `exp(-D*N²/2τ)` instead of `exp(-D*N/τ)` — one day of real age cost it
+    `exp(-48*age/τ)` — so strength hit 0.0 within ~2-3 days no matter how
+    important it was. Every row then fell below `tier_cold_strength_floor` and
+    was classified `cold`; because `tier_recall_include_cold` was false, cold
+    was excluded from normal recall, so the row was never `touch()`ed again,
+    its anchor never advanced, and it stayed at 0.0 permanently.
+    Measured on the affected live store: age 1.21d → strength 0.2410,
+    age 3.21d → 0.0000, `avg strength = 0.0151` with **391/398 engrams below
+    the cold floor**. Decay now uses the time elapsed since the *previous*
+    sweep (recorded in `hippo_meta['decay:last_pass_at']`), capped by the
+    engram's own age, so one day of sweeps costs exactly one day of decay. The
+    first pass on a store with no recorded sweep time keeps the original
+    age-based semantics (a brand-new DB still decays by real age once).
+    A one-shot repair script (`repair_decay_strength.py`) restores the
+    annihilated strengths to their correct Ebbinghaus envelope — see below.
+  - **`EMB_BRIDGE_TIMEOUT` equalled `InjectHandler._INJECT_HARD_TIMEOUT`
+    (both 10.0s)**, so the whole-injection cap always fired first and the hook
+    dropped the injection entirely (`auto inject timed out ... proceeding
+    WITHOUT injection`, logged 59×) instead of taking the designed degradation
+    path of continuing with the FTS/keyword route. Lowered to 5.0s.
+  - **`ConfigManager._GROUP_KEYS` was missing `summary_settings`.** AstrBot
+    writes that block as a nested object, so while it was absent from the
+    hoist list every field in it (`summary_mode_enabled`, `summary_min_messages`,
+    `summary_idle_seconds_*`, `summary_fallback_enabled`, …) silently fell back
+    to the `MemoryConfig` default and **any 总结 setting made in the WebUI was
+    ignored**. This also meant `summary_fallback_enabled` could not be turned
+    on, so a summarizer LLM timeout discarded the whole conversation
+    (`store_summary` returns None on empty text) instead of writing the
+    truncated-transcript fallback — 10 such drops were logged, the most recent
+    after the 16:03 reload, while the day produced 0 engrams from 283 captured
+    messages.
+  - `session_aggregate_min_chars` had the range `(1, 1000)` while its own
+    default is `0`, so a correctly-configured install warned on every load.
+  - `HippocampalStore.recent_for_session` / `recent_for_actor` ordered by a
+    float timestamp alone with no tiebreaker, so engrams written within the
+    same clock tick came back in an arbitrary order — `tests/_smoke_v66`
+    flaked roughly 1 run in 25 on `assert sess[0].id == e3.id`. Added a
+    `rowid DESC` tiebreak (insertion order).
+  - **`ConversationBuffer` discarded short conversation windows.** When a
+    channel went idle below `summary_min_messages` and stayed silent past
+    `summary_min_messages_grace_seconds`, `_settle_idle_buf` called
+    `self._bufs.pop(ch, None)` — the window was thrown away, never summarized,
+    never stored. `summary_min_messages` is a *batching* hint (how long a short
+    window may wait to be merged with more messages), not a retention policy,
+    so the grace path now **summarizes** the window instead of dropping it.
+    Nothing is discarded there any more: a channel either reaches the minimum
+    and flushes on idle, or it flushes at grace expiry. Set
+    `summary_min_messages` to 1 to skip the wait entirely. The grace-expired
+    flush is still picked up within ~30s by the idle-flush loop in `main.py`.
+  - **`ConversationBuffer` was pure memory, so a plugin reload discarded every
+    open window.** AstrBot reloaded the plugin 7 times in one day on the live
+    bot; the 17:58 reload dropped a window whose last message was 17:54 — under
+    `summary_min_messages`, not idle long enough yet, and `terminate()`'s
+    `flush_all()` did not get to run. The messages were already captured into
+    `daily_messages`, but they never became long-term memory. Now:
+    - `ConversationBuffer.snapshot()` / `.restore()` give an I/O-free
+      serializable view (the buffer module still owns no storage);
+      `hippocampus/conv_buffer_store.py` writes it atomically (temp file +
+      `os.replace`; deliberately no `fsync` — this protects against a reload,
+      not a power cut) to `data/conv_buffer.json`, beside the DB.
+    - `ObserveHandler` snapshots after every feed *and* after every flush, so a
+      window that was already summarized cannot come back from disk and be
+      summarized twice, and rehydrates on startup. Windows whose last message is
+      older than 14 days are skipped, so a stale file cannot resurface as fresh
+      memory.
+    - The idle-flush loop calls `ensure_conv_buffer()`, so a recovered window is
+      summarized even if that channel never speaks again.
+    - Every failure is logged and swallowed: persistence must never take the
+      ingest path down.
+  - **The host embedding provider was never actually activated**, so vector
+    ("same meaning") recall could not see the store. AstrBot is configured with
+    a real embedding provider (SiliconFlow `Qwen/Qwen3-VL-Embedding-8B`,
+    4096-dim) and 396 stored engrams carry its vectors — but the plugin only
+    switches to it ("astrmock", the proxy to the host provider) if a one-shot
+    probe succeeds, and keeps its internal 64-dim `hash` placeholder otherwise,
+    with no retry. Two compounding causes:
+    - `hippocampus/_async_bridge.py` `run_sync()` drives every coroutine on a
+      *private* worker loop. AstrBot's embedding provider wraps an aiohttp
+      ClientSession whose connections belong to AstrBot's loop, so awaiting
+      them from the worker loop does not fail fast — it hangs to the caller's
+      cap. New `set_host_loop()` / `host_loop_usable()` / `call_on_host_loop()`
+      schedule the call onto the host loop instead, and refuse (falling back to
+      `run_sync`) when there is no host loop or when the caller *is* the host
+      loop thread, where blocking would deadlock the loop that has to run the
+      coroutine.
+    - The probe ran inside the plugin's **synchronous** `__init__`, i.e. with
+      the host loop blocked inside `__init__` itself, so it could only ever time
+      out. Activation is now deferred to `_activate_embedding_when_ready()`, an
+      asyncio task that runs once `__init__` has returned, with bounded retries
+      (0.5s/5s/20s/60s). The v1.76.4 guard is preserved — it only switches when
+      the probe returns a usable vector — and `auto_rebuild_on_switch` stays
+      off so activation never re-embeds the store.
+    - `ProxyEmbeddingProvider` gained `probe=False` for that path, so the
+      blocking one-shot probe is skipped entirely at init; `dim` still resolves
+      lazily on the first successful `embed()`.
+    - The **LLM bridge had the identical defect** and got the same routing: it
+      also drives an aiohttp-backed host provider, and its 12x
+      "LLM bridge timed out after 45.0s" is what made the summarizer give up
+      and discard whole conversations. It now prefers the host loop too, with
+      its caller cap kept below `ProxyLLMProvider`'s 60s cap so the provider's
+      own 45s bound surfaces first.
+    Observable effect of the old behaviour: at boot the log said "astrmock
+    embedding probe returned no usable vector; keeping configured embedding
+    hash", and 59 runtime recalls logged `emb bridge get_embedding timed out`.
+    The downgrade is not theoretical — the store holds 64-dim `hash` rows
+    written on 2026-09-14 next to the 4096-dim ones, which is why recall could
+    not match them.
+  - **`terminate()` blocked AstrBot's event loop for ~49s on every plugin
+    reload — the cause of replies never reaching QQ.** `terminate()` runs ON
+    AstrBot's event loop and called `convbuf.flush_all()`, i.e.
+    `_sink -> summarize -> LLM` inline. Caught two independent ways in the live
+    logs: AstrBot's own diagnostic ("Event loop lag detected: 49.375s
+    (threshold 15.000s)", logged 0.4s before the reload finished) and three
+    watchdog dumps ("Timeout (0:00:30)!") whose event-loop thread was parked in
+    `main.py terminate -> conversation_buffer.flush_all -> _flush_key ->
+    observe._sink -> summarizer.summarize -> _llm_summarize -> LLMProvider.chat`.
+    With the v1.76.16 host-loop bridge it became a hard self-deadlock — the
+    bridge waits for the host loop, and the host loop is the thing blocked in
+    `terminate()`; observed as "summarizer llm error: host-loop call timed out
+    after 50.0s". A 30-50s blocked loop cannot service the aiocqhttp WebSocket
+    ping/handshake, so the API client drops and the next reply raises
+    `aiocqhttp.exceptions.ApiNotAvailable` (6 of them in a 15s burst at
+    16:58:25-40, plus a backend-restart variant at 14:09 with
+    `ConnectionResetError [WinError 995]` + `hypercorn LifespanFailureError`).
+    This bot reloads the plugin ~8×/day, so that was a ~50s outage window each
+    time. `terminate()` now only snapshots the conversation buffer (durable as
+    of v1.76.16) and lets the next startup summarize it off-loop; the legacy
+    session aggregator's flush runs via `asyncio.to_thread` with a 20s bound.
+  - New regression test: `tests/_smoke_v86.py`.
+  - Version bump: 1.76.15 → 1.76.16.
+
 ### Changed
 - **v1.76.15 audit fixes (memory + event-loop hardening)**:
   - Command dispatch and Dashboard page-API handlers now run heavy sync work
