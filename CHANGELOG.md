@@ -4,6 +4,35 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.19: the first memory after every restart was written into the wrong
+  vector space (and stayed invisible to vector recall).** `vector_search`
+  filters by `embedding_model` (storage.py), so a row labelled with anything
+  other than the active provider is unreachable by the vector route and only
+  findable by keyword/FTS. The conversation buffer restored from disk is
+  flushed within a minute or two of the load, while activation of the host
+  embedding provider runs on a retry schedule that can take 10–180s (AstrBot
+  instantiates providers lazily, and the probes run while the loop is busy
+  loading ~20 plugins). So the first new engram after every restart landed in
+  the internal 64-dim `hash` placeholder space.
+
+  Observed live on 2026-09-21 (v1.76.18 running):
+  - `00:12:48` load → `00:13:18` restored the buffered window
+  - `00:14:27` the summarizer **succeeded** — the new diagnostics reported
+    `LLM bridge slow: 15.4s provider=deepseek/deepseek-flash model=deepseek-flash
+    sys_chars=185 usr_chars=2108` — and the engram was written with
+    `embedding_model='hash'`, a 64-dim vector, `tier='hot'`, `persona_id='mortis'`
+  - `00:16:55` activation finally completed and the plugin itself logged
+    "2 older vectors were not rebuilt" — it had counted the fresh memory as a
+    stale vector
+
+  The memory was real and well-formed (topics included "记忆召回测试"), but
+  vector recall could never see it. Fix: `MemoryService.reembed_stale()` selects
+  the mismatched ids **in SQL** (never materialising the table, unlike
+  `rebuild_embeddings()` which re-embeds every row) and re-embeds them under the
+  active provider; `_activate_embedding_when_ready()` now calls it in a
+  plugin-owned daemon thread after a successful switch, so it neither blocks the
+  event loop nor is tied to it. This also repairs the historical leftovers.
+
 - **v1.76.18: the recall path ignored the configured score weights.** The
   injection path (`handlers/event/inject.py` → `MemoryService.recall` →
   `PatternCompleter.recall`) hardcoded

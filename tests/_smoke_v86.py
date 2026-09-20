@@ -811,6 +811,65 @@ def test_recall_uses_the_configured_score_weights():
             pass
 
 
+def test_reembed_stale_repairs_mismatched_vectors():
+    """Rows left on a previous provider must be re-embeddable.
+
+    `vector_search` filters by embedding_model, so a row labelled with an older
+    provider is invisible to vector recall and reachable only by FTS. Every
+    restart used to leave one behind: the buffer restored from disk flushes
+    within a minute or two of the load, while activation can take 10-180s, so
+    the first new memory landed in the internal `hash` placeholder space
+    (observed live: the 00:14:27 engram was hash/64-dim).
+    """
+    import tempfile
+
+    from hippocampus import MemoryConfig, MemoryService
+    from hippocampus.types import Engram
+
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        cfg = MemoryConfig(sqlite_path=db, embedding_name="hash", llm_name="rule")
+        cfg.memory_decay_enabled = False
+        svc = MemoryService(cfg)
+
+        # one row on the active ('hash') provider, one left on an old one
+        ok = Engram(content="already current", summary="already current",
+                    actor_id="u", embedding_model="hash",
+                    embedding=[0.1] * 64)
+        stale = Engram(content="left on an old provider",
+                       summary="left on an old provider", actor_id="u",
+                       embedding_model="astrmock", embedding=[0.2] * 4096)
+        svc.store.upsert(ok)
+        svc.store.upsert(stale)
+
+        assert svc.store.count_by_embedding_model("astrmock") == 1
+        n = svc.reembed_stale(limit=10)
+        assert n == 1, f"expected 1 re-embedded row, got {n}"
+        assert svc.store.count_by_embedding_model("astrmock") == 0, \
+            "the stale row must be relabelled to the active provider"
+        got = svc.store.get(ok.id)
+        assert (got.embedding_model or "") == "hash", \
+            "an already-current row must not be touched"
+
+        # and it is now visible to the vector route's model filter
+        hits = svc.store.vector_search([0.1] * 64, k=10,
+                                       embedding_model="hash")
+        assert any(e.id == stale.id for e, _ in hits), \
+            "the repaired row must be reachable by the vector route"
+        print("  reembed_stale() repairs rows left on an older provider "
+              "(and leaves current rows alone): OK")
+        try:
+            svc.close()
+        except Exception:
+            pass
+    finally:
+        try:
+            os.unlink(db)
+        except Exception:
+            pass
+
+
 def main():
     test_sweeps_do_not_compound()
     test_sweep_time_is_recorded()
@@ -821,6 +880,7 @@ def main():
     test_conversation_buffer_survives_a_reload()
     test_buffer_flush_updates_the_snapshot()
     test_recall_uses_the_configured_score_weights()
+    test_reembed_stale_repairs_mismatched_vectors()
     test_host_loop_routing()
     test_proxy_embedding_probe_flag()
     test_star_accepts_the_host_config_kwarg()

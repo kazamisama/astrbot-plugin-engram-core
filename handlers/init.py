@@ -437,6 +437,16 @@ class PluginInitializer:
                       + ("; " + str(legacy) + " older vectors were not "
                          "rebuilt. FTS recall still covers them; run /mem "
                          "rebuild to restore vector recall." if legacy else ""))
+                # v1.76.19: actually repair them instead of only telling the
+                # operator to. A row labelled with the previous provider is
+                # invisible to the vector route (it filters by embedding_model)
+                # and every restart leaves one behind: the buffer restored from
+                # disk flushes within a minute or two, while activation can take
+                # 10-180s, so the first new memory lands in the hash placeholder
+                # space. Observed live: the 00:14:27 engram was stored as
+                # hash/64-dim and activation completed at 00:16:55.
+                if legacy > 0:
+                    self._start_stale_reembed(legacy)
             except Exception as e:
                 print(f"[hippocampus] astrmock activation failed: {e!r}")
             finally:
@@ -447,6 +457,33 @@ class PluginInitializer:
               + svc.current_embedding()
               + ". Vector recall will only see vectors in that space "
               "(keyword/FTS recall still covers everything).")
+
+    def _start_stale_reembed(self, expected: int) -> None:
+        """Re-embed rows left on the previous provider, off the event loop.
+
+        A plugin-owned daemon thread, not asyncio.to_thread: the re-embed is
+        a sequence of provider calls that can take minutes for a large
+        mismatch, and it must neither block nor be tied to the loop.
+        """
+        svc = self.service
+        if svc is None:
+            return
+
+        def _run() -> None:
+            try:
+                n = svc.reembed_stale(limit=1000)
+                print("[hippocampus] re-embedded " + str(n)
+                      + " engram(s) that were still on the previous embedding "
+                      "provider" + (" (of ~" + str(expected) + ")"
+                                    if expected else "") + ".")
+            except Exception as e:
+                print("[hippocampus] stale re-embed failed: " + repr(e))
+
+        try:
+            threading.Thread(target=_run, name="hippocampus-reembed",
+                             daemon=True).start()
+        except Exception as e:
+            print("[hippocampus] stale re-embed thread failed: " + repr(e))
 
     def _register_agent_tools(self) -> None:
         """Register the v1.3+ agent tools with AstrBot. Real AstrBot

@@ -276,6 +276,57 @@ class MemoryService:
                 continue
         return n
 
+    def reembed_stale(self, limit: int = 500) -> int:
+        """Re-embed engrams left on a previous embedding provider.
+
+        v1.76.19. `vector_search` filters by `embedding_model`, so a row whose
+        label is not the active provider's is **invisible to vector recall**
+        and reachable by keyword/FTS only.
+
+        That is not hypothetical: the conversation buffer restored at startup
+        is flushed within a minute or two of the load, while the host
+        embedding provider is activated on a retry schedule that can take
+        10-180 s (AstrBot instantiates providers lazily and the plugin's probes
+        run with the loop busy). The first memory written after every restart
+        therefore lands in the internal `hash` placeholder space. Observed
+        live on 2026-09-21: the 00:14:27 engram was stored as hash/64-dim,
+        activation completed at 00:16:55, and the plugin itself logged
+        "2 older vectors were not rebuilt".
+
+        Unlike `rebuild_embeddings()` -- which re-embeds EVERY row -- this
+        touches only the mismatched ones, and the ids are selected in SQL so
+        the whole table (embeddings included) is never materialized.
+        """
+        target = self._current_embedding_name
+        try:
+            with self.store._lock:
+                rows = self.store._conn.execute(
+                    "SELECT id FROM engrams "
+                    "WHERE COALESCE(embedding_model, '') != ? "
+                    "  AND COALESCE(forgotten_at, 0.0) = 0.0 "
+                    "LIMIT ?", (target, max(1, int(limit)))).fetchall()
+        except Exception as ex:
+            print("[hippocampus] stale re-embed select failed: " + repr(ex))
+            return 0
+        n = 0
+        for r in rows:
+            try:
+                e = self.store.get(r["id"])
+                if e is None:
+                    continue
+                vec = self.embedder.embed(e.content or "")
+                if not vec:
+                    continue
+                e.embedding = vec
+                e.embedding_model = target
+                self.store.upsert(e)
+                n += 1
+            except Exception:
+                continue
+        if n:
+            self._invalidate_search_cache()
+        return n
+
     # ---------- observe ----------
     def observe(self, *, session_id: str, actor_id: str, platform: str,
                 channel_id: str, content: str, persona_id: str = "",
