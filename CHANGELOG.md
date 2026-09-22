@@ -4,6 +4,48 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.24: forgetting only touched `engrams`, so a "forgotten" memory stayed
+  fully readable — and came back after a `/reset`.** The same text also lives
+  in stores with **no forgetting concept at all**. Measured live on 2026-09-22,
+  immediately after a dashboard soft-forget of an engram about a skirt:
+
+  ```
+  graph_entries_v2  '水手服' 82 rows   '深蓝' 82   '一寸' 208   '留白' 164
+  memory_sources    '一寸'   10 rows   '水手服' 3   '深蓝' 3
+  diary_chunks      '一寸'    1 row
+  ```
+
+  None of those tables has a `forgotten_at` column. Observed consequence:
+  `/reset` at `21:44:22`, the same question at `21:44:28`, the identical text
+  back at `21:44:36` — six seconds later, with the engram already forgotten.
+  Forgetting was scoped to one table and nothing else was ever cleaned, which
+  is why clearing never held: each pass removed one layer and the text survived
+  in the next.
+
+  Fix: `HippocampalStore.soft_forget()` now cascades through the new
+  `_cascade_derived()`, deleting the `graph_entries_v2` rows (plus their FTS and
+  node-link rows and the `graph_edge_memories_v2` ownership links) and the
+  `memory_sources` row for that engram. Both are keyed by the engram id, so the
+  cascade is exact.
+
+  The cascade lives **in the store** — the single choke point every forget path
+  passes through — rather than in each caller. Five call sites (WebUI memory
+  page, WebUI diary page, `batch_delete_engrams`, the LLM tool, and
+  consolidation) all called `soft_forget` and none of them cleaned anything;
+  "the caller must remember to cascade" is precisely the assumption that
+  produced the bug. `diary_chunks` is deliberately **not** touched: its
+  `diary_id` has not been verified to be an engram id, and guessing would
+  delete the wrong rows.
+
+- **v1.76.24: `reclassify_all` wrote an epoch into `tier` for every forgotten
+  engram.** The 11-positional-argument UPDATE passed `now` where the first
+  placeholder — the forgotten branch,
+  `WHEN COALESCE(forgotten_at,0.0) > 0.0 THEN ?` — needs `COLD`. Every
+  soft-forgotten engram therefore got `tier = <epoch float>`, all sharing one
+  value and rewritten on every sweep. Live cross-tab: `forgotten_at > 0` ×
+  bogus tier = **18 of 19**. One-token fix; `tests/_smoke_v90.py` asserts a
+  forgotten engram lands on `'cold'` and that the value is not numeric.
+
 - **v1.76.23: `reembed_stale()` could never repair a vectorless row.** The
   selector matched on `embedding_model != target` **only**:
 

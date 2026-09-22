@@ -627,8 +627,69 @@ class HippocampalStore:
                 killed += 1
         return killed
 
+    def _cascade_derived(self, eid: str) -> dict:
+        """Delete rows DERIVED from an engram when the engram is forgotten.
+
+        v1.76.24: forgetting used to touch only ``engrams.forgotten_at``.
+        The same text also lives in stores that have **no forgetting concept
+        at all**, so a "forgotten" memory stayed fully readable. Measured
+        live on 2026-09-22, immediately after an engram about a skirt had
+        been soft-forgotten through the dashboard:
+
+            graph_entries_v2  '水手服' 82 rows   '深蓝' 82   '一寸' 208
+            memory_sources    '一寸'   10 rows   '水手服' 3
+
+        Observed consequence: ``/reset`` at 21:44:22, the user asked the same
+        thing at 21:44:28, and the identical text came back at 21:44:36 --
+        six seconds later, with the engram already forgotten. Forgetting was
+        scoped to one table and nothing else was ever cleaned.
+
+        Both stores here are keyed by the engram id (``graph_entries_v2.
+        source_memory_id``, ``memory_sources.memory_id``), so this cascade is
+        exact. It lives in the store -- the single choke point every forget
+        path goes through -- rather than in each caller, because "the caller
+        must remember to cascade" is exactly the assumption that produced the
+        bug: five call sites (WebUI memory page, WebUI diary page,
+        batch_delete, the LLM tool, and consolidation) all called
+        ``soft_forget`` and none of them cleaned anything.
+
+        ``diary_chunks`` is deliberately NOT touched: its ``diary_id`` has not
+        been verified to be an engram id, and guessing would delete the wrong
+        rows.
+        """
+        stats = {"memory_sources": 0, "graph_entries": 0}
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM memory_sources WHERE memory_id=?", (eid,))
+                stats["memory_sources"] = int(cur.rowcount or 0)
+                rows = self._conn.execute(
+                    "SELECT id FROM graph_entries_v2 WHERE source_memory_id=?",
+                    (eid,)).fetchall()
+                ids = [int(r[0]) for r in rows]
+                for gid in ids:
+                    self._conn.execute(
+                        "DELETE FROM graph_entries_v2_fts WHERE entry_id=?", (gid,))
+                    self._conn.execute(
+                        "DELETE FROM graph_entry_nodes_v2 WHERE entry_id=?", (gid,))
+                if ids:
+                    ph = ",".join("?" * len(ids))
+                    self._conn.execute(
+                        "DELETE FROM graph_entries_v2 WHERE id IN (%s)" % ph, ids)
+                self._conn.execute(
+                    "DELETE FROM graph_edge_memories_v2 WHERE source_memory_id=?", (eid,))
+                stats["graph_entries"] = len(ids)
+        except Exception as ex:
+            print("[hippocampus] derived cascade error: " + repr(ex))
+        return stats
+
     def soft_forget(self, eid: str) -> bool:
-        """Mark an engram forgotten (forgotten_at=now) but keep the row."""
+        """Mark an engram forgotten (forgotten_at=now) but keep the row.
+
+        v1.76.24: also cascades to the rows derived from it (see
+        ``_cascade_derived``). Marking the engram alone left the same text
+        readable in the graph and in the retained source transcript.
+        """
         import time
         e = self.get(eid)
         if e is None:
@@ -638,6 +699,7 @@ class HippocampalStore:
         e.forgotten_at = time.time()
         e.strength = 0.0
         self.upsert(e)
+        self._cascade_derived(eid)
         return True
 
     def restore(self, eid: str, *, strength: float = 0.1) -> bool:

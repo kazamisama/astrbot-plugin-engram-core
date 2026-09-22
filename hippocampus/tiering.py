@@ -111,9 +111,19 @@ class TieringEngine:
         try:
             with self._store._lock, self._store._conn:
                 before = self._store._conn.total_changes
+                # v1.76.24: the FIRST placeholder belongs to the forgotten
+                # branch (`WHEN COALESCE(forgotten_at,0.0) > 0.0 THEN ?`) and
+                # must receive COLD. It received `now` instead, so every
+                # soft-forgotten engram got `tier = <epoch float>` -- and
+                # because `now` is computed once per sweep, all of them shared
+                # one value and it was rewritten on every sweep. Measured live
+                # on 2026-09-22:
+                #     'cold' n=374   'hot' n=42   'warm' n=6
+                #     '1790078743.84863' n=18   <- all forgotten rows
+                # Cross-tab: forgotten_at>0 x bogus-tier = 18 of 19.
                 self._store._conn.execute(
                     "UPDATE engrams SET tier = " + tier_expr,
-                    (now, cold_floor, COLD, now, hot_age, hot_str, HOT,
+                    (COLD, cold_floor, COLD, now, hot_age, hot_str, HOT,
                      now, warm_age, WARM, COLD))
                 changed = int(self._store._conn.total_changes) - int(before)
                 rows = self._store._conn.execute(
