@@ -4,6 +4,52 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.26: a memory forgotten mid-session kept being injected — working
+  memory was the one merge point that never filtered `forgotten_at`, and it
+  prepends at score 1.0, ahead of every route that does.**
+
+  Measured live on 2026-09-22, with the outgoing prompt captured on the wire:
+
+  ```
+  851db5a64b1f4f33   created 22:49:12   soft-forgotten 23:23:25
+  84fa5c19353946c8   created 23:20:49   soft-forgotten 23:23:17
+  request at 23:32:33  ->  both still injected, as entries 1 and 2
+  ```
+
+  Nine minutes after the forget, both were still the **first two** lines of the
+  `[长期记忆]` block. Neither text existed anywhere else in the store (one row
+  each, checked by content prefix *and* by substring), and the derived stores
+  were already empty — v1.76.24/v1.76.25 were doing their job.
+
+  `WorkingMemory` buffers the `Engram` **object** handed to it at observation
+  time and `snapshot()` returns those same objects; it never re-reads the
+  store, so `forgotten_at` on the copy stays 0 forever. `recall()` then
+  prepended that cell with `scores = [1.0] * head_n + ...`, i.e. at the top of
+  the injected list, while all four retrieval routes (vector / fts / graph /
+  spread / atom) do filter forgotten rows. Three consequences:
+
+  - a mid-session forget had **no effect** until `working_memory_capacity` (32)
+    newer memories pushed the row out or `working_memory_idle_seconds` (24h)
+    expired the cell — and `drain()` has no production caller at all;
+  - an engram **edited** from the dashboard injected its pre-edit text;
+  - a **hard-deleted** engram was still injected.
+
+  `recall()` now re-reads every buffered item from the store before prepending
+  (`_refresh_working_head`), dropping rows that are gone or forgotten and
+  injecting the current row otherwise. The refresh runs *before* the
+  persona/scope partition filters so those filters also see current values.
+  Cost is one point lookup per item, and `head` is capped by `cue.k`.
+
+  `tests/_smoke_v91.py`: 13 checks over 4 tests. Load-bearing verified by
+  disabling the call — the suite then prints `after forget: [<target>, ...]`,
+  injects `'OLD text that was buffered'` after an edit, and still injects a
+  hard-deleted row (5 failures, exit 1). 81/81 green.
+
+  This is the second, independent cause of the `/reset`-then-same-answer
+  symptom: the engram sat in working memory, which no store cascade can reach.
+  Restarting AstrBot clears that buffer, which is why the bug looked
+  intermittent and why fixing the cascade alone did not make forgetting stick.
+
 - **v1.76.25: the v1.76.24 cascade was still incomplete — four more stores held
   the same text, one of them injected into the prompt every single turn.**
 

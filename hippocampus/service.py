@@ -1299,6 +1299,31 @@ class MemoryService:
         with self._recall_cache_lock:
             self._recall_cache.clear()
 
+    def _refresh_working_head(self, head: list[Engram]) -> list[Engram]:
+        """Re-read working-memory items from the store, dropping dead ones.
+
+        v1.76.26. ``WorkingMemory`` buffers the Engram object it was handed at
+        observation time and ``snapshot()`` returns those same objects, so a
+        buffered engram never learns that it was forgotten, restored, edited
+        or hard-deleted while it sat there. Returning the store's CURRENT row
+        instead of the buffer's copy keeps the injected block truthful; a
+        stale copy would otherwise re-inject a memory the user had already
+        removed. Cost is one point lookup per item, and ``head`` is capped by
+        ``cue.k``.
+        """
+        out: list[Engram] = []
+        for e in head:
+            try:
+                cur = self.store.get(e.id)
+            except Exception:
+                cur = None
+            if cur is None:
+                continue
+            if float(getattr(cur, "forgotten_at", 0.0) or 0.0) > 0.0:
+                continue
+            out.append(cur)
+        return out
+
     def recall(self, cue: Cue) -> RecallResult:
         _ckey = self._recall_cache_key(cue)
         _cached = self._recall_cache_get(_ckey)
@@ -1312,6 +1337,23 @@ class MemoryService:
         wm = self.working.snapshot(wm_key)
         if wm:
             head = wm[-cue.k:]
+            # v1.76.26: working memory was the ONE merge point that never
+            # filtered forgotten rows. `snapshot()` hands back the in-process
+            # Engram object captured at observation time and never re-reads
+            # the store, so its `forgotten_at` stays 0 forever; the block
+            # below then prepends it with score 1.0, i.e. at the TOP of the
+            # injected list, ahead of the four retrieval routes that all do
+            # filter correctly. A memory forgotten mid-session therefore kept
+            # being injected until `working_memory_capacity` (32) newer
+            # memories pushed it out, or `working_memory_idle_seconds`
+            # (24h) expired the cell. Measured live 2026-09-22: engrams
+            # created 22:49 and 23:20 were soft-forgotten at 23:23 and were
+            # still mem1/mem2 of the injected block at 23:32, nine minutes
+            # later, with the engram already gone from every derived store.
+            # Refresh BEFORE the partition filters below so those filters
+            # also see current values (this additionally stops an edited
+            # memory from injecting its pre-edit text).
+            head = self._refresh_working_head(head)
             # v1.76.4: working memory is channel-wide, so apply the same
             # persona partition as the completer before prepending. Without
             # this, enabling group channel aliases (M4) would leak another
