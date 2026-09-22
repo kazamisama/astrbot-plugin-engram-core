@@ -156,10 +156,84 @@ def test_tier_of_forgotten_is_cold():
     svc.store.close()
 
 
+def test_forget_cascades_v17625_stores():
+    banner("v1.76.25: diary_chunks / relations / llm_relations / orphan nodes too")
+    tmp = tempfile.mkdtemp()
+    svc = _svc(tmp, "d.db")
+    c = svc.store._conn
+    for ddl in (
+        "CREATE TABLE IF NOT EXISTS diary_chunks (id INTEGER PRIMARY KEY, "
+        "diary_id TEXT, channel_id TEXT, seq INTEGER, text TEXT, embedding TEXT, "
+        "embedding_model TEXT, ts_start REAL, ts_end REAL, created_at TEXT, "
+        "persona_id TEXT, scope_id TEXT)",
+        "CREATE TABLE IF NOT EXISTS relations (id INTEGER PRIMARY KEY, "
+        "subject_id TEXT, predicate TEXT, object_id TEXT, source_engram_id TEXT, "
+        "confidence REAL, created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS llm_relations (id INTEGER PRIMARY KEY, "
+        "subject TEXT, predicate TEXT, object TEXT, confidence REAL, "
+        "actor_id TEXT, channel_id TEXT, source_engram_id TEXT)",
+    ):
+        c.execute(ddl)
+    c.commit()
+
+    a = Engram(content="t", summary="t", actor_id="u", strength=1.0)
+    b = Engram(content="b", summary="b", actor_id="u", strength=1.0)
+    svc.store.upsert(a)
+    svc.store.upsert(b)
+    _add_graph_row(svc, a.id, "fact-a")
+    _add_graph_row(svc, b.id, "fact-b")
+    # a node attached ONLY to a's entry -> must be cleaned up as an orphan
+    c.execute("INSERT INTO graph_nodes_v2(node_key, node_type, node_value, "
+              "canonical_value, metadata, created_at, updated_at) "
+              "VALUES(?,?,?,?,?,?,?)",
+              ("nk-a", "entity", "水手服", "水手服", "{}", "2026-01-01", "2026-01-01"))
+    node_a = c.execute("SELECT id FROM graph_nodes_v2 WHERE node_key='nk-a'").fetchone()[0]
+    entry_a = c.execute("SELECT id FROM graph_entries_v2 WHERE source_memory_id=?",
+                        (a.id,)).fetchone()[0]
+    c.execute("INSERT INTO graph_entry_nodes_v2(entry_id, node_id) VALUES(?,?)",
+              (entry_a, node_a))
+    # a node shared with b's entry -> must SURVIVE
+    c.execute("INSERT INTO graph_nodes_v2(node_key, node_type, node_value, "
+              "canonical_value, metadata, created_at, updated_at) "
+              "VALUES(?,?,?,?,?,?,?)",
+              ("nk-shared", "entity", "shared", "shared", "{}", "2026-01-01", "2026-01-01"))
+    node_s = c.execute("SELECT id FROM graph_nodes_v2 WHERE node_key='nk-shared'").fetchone()[0]
+    entry_b = c.execute("SELECT id FROM graph_entries_v2 WHERE source_memory_id=?",
+                        (b.id,)).fetchone()[0]
+    c.execute("INSERT INTO graph_entry_nodes_v2(entry_id, node_id) VALUES(?,?)", (entry_a, node_s))
+    c.execute("INSERT INTO graph_entry_nodes_v2(entry_id, node_id) VALUES(?,?)", (entry_b, node_s))
+    c.execute("INSERT INTO diary_chunks(diary_id, text) VALUES(?,?)", (a.id, "一寸留白"))
+    c.execute("INSERT INTO diary_chunks(diary_id, text) VALUES(?,?)", (b.id, "bystander diary"))
+    c.execute("INSERT INTO relations(subject_id, predicate, object_id, source_engram_id) "
+              "VALUES('s','一寸','o',?)", (a.id,))
+    c.execute("INSERT INTO llm_relations(subject, predicate, object, source_engram_id) "
+              "VALUES('s','一寸','水手服',?)", (a.id,))
+    c.commit()
+
+    svc.store.soft_forget(a.id)
+    st = {
+        "diary_a": c.execute("SELECT COUNT(*) FROM diary_chunks WHERE diary_id=?", (a.id,)).fetchone()[0],
+        "diary_b": c.execute("SELECT COUNT(*) FROM diary_chunks WHERE diary_id=?", (b.id,)).fetchone()[0],
+        "rel": c.execute("SELECT COUNT(*) FROM relations WHERE source_engram_id=?", (a.id,)).fetchone()[0],
+        "llmrel": c.execute("SELECT COUNT(*) FROM llm_relations WHERE source_engram_id=?", (a.id,)).fetchone()[0],
+        "node_a": c.execute("SELECT COUNT(*) FROM graph_nodes_v2 WHERE id=?", (node_a,)).fetchone()[0],
+        "node_shared": c.execute("SELECT COUNT(*) FROM graph_nodes_v2 WHERE id=?", (node_s,)).fetchone()[0],
+    }
+    print("  after forget: %s" % st)
+    check(st["diary_a"] == 0, "diary_chunks for the forgotten engram is GONE")
+    check(st["diary_b"] == 1, "the OTHER engram's diary_chunks row is untouched")
+    check(st["rel"] == 0, "relations rows for it are GONE")
+    check(st["llmrel"] == 0, "llm_relations rows for it are GONE")
+    check(st["node_a"] == 0, "its now-orphaned graph node is GONE")
+    check(st["node_shared"] == 1, "a node shared with a live engram SURVIVES")
+    svc.store.close()
+
+
 if __name__ == "__main__":
     test_forget_cascades_and_spares_others()
     test_double_forget_is_noop()
     test_tier_of_forgotten_is_cold()
+    test_forget_cascades_v17625_stores()
     print()
     if FAILURES:
         print("FAILED %d check(s):" % len(FAILURES))

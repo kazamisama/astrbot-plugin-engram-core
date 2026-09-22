@@ -4,6 +4,45 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.25: the v1.76.24 cascade was still incomplete — four more stores held
+  the same text, one of them injected into the prompt every single turn.**
+
+  A full-store scan *after* the v1.76.24 purge (which took 3773 rows out of
+  `graph_entries_v2` / `graph_entry_nodes_v2` / `graph_entries_v2_fts` /
+  `graph_edge_memories_v2` / `memory_sources`, all verified to 0) showed the
+  text still present in:
+
+  ```
+  diary_chunks      '一寸' 1 row          <- injected EVERY turn as [最近日记],
+                                             and the only residue that is both
+                                             injected and has no forgetting
+  relations         '一寸' 3, '留白' 2     <- feeds the [人物关系] block
+  llm_relations     '一寸' 3, '水手服' 1
+  graph_nodes_v2    '一寸' 9, '留白' 8     <- entries were deleted, their nodes
+                                             were left behind
+  ```
+
+  `_cascade_derived()` now also clears `diary_chunks` (keyed `diary_id`),
+  `relations` and `llm_relations` (keyed `source_engram_id`, column probed so a
+  schema without it is skipped rather than guessed), and the graph nodes that
+  this engram's entries owned and that nothing else links to.
+
+  `diary_chunks` was **verified before being wired in**, not assumed: all 853
+  `diary_chunks.diary_id` values are `engrams.id` (94 diary memories), so the
+  key is exact. Orphan-node cleanup is scoped to the node ids collected from
+  the entries being removed — a global orphan sweep would be too broad — and a
+  node shared with a live engram survives (asserted).
+
+  Still deliberately untouched: `daily_messages` (a rolling cache the diary
+  writer consumes; its replacement diary lands in `diary_chunks`, which IS
+  handled) and `entities` (its `name` carries a mention count owned by
+  `SemanticStore`; hand-deleting would corrupt it).
+
+  Residue purged from the live store with a one-shot: `diary_chunks` 120,
+  `relations` 86, `llm_relations` 63, orphan `graph_nodes_v2` 207 — all
+  verified to 0. `tests/_smoke_v90.py` extended to 20 checks, including that a
+  shared node survives. 80/80 green.
+
 - **v1.76.24: forgetting only touched `engrams`, so a "forgotten" memory stayed
   fully readable — and came back after a `/reset`.** The same text also lives
   in stores with **no forgetting concept at all**. Measured live on 2026-09-22,

@@ -667,6 +667,15 @@ class HippocampalStore:
                     "SELECT id FROM graph_entries_v2 WHERE source_memory_id=?",
                     (eid,)).fetchall()
                 ids = [int(r[0]) for r in rows]
+                # Collect the nodes attached to these entries BEFORE unlinking
+                # them, so orphan-node cleanup below is scoped to what this
+                # engram owned (a global orphan sweep here would be too broad).
+                node_ids = []
+                if ids:
+                    ph0 = ",".join("?" * len(ids))
+                    node_ids = [r[0] for r in self._conn.execute(
+                        "SELECT DISTINCT node_id FROM graph_entry_nodes_v2 "
+                        "WHERE entry_id IN (%s)" % ph0, ids).fetchall()]
                 for gid in ids:
                     self._conn.execute(
                         "DELETE FROM graph_entries_v2_fts WHERE entry_id=?", (gid,))
@@ -679,6 +688,56 @@ class HippocampalStore:
                 self._conn.execute(
                     "DELETE FROM graph_edge_memories_v2 WHERE source_memory_id=?", (eid,))
                 stats["graph_entries"] = len(ids)
+
+                # v1.76.25: the four stores that survived the first cascade.
+                # A full-store scan after the v1.76.24 purge showed the same
+                # text still present in:
+                #   diary_chunks  '一寸' 1 row        <- injected EVERY turn as
+                #                                        the [最近日记] block, and
+                #                                        the only residue that is
+                #                                        both injected and has no
+                #                                        forgetting concept
+                #   relations     '一寸' 3, '留白' 2  <- feeds the [人物关系] block
+                #   llm_relations '一寸' 3, '水手服' 1
+                #   graph_nodes_v2 '一寸' 9, '留白' 8 <- entries were deleted but
+                #                                        their nodes were left
+                # Verified live before wiring diary_chunks in: every one of the
+                # 853 diary_chunks.diary_id values IS an engrams.id (all 94
+                # diary memories), so the key is exact and this is not a guess.
+                try:
+                    cur = self._conn.execute(
+                        "DELETE FROM diary_chunks WHERE diary_id=?", (eid,))
+                    stats["diary_chunks"] = int(cur.rowcount or 0)
+                except Exception:
+                    pass
+                for tbl, key in (("relations", "source_engram_id"),
+                                 ("llm_relations", "source_engram_id"),
+                                 ("llm_relations", "engram_id")):
+                    try:
+                        cols = [r[1] for r in self._conn.execute(
+                            "PRAGMA table_info(%s)" % tbl)]
+                        if key not in cols:
+                            continue
+                        cur = self._conn.execute(
+                            "DELETE FROM %s WHERE %s=?" % (tbl, key), (eid,))
+                        n = int(cur.rowcount or 0)
+                        if n:
+                            stats[tbl] = stats.get(tbl, 0) + n
+                    except Exception:
+                        pass
+                removed_nodes = 0
+                for nid in node_ids:
+                    try:
+                        left = self._conn.execute(
+                            "SELECT COUNT(*) FROM graph_entry_nodes_v2 WHERE node_id=?",
+                            (nid,)).fetchone()[0]
+                        if not left:
+                            self._conn.execute(
+                                "DELETE FROM graph_nodes_v2 WHERE id=?", (nid,))
+                            removed_nodes += 1
+                    except Exception:
+                        pass
+                stats["graph_nodes"] = removed_nodes
         except Exception as ex:
             print("[hippocampus] derived cascade error: " + repr(ex))
         return stats
