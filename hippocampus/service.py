@@ -1837,6 +1837,27 @@ class MemoryService:
             except Exception as exc:
                 print("[hippocampus] resummarize re-embed failed: " + repr(exc))
             self.store.upsert(e)
+            # v1.76.28: re-summarizing REPLACES the engram's text, but the
+            # graph rows derived from the OLD text were never removed --
+            # `_post_ingest` only ever adds. Measured live 2026-09-23 on
+            # b7776817155a4d7a: re-summarizing took graph_entries_v2 from 3 to
+            # 12, and the 3 stale rows still carried the bot's own <output> XML
+            # that the re-summarize existed to get rid of. Every re-summarize
+            # therefore left another layer of old text in the graph, and 16
+            # engrams in that store have retained source available.
+            # The hard-delete cascade already does this teardown
+            # (`remove_engram_refs` + `delete_graph_memory_v2`); re-summarize,
+            # which rewrites the same derived data, did not. Shared edges and
+            # entries belonging to other engrams are untouched -- the callee
+            # keys everything by source_memory_id / edge ownership.
+            try:
+                graph = getattr(self, "graph_store", None)
+                if graph is not None:
+                    graph.remove_engram_refs(eid)
+                    graph.delete_graph_memory_v2(eid)
+            except Exception as gex:
+                print("[hippocampus] resummarize graph cleanup failed: "
+                      + repr(gex))
             try:
                 self._post_ingest(e)
             except Exception as pex:

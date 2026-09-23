@@ -4,6 +4,45 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.28: re-summarizing stacked a new layer of graph rows instead of
+  replacing the old ones — so the text it was invoked to remove stayed.**
+
+  `resummarize_engram` rewrites `engrams.summary` / `content` / embedding in
+  place and then called `_post_ingest`, which only ever **adds** graph rows.
+  Nothing removed the rows extracted from the previous text. Measured live on
+  2026-09-23 against `b7776817155a4d7a84ed8682ef84d625` (the one engram whose
+  text was a raw transcript):
+
+  ```
+  before re-summarize   graph_entries_v2 =  3   (all 3 carried <output>)
+  after  re-summarize   graph_entries_v2 = 12   (the same 3 + 9 new)
+                        graph_edge_memories_v2  1 -> 5
+                        graph_engram_refs       1 -> 2
+  ```
+
+  The 3 stale rows had to be deleted by hand. **16 engrams in that store have
+  retained source**, so every future re-summarize would have left another layer.
+
+  The hard-delete cascade already did this teardown
+  (`graph.remove_engram_refs` + `graph.delete_graph_memory_v2`, `service.py`
+  ~1002); `resummarize_engram` — which rewrites exactly the same derived data —
+  did not. It now runs both before `_post_ingest`, each guarded so a graph
+  failure cannot abort the rewrite. The callee keys everything by
+  `source_memory_id` / edge ownership, so entries and edges belonging to other
+  engrams are untouched (asserted).
+
+  `tests/_smoke_v93.py`: 13 checks over 3 tests. Load-bearing verified by
+  disabling the cleanup — the test then prints `old entry ids: [1]` /
+  `new entry ids: [1, 2, 3, 4]`, keeps a row carrying `<output>`, and shows the
+  row count growing `4 -> 7` across two re-summarizes (3 failures, exit 1),
+  which is the live 3 -> 12 behaviour reproduced in miniature. 83/83 green.
+
+  Live cleanup that prompted this, with backup
+  `hippocampus-resumclean-20260923-145303.db`: entries 1064/1065/1066 deleted
+  (`graph_entries_v2_fts` 3, `graph_entry_nodes_v2` 4, orphan `graph_nodes_v2`
+  1), verified `graph_entries_v2` rows containing `<output>` = **0** store-wide
+  and the engram left with its 9 freshly extracted rows. `engrams` untouched.
+
 - **v1.76.27: the fallback summarizer wrote the raw transcript into memory, so
   the bot's own `<output>` XML was injected back to her as an observed fact —
   and the forget cascade still left edge rows behind.**
