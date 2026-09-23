@@ -34,6 +34,32 @@ def target_length(total_chars: int, ratio: float, *,
     return t
 
 
+# v1.76.27: the no-LLM fallback stores the transcript itself, so whatever
+# markup the transcript carries becomes memory content -- and `content` is
+# what the injector prefers (`auto_inject_use_content`), so it is later fed
+# back verbatim. Measured live 2026-09-23: three engrams held
+# `[23:21 風見かずき] … <output><message>…</message></output>` and one of them
+# was the FIRST injected memory on every single turn for five hours -- the
+# bot's own output XML and her own line, read back to her as an observed fact.
+_XML_TAG_RE = re.compile(
+    r"</?(?:output|message|sticker|thoughts|relationship|actions|affection|"
+    r"blacklist|userAlias|reminder|memo|follow-up)\b[^>]*>",
+    re.IGNORECASE)
+_SPEAKER_RE = re.compile(r"\[\s*\d{1,2}:\d{2}(?::\d{2})?\s+[^\]]{1,40}\]\s*")
+
+
+def _sanitize_transcript(text: str) -> str:
+    """Strip transcript scaffolding so a fallback cannot inject markup.
+
+    Removes the bot's own output XML and the ``[HH:MM speaker]`` turn markers,
+    then collapses the whitespace they leave behind. Plain text is returned
+    unchanged, so this is safe to run on any transcript.
+    """
+    t = _XML_TAG_RE.sub(" ", text or "")
+    t = _SPEAKER_RE.sub("", t)
+    return re.sub(r"\s{2,}", " ", t).strip()
+
+
 _SYS_BASE = """你是聊天机器人本人，正在回忆刚才发生的对话。
 summary 必须是你自己的主观回忆：以第一人称叙述，体现你的语气和关注点，不要写成第三人称会议纪要。
 消息中 [时间 我] 是你自己的发言，必须体现你说了什么。
@@ -161,8 +187,14 @@ class ConversationSummarizer:
         return _normalize(data)
 
     def _fallback(self, rec, target: int) -> dict:
-        """No-LLM path: excerpt the transcript up to target length."""
-        text = rec.transcript().replace("\n", " ")
+        """No-LLM path: excerpt the transcript up to target length.
+
+        v1.76.27: the excerpt is sanitized first. This text is stored as both
+        `summary` and `content`, and `content` is what auto-inject prefers, so
+        an unsanitized transcript puts raw `<output>` XML and `[HH:MM 我]`
+        turn markers into the prompt as if they were remembered facts.
+        """
+        text = _sanitize_transcript(rec.transcript().replace("\n", " "))
         if target > 0 and len(text) > target:
             text = text[:target].rstrip() + "\u2026"
         return {
@@ -171,6 +203,9 @@ class ConversationSummarizer:
             "topics": [],
             "participants": rec.participants(include_bot=False),
             "relations": [],
+            # marks the engram so these are auditable rather than silently
+            # indistinguishable from a real summary (store_summary tags it)
+            "_fallback": True,
         }
 
 

@@ -4,6 +4,64 @@
 ## [Unreleased]
 
 ### Fixed
+- **v1.76.27: the fallback summarizer wrote the raw transcript into memory, so
+  the bot's own `<output>` XML was injected back to her as an observed fact —
+  and the forget cascade still left edge rows behind.**
+
+  Two independent defects, both measured on 2026-09-23 while chasing
+  "contamination" in the newest session.
+
+  **D1 — the edge ROW was never cascaded.** `_cascade_derived` (v1.76.24)
+  deleted the edge *link* in `graph_edge_memories_v2` but never the edge itself
+  in `graph_edges_v2`. Live counts before the fix:
+
+  ```
+  graph_edges_v2                946 rows
+    owned by forgotten engrams  483
+    still linked                482   <- every forget since v1.76.24
+  graph_engram_refs              75 pointing at forgotten engrams
+                                  2 pointing at engrams that no longer exist
+  ```
+
+  The link table is `(edge_id, source_memory_id)`, i.e. **M:N** — one edge can
+  belong to several engrams — so the delete cannot be keyed by owner alone. The
+  cascade now collects this engram's edges *before* unlinking and deletes only
+  the ones that (a) no longer have any link row and (b) are not referenced by
+  `graph_entries_v2.edge_id`. `graph_engram_refs` is cascaded by `engram_id`
+  too; it was only harmless because `GraphRetriever._passes_filters` re-checks
+  `forgotten_at` on the fast path *and* the legacy fallback.
+
+  **D2 — the no-LLM fallback stored the transcript as `summary` and `content`.**
+  `summarizer._fallback()` returned `rec.transcript()`, and since
+  `auto_inject_use_content` prefers `content`, whatever markup the transcript
+  carried was injected verbatim. Three engrams held the shape
+
+  ```
+  [23:21 風見かずき] 那那里能画吗… [23:21 我] <output><message>那里不行…</message></output>
+  ```
+
+  and `e1c662ffc64a4324` was the **FIRST** injected memory on every turn from
+  11:11 to 14:29 — five hours — with the engram already forgotten. The fallback
+  now runs `_sanitize_transcript()`: the bot's output XML
+  (`output`/`message`/`sticker`/`thoughts`/… ) and the `[HH:MM speaker]` turn
+  markers are stripped and the whitespace collapsed. The result is also marked
+  `_fallback`, and `store_summary` tags such engrams `fallback:transcript` so
+  they are auditable rather than silently indistinguishable from a real
+  summary — that indistinguishability is what let three of them sit unnoticed.
+
+  Note the fallback's default is already `False` (`config.py`), i.e. "no
+  fallback, no write"; the live config has it **on**, which is why this fired.
+
+  Live sweep (backup `hippocampus-edgesweep-20260923-144016.db`):
+  `graph_edge_memories_v2` −482, `graph_edges_v2` −483, `graph_engram_refs`
+  −77, all verified to 0; `engrams` untouched. The sweep refuses to run if any
+  doomed edge is still referenced by an entry (asserted here as well).
+
+  `tests/_smoke_v92.py`: 18 checks over 6 tests, including that a *shared* edge
+  and an edge still used by a live entry both survive. Load-bearing verified by
+  disabling the edge delete — exactly the D1 check goes red (exit 1) while the
+  two guard checks stay green. 82/82 green.
+
 - **v1.76.26: a memory forgotten mid-session kept being injected — working
   memory was the one merge point that never filtered `forgotten_at`, and it
   prepends at score 1.0, ahead of every route that does.**

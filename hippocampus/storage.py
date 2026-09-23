@@ -685,8 +685,54 @@ class HippocampalStore:
                     ph = ",".join("?" * len(ids))
                     self._conn.execute(
                         "DELETE FROM graph_entries_v2 WHERE id IN (%s)" % ph, ids)
-                self._conn.execute(
-                    "DELETE FROM graph_edge_memories_v2 WHERE source_memory_id=?", (eid,))
+                # v1.76.27: the edge ROW itself was never deleted -- only the
+                # link. `graph_edge_memories_v2` is an (edge_id,
+                # source_memory_id) link table, so an edge CAN be shared by
+                # several engrams and the delete must not be keyed by owner
+                # alone. Collect this engram's edges first, unlink, then drop
+                # only what nothing else still points at. Measured live
+                # 2026-09-23 before this fix: 946 edges, 483 owned by
+                # forgotten engrams, 482 of them still linked -- i.e. every
+                # forget since v1.76.24 left a row behind.
+                try:
+                    edge_ids = [r[0] for r in self._conn.execute(
+                        "SELECT DISTINCT edge_id FROM graph_edge_memories_v2 "
+                        "WHERE source_memory_id=?", (eid,)).fetchall()]
+                    self._conn.execute(
+                        "DELETE FROM graph_edge_memories_v2 WHERE source_memory_id=?",
+                        (eid,))
+                    removed_edges = 0
+                    for gid in edge_ids:
+                        left = self._conn.execute(
+                            "SELECT COUNT(*) FROM graph_edge_memories_v2 "
+                            "WHERE edge_id=?", (gid,)).fetchone()[0]
+                        if left:
+                            continue  # still shared with another engram -> keep
+                        used = self._conn.execute(
+                            "SELECT COUNT(*) FROM graph_entries_v2 WHERE edge_id=?",
+                            (gid,)).fetchone()[0]
+                        if used:
+                            continue  # an entry still hangs off it -> keep
+                        self._conn.execute(
+                            "DELETE FROM graph_edges_v2 WHERE id=?", (gid,))
+                        removed_edges += 1
+                    if removed_edges:
+                        stats["graph_edges"] = removed_edges
+                except Exception:
+                    pass
+                # `graph_engram_refs` is GraphRetriever's entity->engram reverse
+                # index, keyed by engram_id. A stale row is only harmless
+                # because `_passes_filters` re-checks `forgotten_at` on both the
+                # fast path and the legacy fallback; drop it here so the index
+                # does not accumulate rows for dead engrams.
+                try:
+                    cur = self._conn.execute(
+                        "DELETE FROM graph_engram_refs WHERE engram_id=?", (eid,))
+                    n = int(cur.rowcount or 0)
+                    if n:
+                        stats["graph_engram_refs"] = n
+                except Exception:
+                    pass
                 stats["graph_entries"] = len(ids)
 
                 # v1.76.25: the four stores that survived the first cascade.

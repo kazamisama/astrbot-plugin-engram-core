@@ -471,6 +471,14 @@ class MemoryService:
             stamps.append("peer:" + str(identity["peer_name"]))
         if stamps:
             e.tags = list(e.tags) + stamps
+        # v1.76.27: a fallback "summary" is a sanitized transcript excerpt, not
+        # a summary. Tag it so these are auditable (`tags LIKE
+        # '%fallback:transcript%'`) instead of being silently indistinguishable
+        # from a real summary -- that indistinguishability is what let three of
+        # them sit in the store unnoticed, one injected as the top memory for
+        # five hours.
+        if summary.get("_fallback"):
+            e.tags = list(e.tags) + ["fallback:transcript"]
         name_map = summary.get("participant_names") or {}
         try:
             self.working.add(e)
