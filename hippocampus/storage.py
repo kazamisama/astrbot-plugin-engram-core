@@ -5,12 +5,22 @@ from .types import Engram
 from .embeddings import EmbeddingProvider
 from .db_migration import run_migrations
 from hippocampus.observability import note as _obs_note
+from .vecmath import VectorIndex
 
 def _cos(a, b) -> float:
+    """Cosine similarity; 0.0 when either side is empty or dims differ.
+
+    v1.77.1: the previous version truncated the longer vector to the
+    shorter one (``n = min(len(a), len(b))``). After an embedding-provider
+    switch the old rows keep their old dimension, so truncation produced
+    plausible-looking but meaningless similarities. ``service._diary_cos``
+    has guarded this since v1.41; the main vector path now matches it.
+    """
     if not a or not b: return 0.0
-    n = min(len(a), len(b))
-    da = math.sqrt(sum(x*x for x in a[:n])) or 1.0
-    db = math.sqrt(sum(x*x for x in b[:n])) or 1.0
+    if len(a) != len(b): return 0.0
+    n = len(a)
+    da = math.sqrt(sum(x*x for x in a)) or 1.0
+    db = math.sqrt(sum(x*x for x in b)) or 1.0
     return sum(a[i]*b[i] for i in range(n)) / (da * db)
 
 
@@ -52,6 +62,11 @@ class HippocampalStore:
         self._tokenizer_mode = normalize_mode(tokenizer_mode)
         self._lock = threading.RLock()
         self._derived_delete_hook = None
+        # v1.77.1: lazily built in-memory vector index. Recall used to re-read
+        # and json.loads() every embedding on every query (~1.5s on a 550-row
+        # store, 42MB of JSON); the index is built once and kept in sync by
+        # upsert/delete/update_embedding.
+        self._vindex: VectorIndex | None = None
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         from .sqlite_util import apply_pragmas
@@ -344,6 +359,10 @@ class HippocampalStore:
               confidence=excluded.confidence,
               tier=excluded.tier
             """, row)
+        idx = self._vindex
+        if idx is not None:
+            with self._lock:
+                idx.put(e.id, self._vec_meta(e), e.embedding)
 
     def check_index_consistency(self) -> dict:
         """P1b (2026-08-11): verify the FTS sync triggers exist.
@@ -396,6 +415,8 @@ class HippocampalStore:
             ok = cur.rowcount > 0
             if ok:
                 self.delete_memory_source(eid)
+                if self._vindex is not None:
+                    self._vindex.drop(eid)
         if ok:
             try:
                 hook = self._derived_delete_hook
@@ -483,6 +504,23 @@ class HippocampalStore:
             self._conn.execute(
                 "UPDATE engrams SET embedding_json=?, embedding_model=? WHERE id=?",
                 (json.dumps(embedding, ensure_ascii=False), model, eid))
+            idx = self._vindex
+            if idx is not None:
+                meta = idx.meta(eid)
+                if meta is None:
+                    row = self._conn.execute(
+                        "SELECT actor_id, channel_id, persona_id, scope_id,"
+                        " memory_type, forgotten_at FROM engrams WHERE id=?",
+                        (eid,)).fetchone()
+                    if row is not None:
+                        meta = (row["actor_id"] or "", row["channel_id"] or "",
+                                row["persona_id"] or "", row["scope_id"] or "",
+                                row["memory_type"] or "", model,
+                                bool(row["forgotten_at"]))
+                elif meta is not None:
+                    meta = meta[:5] + (model, meta[6])
+                if meta is not None:
+                    idx.put(eid, meta, embedding)
 
 
     # ---------- v1.0 biology helpers ----------
@@ -799,6 +837,31 @@ class HippocampalStore:
         self.upsert(e)
         return True
 
+    def list_diary_slices(self, limit: int = 2000, *,
+                         persona_id: str | None = None,
+                         scope_id: str | None = None) -> list:
+        """Lightweight diary rows for the chunk-recall fallback (v1.77.1).
+
+        ``list_active(memory_type='diary')`` re-parsed every diary's 4096-dim
+        embedding_json on each injection (~0.35s on the live store) just to
+        read the summary text. Only the text (and the filters) are needed.
+        """
+        where = ["memory_type = 'diary'", "COALESCE(forgotten_at, 0) = 0"]
+        params: list = []
+        if persona_id is not None:
+            where.append("COALESCE(persona_id, '') = ?")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '') = ?")
+            params.append(scope_id or "")
+        params.append(int(limit))
+        sql = ("SELECT id, persona_id, scope_id, summary, content FROM engrams"
+               " WHERE " + " AND ".join(where)
+               + " ORDER BY importance DESC, strength DESC LIMIT ?")
+        with self._lock, self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def list_active(self, limit: int = 10_000, *,
                     memory_type: str | None = None,
                     actor_id: str | None = None,
@@ -899,64 +962,101 @@ class HippocampalStore:
                 out["untyped"] += 1
         return out
 
+    # ---------- v1.77.1: in-memory vector index ----------
+    @staticmethod
+    def _vec_meta(e) -> tuple:
+        """Filter tuple cached alongside each vector (mirrors the old SQL)."""
+        return (e.actor_id or "", e.channel_id or "", e.persona_id or "",
+                e.scope_id or "", e.memory_type or "",
+                e.embedding_model or "", bool(e.forgotten_at))
+
+    @staticmethod
+    def _row_vec_meta(r) -> tuple:
+        return (r["actor_id"] or "", r["channel_id"] or "", r["persona_id"] or "",
+                r["scope_id"] or "", r["memory_type"] or "",
+                r["embedding_model"] or "", bool(r["forgotten_at"]))
+
+    def _vector_index(self):
+        """Build the index once from the store; callers then never re-read
+        the 40+MB of embedding_json."""
+        with self._lock:
+            idx = self._vindex
+            if idx is not None:
+                return idx
+            idx = VectorIndex()
+            cur = self._conn.execute(
+                "SELECT id, actor_id, channel_id, persona_id, scope_id, memory_type,"
+                " embedding_model, forgotten_at, embedding_json FROM engrams")
+            for r in cur.fetchall():
+                raw = r["embedding_json"]
+                if not raw:
+                    continue
+                try:
+                    emb = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if emb:
+                    idx.put(r["id"], self._row_vec_meta(r), emb)
+            self._vindex = idx
+            return idx
+
+    def warm_vector_index(self) -> int:
+        """Build the vector index now (startup warm-up); returns its size."""
+        return len(self._vector_index())
+
+    def count_missing_vectors(self) -> int:
+        """Active engrams whose stored embedding is empty (repair trigger)."""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM engrams"
+                " WHERE COALESCE(forgotten_at, 0) = 0"
+                " AND LENGTH(COALESCE(embedding_json, '')) <= 4").fetchone()
+        return int(row["c"])
+
+    def get_meta(self, key: str):
+        return self._meta_get(key)
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._meta_set(key, value)
+
     def vector_search(self, query_vec, k: int, *,
                       actor_id: str | None = None, channel_id: str | None = None,
                       persona_id: str | None = None,
                       scope_id: str | None = None,
                       memory_types: list[str] | None = None,
                       embedding_model: str | None = None):
-        """Vector similarity search with SQL-side filter pushdown.
+        """Vector similarity search over the in-memory index.
 
-        Previously this loaded the entire engrams table (SELECT *) and
-        filtered in Python on every recall. Now the filters are pushed
-        into the WHERE clause and only lightweight columns (id +
-        embedding_json) are loaded; the top-k ids are re-fetched as full
-        rows. Semantics preserved except: rows without an embedding are
-        skipped instead of scoring 0.0 (they were meaningless in vector
-        recall and pollute RRF fusion).
+        v1.77.1: the SQL query and the per-row json.loads() are gone. The
+        index is built once (warm_vector_index() at startup) and kept in
+        sync by upsert/delete/update_embedding; each query only scores the
+        normalised vectors (numpy when available) and re-fetches the top-k
+        full rows. Filter semantics match the old SQL: soft-forgotten rows
+        never match, persona/scope are COALESCEd to '', and rows without an
+        embedding are skipped.
         """
-        where: list[str] = []
-        params: list[object] = []
-        # v1.76.4: soft-forgotten engrams must never re-enter vector recall.
-        # soft_forget() keeps embedding_json for audit/recovery, so without
-        # this clause the vector route can surface "forgotten" memories.
-        where.append("COALESCE(forgotten_at, 0) = 0")
-        if actor_id:
-            where.append("actor_id = ?")
-            params.append(actor_id)
-        if channel_id:
-            where.append("channel_id = ?")
-            params.append(channel_id)
-        if persona_id is not None:
-            # Original Python filter normalised NULL/empty to ''; keep that.
-            where.append("(COALESCE(persona_id, '') = ?)")
-            params.append(persona_id)
-        if scope_id is not None:
-            where.append("(COALESCE(scope_id, '') = ?)")
-            params.append(scope_id or "")
-        if memory_types:
-            placeholders = ",".join("?" for _ in memory_types)
-            where.append(f"memory_type IN ({placeholders})")
-            params.extend(memory_types)
-        if embedding_model:
-            where.append("embedding_model = ?")
-            params.append(embedding_model)
-        sql = "SELECT id, embedding_json FROM engrams"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        with self._lock, self._conn:
-            rows = self._conn.execute(sql, params).fetchall()
-        scored: list[tuple[str, float]] = []
-        for r in rows:
-            try:
-                emb = json.loads(r["embedding_json"]) if r["embedding_json"] else None
-            except (json.JSONDecodeError, TypeError):
-                emb = None
-            if not emb:
-                continue
-            scored.append((r["id"], _cos(query_vec, emb)))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        top_ids = [rid for rid, _s in scored[:k]]
+        idx = self._vector_index()
+
+        def _match(meta) -> bool:
+            m_actor, m_channel, m_persona, m_scope, m_type, m_model, m_forg = meta
+            if m_forg:
+                return False
+            if actor_id and m_actor != actor_id:
+                return False
+            if channel_id and m_channel != channel_id:
+                return False
+            if persona_id is not None and m_persona != persona_id:
+                return False
+            if scope_id is not None and m_scope != (scope_id or ""):
+                return False
+            if memory_types and m_type not in memory_types:
+                return False
+            if embedding_model and m_model != embedding_model:
+                return False
+            return True
+
+        scored = idx.search(query_vec, k, _match)
+        top_ids = [rid for rid, _s in scored]
         if not top_ids:
             return []
         placeholders = ",".join("?" for _ in top_ids)
@@ -965,7 +1065,7 @@ class HippocampalStore:
                 f"SELECT * FROM engrams WHERE id IN ({placeholders})", top_ids)
             by_id = {row["id"]: Engram.from_row(dict(row)) for row in cur.fetchall()}
         out: list[tuple[Engram, float]] = []
-        for rid, score in scored[:k]:
+        for rid, score in scored:
             e = by_id.get(rid)
             if e is not None:
                 out.append((e, score))

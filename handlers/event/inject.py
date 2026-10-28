@@ -203,6 +203,9 @@ class InjectHandler:
     _INJECT_HARD_TIMEOUT: float = 10.0
     _INJECT_TIMEOUT_MIN: float = 1.0
     _INJECT_TIMEOUT_MAX: float = 120.0
+    # v1.77.1: how long a concurrent request may wait for the inject lock
+    # before it is served without memory instead of burning its budget.
+    _LOCK_WAIT: float = 1.5
 
     async def handle_inject(self, event, req) -> None:
         svc = self.service
@@ -241,7 +244,24 @@ class InjectHandler:
         # serializing with this handler's lock (req mutation + _seen_diary
         # and service.recall cache are shared state). v1.76.13: bounded
         # by handle_inject's asyncio.wait_for.
-        async with self._get_inject_lock():
+        #
+        # v1.77.1: do not queue behind a slow injection until the hard
+        # timeout. Two concurrent LLM requests used to serialize on this
+        # lock, and the waiter burned its whole 10s budget before giving
+        # up; a recall that needs a provider call can be slow during a
+        # provider flap, and every queued request then lost its memory
+        # block. Waiting briefly keeps normal contention working (the
+        # lock is only held for one recall) while a stuck run degrades to
+        # "this request is injected without memory" instead of "both
+        # requests time out".
+        lock = self._get_inject_lock()
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=self._LOCK_WAIT)
+        except asyncio.TimeoutError:
+            print("[hippocampus] inject lock busy for "
+                  + str(self._LOCK_WAIT) + "s; skipping this injection")
+            return
+        try:
             if not _INJECT_SLOTS.acquire(blocking=False):
                 print("[hippocampus] inject worker saturated; skipping injection")
                 return
@@ -253,6 +273,8 @@ class InjectHandler:
                     _INJECT_SLOTS.release()
 
             await asyncio.to_thread(_worker)
+        finally:
+            lock.release()
 
     def _handle_inject_sync(self, event, req,
                             stop: threading.Event | None = None) -> None:

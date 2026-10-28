@@ -12,6 +12,7 @@ should not crash the AstrBot host.
 """
 from __future__ import annotations
 import asyncio
+import json
 import os
 import threading
 import time
@@ -446,8 +447,11 @@ class PluginInitializer:
                 # 10-180s, so the first new memory lands in the hash placeholder
                 # space. Observed live: the 00:14:27 engram was stored as
                 # hash/64-dim and activation completed at 00:16:55.
-                if legacy > 0:
-                    self._start_stale_reembed(legacy)
+                # v1.77.1: the fingerprint check subsumes the old
+                # 'legacy > 0' trigger -- it also repairs empty vectors and
+                # re-embeds everything when the provider silently changed
+                # model/dimension.
+                self._check_embedding_space(vec, legacy)
             except Exception as e:
                 print(f"[hippocampus] astrmock activation failed: {e!r}")
             finally:
@@ -469,6 +473,13 @@ class PluginInitializer:
         svc = self.service
         if svc is None:
             return
+        # A full re-embed rewrites every row, so a stale pass next to it
+        # would only duplicate the provider calls.
+        full = getattr(self, "_full_reembed_thread", None)
+        if full is not None and full.is_alive():
+            print("[hippocampus] full re-embed in progress; skipping the"
+                  " stale pass")
+            return
 
         def _run() -> None:
             try:
@@ -486,6 +497,119 @@ class PluginInitializer:
         except Exception as e:
             print("[hippocampus] stale re-embed thread failed: " + repr(e))
 
+    # ---------- v1.77.1: embedding-space fingerprint ----------
+    _FP_KEY = "embedding:fingerprint"
+    _FP_COS_MIN = 0.995
+
+    def _save_fingerprint(self, probe) -> None:
+        """Persist dimension + probe vector of the active embedding space."""
+        svc = self.service
+        if svc is None:
+            return
+        try:
+            svc.store.set_meta(self._FP_KEY, json.dumps({
+                "model": svc.current_embedding(),
+                "dim": len(probe),
+                "probe": list(probe),
+                "ts": time.time(),
+            }))
+        except Exception as e:
+            print("[hippocampus] embedding fingerprint save failed: " + repr(e))
+
+    def _check_embedding_space(self, probe, legacy: int) -> None:
+        """Detect a silent embedding-space swap and repair the store.
+
+        Stored vectors are only comparable inside the space that produced
+        them. A provider switch (or a provider quietly backing a different
+        model) used to be detected only via the ``embedding_model`` label,
+        which stays 'astrmock' forever -- so old vectors were treated as
+        current, and ``_cos`` truncated the mismatched dimensions.
+
+        v1.77.1 stores a fingerprint (dimension + probe vector) in
+        hippo_meta. A mismatch means the whole store must be re-embedded
+        before vector recall can be trusted, so it is rebuilt in the
+        background instead of silently degrading.
+        """
+        svc = self.service
+        if svc is None:
+            return
+        fp = None
+        try:
+            raw = svc.store.get_meta(self._FP_KEY)
+            fp = json.loads(raw) if raw else None
+        except Exception:
+            fp = None
+        reason = ""
+        if isinstance(fp, dict) and fp.get("probe"):
+            old_vec = fp["probe"]
+            try:
+                if len(old_vec) != len(probe):
+                    reason = ("dimension " + str(len(old_vec)) + " -> "
+                              + str(len(probe)))
+                else:
+                    from hippocampus.vecmath import dot, normalize
+                    cos = dot(normalize(old_vec), normalize(probe))
+                    if cos < self._FP_COS_MIN:
+                        reason = "probe cosine %.4f" % cos
+            except Exception:
+                reason = "fingerprint unreadable"
+        try:
+            missing = svc.store.count_missing_vectors()
+        except Exception:
+            missing = 0
+        if reason:
+            print("[hippocampus] embedding space changed (" + reason
+                  + "): stored vectors belong to a different model or"
+                  " dimension. Starting a full background re-embed;"
+                  " vector recall is unreliable until it finishes.")
+            self._start_full_reembed(probe)
+        elif legacy > 0:
+            self._start_stale_reembed(legacy)
+        if missing > 0:
+            # v1.77.1: rows with an empty vector kept their old label, so the
+            # previous 'legacy > 0' trigger never fired for them (60 such
+            # rows on the live store, 51 active and invisible to vectors).
+            print("[hippocampus] repairing " + str(missing)
+                  + " active engram(s) with an empty embedding")
+            self._start_stale_reembed(missing)
+        if not reason:
+            self._save_fingerprint(probe)
+
+    def _start_full_reembed(self, probe) -> None:
+        """Re-embed engrams + diary chunks after a space change (daemon)."""
+        if (getattr(self, "_full_reembed_thread", None) is not None
+                and self._full_reembed_thread.is_alive()):
+            print("[hippocampus] full re-embed already running; not starting"
+                  " another one")
+            return
+        svc = self.service
+        if svc is None:
+            return
+        probe = list(probe or [])
+
+        def _run() -> None:
+            try:
+                n = svc.rebuild_embeddings()
+                print("[hippocampus] full re-embed finished: " + str(n)
+                      + " engram(s)")
+            except Exception as e:
+                print("[hippocampus] full re-embed failed: " + repr(e))
+                return
+            try:
+                m = svc.rebuild_diary_chunks()
+                print("[hippocampus] diary chunk re-embed finished: "
+                      + str(m) + " chunk(s)")
+            except Exception as e:
+                print("[hippocampus] diary chunk re-embed failed: " + repr(e))
+            self._save_fingerprint(probe)
+
+        try:
+            t = threading.Thread(target=_run, name="hippocampus-fullreembed",
+                                 daemon=True)
+            self._full_reembed_thread = t
+            t.start()
+        except Exception as e:
+            print("[hippocampus] full re-embed thread failed: " + repr(e))
     def _register_agent_tools(self) -> None:
         """Register the v1.3+ agent tools with AstrBot. Real AstrBot
         exposes context.register_tool(...); in mocks / unit tests that

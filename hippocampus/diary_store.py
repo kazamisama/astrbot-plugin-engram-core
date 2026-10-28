@@ -24,11 +24,13 @@ because they flush first - callers need not know about the buffer.
 No AstrBot imports; pure SQLite + stdlib so it is unit-testable.
 """
 from __future__ import annotations
+import json
 import sqlite3
 import threading
 import time
 import uuid
 from hippocampus.observability import note as _obs_note
+from .vecmath import VectorIndex
 
 
 def _now() -> float:
@@ -138,6 +140,11 @@ class DiaryStore:
         bs = self.DEFAULT_BATCH_SIZE if batch_size is None else int(batch_size)
         self._batch_size = max(1, bs)
         self._buffer_lock = threading.Lock()
+        # v1.77.1: cached chunk-vector index. Rebuilding it means parsing the
+        # 97MB of embedding JSON this table holds, so it is built once (startup
+        # warm-up) and kept in sync by add_chunks/delete_chunks_for_diary.
+        self._chunk_lock = threading.RLock()
+        self._chunk_idx = None
 
     def _ensure_conn(self):
         if self._conn is None:
@@ -194,12 +201,16 @@ class DiaryStore:
             self.flush_now()
         except Exception:
             _obs_note("diary_store", "close")
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            finally:
-                self._conn = None
-                self._initialized = False
+        # v1.77.1: the chunk-vector warm-up thread may be reading this
+        # connection; closing under the same lock waits for that build
+        # instead of racing SQLite's C-level teardown.
+        with self._chunk_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                finally:
+                    self._conn = None
+                    self._initialized = False
 
     def is_open(self) -> bool:
         return self._conn is not None
@@ -398,6 +409,14 @@ class DiaryStore:
                  getattr(ch, "scope_id", "") or ""))
             n += 1
         c.commit()
+        idx = self._chunk_idx
+        if idx is not None:
+            with self._chunk_lock:
+                for ch in chunks:
+                    idx.put(ch.id, (ch.diary_id or "",
+                                   getattr(ch, "persona_id", "") or "",
+                                   getattr(ch, "scope_id", "") or ""),
+                            ch.embedding)
         return n
 
     def all_chunks(self, limit: int = 2000, persona_id: str | None = None,
@@ -418,6 +437,94 @@ class DiaryStore:
             (*params, limit)).fetchall()
         return [DiaryChunk.from_row(r) for r in rows]
 
+    # ---------- v1.77.1: cached chunk vectors ----------
+    def _chunk_index(self, limit: int = 2000):
+        """Build the chunk-vector index once; see hippocampus/vecmath.py."""
+        with self._chunk_lock:
+            idx = self._chunk_idx
+            if idx is not None:
+                return idx
+            idx = VectorIndex()
+            try:
+                c = self._ensure_conn()
+                rows = c.execute(
+                    "SELECT id, diary_id, persona_id, scope_id, embedding"
+                    " FROM diary_chunks"
+                    " WHERE embedding IS NOT NULL AND embedding <> ''"
+                    " ORDER BY created_at DESC LIMIT ?", (int(limit),)).fetchall()
+            except Exception:
+                rows = []
+                _obs_note("diary_store", "_chunk_index")
+            for r in rows:
+                try:
+                    emb = json.loads(r["embedding"])
+                except Exception:
+                    _obs_note("diary_store", "_chunk_index:parse")
+                    continue
+                if emb:
+                    idx.put(r["id"], (r["diary_id"] or "",
+                                      r["persona_id"] or "",
+                                      r["scope_id"] or ""), emb)
+            self._chunk_idx = idx
+            return idx
+
+    def warm_chunk_index(self, limit: int = 2000) -> int:
+        """Build the chunk-vector index now (startup warm-up)."""
+        return len(self._chunk_index(limit))
+
+    def rank_chunks(self, query_vec, *, limit: int = 2000,
+                    persona_id: str | None = None,
+                    scope_id: str | None = None,
+                    min_score: float | None = None) -> list:
+        """Score cached chunk vectors; returns [(chunk_id, diary_id, score)].
+
+        v1.77.1: all_chunks() parsed ~1100 chunks / 97MB of embedding JSON on
+        every injection (~3.5s). The vectors are cached once and scored with
+        numpy; the caller only fetches text for the chunks it keeps.
+        """
+        with self._chunk_lock:
+            idx = self._chunk_index(limit)
+
+            def _match(meta) -> bool:
+                _diary, persona, scope = meta
+                if persona_id is not None and persona != persona_id:
+                    return False
+                if scope_id is not None and scope != (scope_id or ""):
+                    return False
+                return True
+
+            hits = idx.search(query_vec, int(limit), _match,
+                              min_score=min_score, with_meta=True)
+            return [(cid, meta[0], score) for cid, meta, score in hits]
+
+    def chunk_diary_ids(self, persona_id: str | None = None,
+                        scope_id: str | None = None) -> set:
+        """Diary ids that own at least one embedded chunk (fallback guard)."""
+        self.flush_now()
+        c = self._ensure_conn()
+        where = ["embedding IS NOT NULL", "embedding <> ''"]
+        params: list = []
+        if persona_id is not None:
+            where.append("COALESCE(persona_id, '')=?")
+            params.append(persona_id)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, '')=?")
+            params.append(scope_id or "")
+        rows = c.execute(
+            "SELECT DISTINCT diary_id FROM diary_chunks WHERE "
+            + " AND ".join(where), params).fetchall()
+        return {r["diary_id"] for r in rows if r["diary_id"]}
+
+    def chunk_texts(self, ids) -> dict:
+        ids = [i for i in ids if i]
+        if not ids:
+            return {}
+        c = self._ensure_conn()
+        placeholders = ",".join("?" for _ in ids)
+        rows = c.execute(
+            "SELECT id, text FROM diary_chunks WHERE id IN ("
+            + placeholders + ")", ids).fetchall()
+        return {r["id"]: r["text"] for r in rows}
     def chunks_for_diary(self, diary_id: str) -> list:
         self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
@@ -431,6 +538,10 @@ class DiaryStore:
         c = self._ensure_conn()
         cur = c.execute("DELETE FROM diary_chunks WHERE diary_id=?", (diary_id,))
         c.commit()
+        idx = self._chunk_idx
+        if idx is not None:
+            with self._chunk_lock:
+                idx.drop_where(lambda meta: meta[0] == (diary_id or ""))
         return cur.rowcount or 0
 
     def count_chunks(self) -> int:

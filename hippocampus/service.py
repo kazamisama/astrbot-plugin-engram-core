@@ -147,6 +147,9 @@ class MemoryService:
         # Invalidated on every memory write (see _invalidate_search_cache).
         from collections import OrderedDict as _OrderedDict
         self._recall_cache: _OrderedDict = _OrderedDict()
+        # v1.77.1: daemon thread that builds the vector indexes at startup.
+        self._vector_warmup = None
+        self._vector_warmup_stop = threading.Event()
         # v1.76.4 (M5): observe now runs on a worker thread while recall can
         # run on the event loop or the injection worker, so all cache
         # mutations share this lock.
@@ -337,6 +340,85 @@ class MemoryService:
         if n:
             self._invalidate_search_cache()
         return n
+
+    # ---------- v1.77.1: vector caches ----------
+    def rebuild_diary_chunks(self) -> int:
+        """Re-embed every cached diary chunk under the current model.
+
+        Diary chunk vectors live in the same embedding space as engrams;
+        after a provider change they must be rebuilt too, otherwise
+        chunk-level diary recall quietly scores 0 for every old chunk.
+        Returns the number of chunks rewritten.
+        """
+        ds = getattr(self, "diary_store", None)
+        if ds is None:
+            return 0
+        try:
+            chunks = ds.all_chunks(limit=100000)
+        except Exception as ex:
+            print("[hippocampus] diary chunk rebuild read failed: " + repr(ex))
+            return 0
+        n = 0
+        out = []
+        for ch in chunks:
+            try:
+                vec = self.embedder.embed(ch.text or "")
+            except Exception:
+                _obs_note("service", "rebuild_diary_chunks")
+                continue
+            if not vec:
+                continue
+            ch.embedding = vec
+            ch.embedding_model = self._current_embedding_name
+            out.append(ch)
+            n += 1
+        if out:
+            try:
+                ds.add_chunks(out)
+            except Exception as ex:
+                print("[hippocampus] diary chunk rebuild write failed: " + repr(ex))
+        return n
+
+    def _start_vector_warmup(self) -> None:
+        """Build the engram + diary-chunk vector indexes off-thread.
+
+        v1.77.1: the indexes remove ~5s per injection, but building them
+        parses 42MB + 97MB of embedding JSON (about 3.5s on the live
+        store). Doing that on the plugin-init path would delay startup, and
+        doing it lazily would stall the first request, so it runs on a
+        daemon thread right after the service starts.
+        """
+        t = getattr(self, "_vector_warmup", None)
+        if t is not None and t.is_alive():
+            return
+
+        def _run() -> None:
+            n = m = 0
+            if self._vector_warmup_stop.is_set():
+                return
+            try:
+                n = self.store.warm_vector_index()
+            except Exception as ex:
+                print("[hippocampus] vector warm-up failed: " + repr(ex))
+            # close() may have run while the first index was building; do
+            # not touch the (possibly closed) diary connection afterwards.
+            if self._vector_warmup_stop.is_set():
+                return
+            try:
+                m = self.diary_store.warm_chunk_index()
+            except Exception as ex:
+                print("[hippocampus] diary vector warm-up failed: " + repr(ex))
+            if n or m:
+                print("[hippocampus] vector caches ready (engrams=" + str(n)
+                      + ", diary_chunks=" + str(m) + ")")
+
+        try:
+            t = threading.Thread(target=_run, name="hippocampus-vecwarm",
+                                 daemon=True)
+            self._vector_warmup = t
+            t.start()
+        except Exception as ex:
+            print("[hippocampus] vector warm-up thread failed: " + repr(ex))
 
     # ---------- observe ----------
     def observe(self, *, session_id: str, actor_id: str, platform: str,
@@ -700,35 +782,44 @@ class MemoryService:
             return []
         if not qvec:
             return []
+        # v1.77.1: chunk vectors are cached in DiaryStore (built once, kept
+        # in sync on write/delete), so scoring no longer parses 97MB of
+        # embedding JSON per injection. Only the kept chunks are loaded.
         try:
-            chunks = ds.all_chunks(limit=2000, persona_id=persona_id,
-                                    scope_id=scope_id)
+            ranked = ds.rank_chunks(qvec, limit=2000, persona_id=persona_id,
+                                    scope_id=scope_id, min_score=min_score)
         except Exception:
-            chunks = []
+            ranked = []
+        try:
+            seen_diary_ids = ds.chunk_diary_ids(persona_id=persona_id,
+                                                scope_id=scope_id)
+        except Exception:
+            seen_diary_ids = set()
         scored = []
-        seen_diary_ids = set()
-        for ch in chunks:
-            if not ch.embedding:
-                continue
-            seen_diary_ids.add(ch.diary_id)
+        kept: list = []
+        for cid, did, s in ranked:
             if scope_id is not None:
-                parent = self.store.get(ch.diary_id)
+                parent = self.store.get(did)
                 if parent is None or (getattr(parent, "scope_id", "") or "") != scope_id:
                     continue
-            s = _diary_cos(qvec, ch.embedding)
-            if s >= min_score:
-                scored.append((ch.text, s))
+            kept.append((cid, s))
+            if len(kept) >= top_n:
+                break
+        if kept:
+            try:
+                texts = ds.chunk_texts([cid for cid, _s in kept])
+            except Exception:
+                texts = {}
+            for cid, s in kept:
+                if texts.get(cid):
+                    scored.append((texts[cid], s))
         # Fallback: cover diaries that have an engram but no chunks yet.
         try:
-            for d in self.store.list_active(limit=2000, memory_type="diary"):
-                if d.id in seen_diary_ids:
+            for d in self.store.list_diary_slices(
+                    limit=2000, persona_id=persona_id, scope_id=scope_id):
+                if d["id"] in seen_diary_ids:
                     continue
-                if (persona_id is not None
-                        and (getattr(d, "persona_id", "") or "") != (persona_id or "")):
-                    continue
-                if scope_id is not None and (getattr(d, "scope_id", "") or "") != scope_id:
-                    continue
-                text = (getattr(d, "summary", "") or getattr(d, "content", "") or "").strip()
+                text = (d["summary"] or d["content"] or "").strip()
                 if not text:
                     continue
                 try:
@@ -967,16 +1058,46 @@ class MemoryService:
             obj = _ensure(rel.object, getattr(rel, "object_type", ""))
             if subj is None or obj is None:
                 return
-            self.semantic.add_relation(SemRelation(
+            sem_rel = SemRelation(
                 subject_id=subj.id, predicate=rel.predicate,
                 object_id=obj.id, source_engram_id=engram.id,
                 confidence=float(getattr(rel, "confidence", 0.5) or 0.5),
-                created_at=engram.created_at))
+                created_at=engram.created_at)
+            self.semantic.add_relation(sem_rel)
+            # v1.77.1: LLM relations now feed the atom layer as well;
+            # see _atom_from_semantic_relation for why it was empty.
+            self._atom_from_semantic_relation(sem_rel, engram)
             refs = list(dict.fromkeys([*engram.entity_refs, subj.id, obj.id]))
             engram.entity_refs = refs
         except Exception as ex:
             print("[hippocampus] mirror relation error: " + repr(ex))
 
+    def _atom_from_semantic_relation(self, sem_rel, engram) -> None:
+        """v1.77.1: an LLM-extracted relation also produces an atom.
+
+        Atoms used to be written only by _post_ingest's rule extractor, but
+        production memories are written through store_summary(), which
+        returns before that extractor and stores LLM relations instead --
+        so the atoms table stayed at zero rows on the live store. Entity
+        names are already resolved here, and semantic.atoms_from_relations
+        reuses the same preference classification, so this costs one
+        name lookup per relation.
+        """
+        if not getattr(self.cfg, "enable_atom_extraction", False):
+            return
+        if self.semantic is None:
+            return
+        self._ensure_atom_layer()
+        if self.atom_store is None or self.atom_lifecycle is None:
+            return
+        try:
+            from .memory_atom_models import stamp_atom_temporal
+            dicts = self.semantic.atoms_from_relations([sem_rel])
+            for atom in self.atom_lifecycle.atoms_from_dicts(engram, dicts):
+                atom = stamp_atom_temporal(atom, now=engram.created_at)
+                self.atom_store.upsert(atom)
+        except Exception as _aex:
+            print("[hippocampus] atom from relation failed: " + repr(_aex))
     def _delete_derived_indexes(self, engram_id: str) -> None:
         """Cascade a hard delete through relation / semantic / graph / atom."""
         try:
@@ -1983,6 +2104,10 @@ class MemoryService:
     # Works whether or not a loop is running: falls back to a dedicated
     # daemon thread + new_event_loop when called from sync code.
     def start_background_tasks(self) -> None:
+        # v1.77.1: build the vector indexes off-thread. Recall used to read
+        # and parse every embedding per request (~5s of the 10s budget on
+        # the live store); this makes the first real request cheap.
+        self._start_vector_warmup()
         # v1.13: one-shot tier reclassification at startup (cheap, no loop).
         # Refreshes hot/warm/cold for memories that aged while offline.
         if getattr(self.cfg, "tiering_enabled", False):
@@ -2501,6 +2626,14 @@ class MemoryService:
 
     # ---------- shutdown ----------
     def close(self) -> None:
+        # v1.77.1: stop the vector warm-up before tearing down connections.
+        # Its build holds the store lock (close waits for it), but it would
+        # otherwise move on to the diary connection after it was closed --
+        # observed as an access violation on interpreter teardown.
+        try:
+            self._vector_warmup_stop.set()
+        except Exception:
+            _obs_note("service", "close")
         try:
             self._stop_decay_loop()
         except Exception:

@@ -350,3 +350,24 @@ docs/HANDOFF_2026-10-27.md 与 CHANGELOG.md 的 [1.77.0] 节。
 3. **format.py 拆分**。本地化后函数边界清晰了，但文件仍 907 行、15 个 `format_*` 与解析/工具函数混在
    一起。可按 stats / recall / graph / diary 拆模块并让 format.py 做 re-export 门面；纯移动，风险低，
    但收益只是可维护性，所以排在这些之后。
+
+## 7. v1.77.1（2026-10-28）：注入性能与嵌入空间
+
+### 已 ship
+
+| 项 | 内容 |
+| --- | --- |
+| D1-a | `_cos` 维度守卫（不再静默截断） |
+| D1-b | 空向量自愈：激活时 `count_missing_vectors() > 0` 就 `reembed_stale()`（线上 60 条空向量，51 条未遗忘） |
+| D1-c | `embedding:fingerprint`（维度 + 探测向量）不匹配 -> 后台全量重建 engram + 日记分块 |
+| D2-d | 向量缓存（`hippocampus/vecmath.py` + store/diary 懒建 + 启动后台预热 + 写路径增量维护）；`vector_search` 1.1-1.6s -> 0.034s，`recall_diary_chunks` 3.4-3.9s -> 0.11s |
+| D2-e | 注入锁 `_LOCK_WAIT=1.5s` 有界等待，等不到跳过而不是烧完 10s |
+| D4-f | LLM 关系（`store_summary` 路径）也产原子；此前 atoms 只由 rule 抽取器产出 |
+| D4-h | 跨插件：`your_own_life/life/memory_adapter.py` 由 `StarMetadata` 取 `star_cls`，`life_*` / `task_leases` 的写路径恢复 |
+
+### 仍然 open
+
+1. **cluster 链（D4-g）**：全库 `similar_to='[]'`，只有 `observe()` 里的模式分离会写；生产记忆走 `store_summary`，`cluster_summaries` / `profile_facts` 因此恒为 0。两条路：按 embedding 相似度在摘要写入时建簇并回填 `similar_to`（复用 `PatternSeparator` 的阈值），或删掉这条链与两张表。需要产品决定。
+2. **graph_adjacency（D4-i）**：`GraphStore.add_relation()` 无生产调用，查询走 graph_v2。删表，或让 graph_v2 写入时同步维护。
+3. **R9 同库多连接 + 六套表示**：见 §6，需要先定「谁拥有 DB / 哪个表示是事实源」。
+4. **format.py 拆分**：纯移动，风险低。

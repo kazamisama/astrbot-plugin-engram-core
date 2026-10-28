@@ -4,6 +4,54 @@
 
 Nothing yet.
 
+## [1.77.1] - 2026-10-28
+
+线上取证（`backend.log` 49 次 embedding 桥超时、1 次注入被 10s 硬超时丢弃）后的一轮
+性能与正确性修复。注入的数据路径从 5.0-5.3s 降到约 0.2s，嵌入空间有了指纹，空向量
+能自愈，并发请求不再互相拖死。
+
+### Added
+- **`hippocampus/vecmath.py`**：numpy 优先、无 numpy 自动回退的 `VectorIndex`
+  （归一化后点积、谓词过滤、维度不符跳过并告警）。`HippocampalStore` 与 `DiaryStore`
+  各自缓存一份向量索引，启动时后台预热（`_start_vector_warmup`，守护线程），写路径
+  （`upsert` / `update_embedding` / `delete` / `soft_forget` / `restore` / `add_chunks` /
+  `delete_chunks_for_diary`）增量维护，不需要重建。
+- **嵌入空间指纹**（`handlers/init.py`）：激活 astrmock 时把探测向量（dim-probe）、维度、
+  模型名写入 `hippo_meta` 的 `embedding:fingerprint`。下次激活若维度不同或探测向量余弦
+  < 0.995，判定嵌入空间被换掉，打印明确告警并在后台全量重建 engram 向量与日记分块向量；
+  之前只靠 `embedding_model` 标签（永远是 'astrmock'），换了模型也看不出来。
+- **空向量自愈**：`_check_embedding_space` 每次激活都检查
+  `count_missing_vectors()`，>0 就走 `reembed_stale()`。线上有 60 条
+  `embedding_json='[]'` 且标签正确的 engram（51 条未遗忘），旧触发条件
+  （只有标签不一致才修）永远不会命中它们。
+- **`DiaryStore.rank_chunks()` / `chunk_texts()` / `chunk_diary_ids()`**：日记分块召回
+  只对缓存向量打分，最终只为命中的少数分块读文本。
+- **`HippocampalStore.list_diary_slices()`**：日记回退路径只需要 summary/content，
+  不再用 `list_active(memory_type='diary')` 把每篇日记的 4096 维向量一起解析。
+
+### Changed
+- **`_cos` 维度守卫**：维度不一致直接 0.0，不再把长向量截断到短向量长度继续算
+  （与 `service._diary_cos` 的 v1.41 修复对齐）。
+- **注入锁改为有界等待**：`InjectHandler._LOCK_WAIT = 1.5s`，等不到锁就跳过本次注入
+  （打印一行），而不是让并发请求各自烧完 10s 预算后一起丢注入。
+- **`_post_ingest` 之外的关系也产原子**：`store_summary` 走 LLM 关系时经
+  `_mirror_relation_to_semantic` -> `_atom_from_semantic_relation` 写入 atom 层。
+  生产记忆基本都走 `store_summary`，此前 atoms 表因此长期为空。
+
+### Fixed
+- **跨插件记忆宿主解析**（`astrbot_plugin_your_own_life/life/memory_adapter.py`）：
+  `get_registered_star()` 返回的是 `StarMetadata`，真正的插件实例在 `star_cls` 上；
+  原来直接对元数据取方法，必然抛 `MemoryHostError`，导致 `life_*` / `task_leases` 表全空。
+  现在两种返回形态都接受。
+
+### Notes
+- 实测（线上库副本，4096 维）：`vector_search` 1.1-1.6s -> 0.034s；
+  `rank_chunks` 3.5s -> 0.013s；`recall_diary_chunks` 3.4-3.9s -> 0.11s；
+  `recall` 1.4-1.6s -> 0.07s。首次预热仍要 0.9s（engram）+ 2.6s（日记分块），在后台线程完成。
+- 新增 `tests/_smoke_v96.py`（向量索引 + `_cos` 守卫）、`_smoke_v97.py`（日记分块缓存 +
+  `recall_diary_chunks` 端到端）、`_smoke_v98.py`（嵌入指纹 / 空向量修复 / 注入锁）。
+  全量 88 个 smoke 全绿。
+
 ## [1.77.0] - 2026-10-27
 
 审计驱动的一次结构与正确性收敛。P0 修复空转配置与过期帮助文本，P1 让 atoms /
