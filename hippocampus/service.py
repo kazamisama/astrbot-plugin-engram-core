@@ -1122,8 +1122,6 @@ class MemoryService:
             if graph is not None:
                 graph.remove_engram_refs(engram_id)
                 graph.delete_graph_memory_v2(engram_id)
-                if getattr(self, "semantic", None) is not None:
-                    graph.rebuild_from_semantic(self.semantic)
         except Exception as exc:
             print("[hippocampus] graph cascade error: " + repr(exc))
         try:

@@ -4,6 +4,27 @@
 
 Nothing yet.
 
+## [1.77.2] - 2026-10-28
+
+移除 `graph_adjacency` 这层「从未被写入」的冗余图，并切断删除路径上的整图重建。
+
+### Changed
+- **graph route 只做实体反查**：`GraphRetriever` 去掉 N 跳邻居游走与 `max_hops` 参数；
+  锚点实体命中的 engram 直接经 `graph_engram_refs` 水合。`DualRouteConfig.graph_relation_hops`
+  随之删除。
+- **`GraphStore`**：删除 `graph_adjacency` 表、`add_relation()`、`neighbors()`、`all_relations()`、
+  `rebuild_from_semantic()`；旧库在 `GraphStore` 打开时执行 `DROP TABLE IF EXISTS graph_adjacency`。
+  `stats()` 只返回 `engram_refs`。
+- **删除级联不再重建整张图**：硬删 engram 只清 `graph_engram_refs` 与 graph_v2 行。
+
+### Notes
+- 为什么删：`add_relation()` 在生产零调用，`neighbors()` 永远返回空 -> 多跳游走是死代码。
+  而 `rebuild_from_semantic()` 挂在删除级联上，一次硬删就会把 2120 条 relations 展开成
+  3543 行邻接（实测 1.16s）；其中最高频实体有 245 个邻居、146 条 engram 引用，一跳扩展
+  每个锚点新增 17-217 条候选，足以淹没 RRF 融合。空着「安全」、被重建则洪泛，所以整层移除。
+- 新增 `tests/_smoke_v99.py`（API 面/旧表清理/删除不重建/反查仍可用）；`_smoke_v20.py`
+  改为反向索引契约。全量 89 个 smoke 全绿。
+
 ## [1.77.1] - 2026-10-28
 
 线上取证（`backend.log` 49 次 embedding 桥超时、1 次注入被 10s 硬超时丢弃）后的一轮

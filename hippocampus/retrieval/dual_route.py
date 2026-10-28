@@ -65,8 +65,6 @@ class DualRouteConfig:
     # they only affect the candidate_k multiplier per route.
     document_candidate_k: int = 32
     graph_candidate_k: int = 16
-    # How deep to walk the graph from a matched entity
-    graph_relation_hops: int = 1
     # If the graph route returns no entity matches, skip it entirely
     skip_empty_graph_route: bool = True
     # v1.63: MMR diversity rerank. After RRF fusion, apply Maximal
@@ -603,7 +601,7 @@ class DualRouteRetriever:
         graph_retriever = getattr(self._service, "_graph_retriever", None)
         if graph_retriever is None:
             from .graph_retriever import GraphRetriever
-            graph_retriever = GraphRetriever(self._service, max_hops=self.cfg.graph_relation_hops)
+            graph_retriever = GraphRetriever(self._service)
             self._service._graph_retriever = graph_retriever
         # Cue.k caps the candidate count; fall back to graph_candidate_k
         # when the caller didn't specify a smaller window.

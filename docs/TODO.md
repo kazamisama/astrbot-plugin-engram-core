@@ -338,8 +338,8 @@ docs/HANDOFF_2026-10-27.md 与 CHANGELOG.md 的 [1.77.0] 节。
    现状：11 个 store 类各自 `sqlite3.connect` 到同一个 DB，`MemoryService` 初始化按开关会建
    6–9 条独立连接（`store / semantic / relation_store / diary_store / lease_store / life_graph /
    prospective_store / profile / persona_store`），各持有自己的 `threading.Lock`，跨连接可见性
-   与写并发全靠 SQLite。表示层则同时存在 `entities/relations`、`llm_relations`、`graph_adjacency`、
-   `graph_v2`、`profile_facts`、`life_*`。
+   与写并发全靠 SQLite。表示层则同时存在 `entities/relations`、`llm_relations`、
+   `graph_v2`、`profile_facts`、`life_*`（`graph_adjacency` 已于 v1.77.2 删除）。
    为什么没动：连接收敛需要先决定「谁拥有 DB」以及事务边界（当前很多方法是 `with self._lock, conn`
    的隐式提交），表示收敛要定哪个体系是事实源。两者都不是机械改动，做错会伤到线上 170MB 数据。
 2. **R8：长期空表**。线上 34 张表里 8 张 0 行：`atoms`（v1.77.0 接通后开始增长，先观察）、
@@ -368,6 +368,22 @@ docs/HANDOFF_2026-10-27.md 与 CHANGELOG.md 的 [1.77.0] 节。
 ### 仍然 open
 
 1. **cluster 链（D4-g）**：全库 `similar_to='[]'`，只有 `observe()` 里的模式分离会写；生产记忆走 `store_summary`，`cluster_summaries` / `profile_facts` 因此恒为 0。两条路：按 embedding 相似度在摘要写入时建簇并回填 `similar_to`（复用 `PatternSeparator` 的阈值），或删掉这条链与两张表。需要产品决定。
-2. **graph_adjacency（D4-i）**：`GraphStore.add_relation()` 无生产调用，查询走 graph_v2。删表，或让 graph_v2 写入时同步维护。
-3. **R9 同库多连接 + 六套表示**：见 §6，需要先定「谁拥有 DB / 哪个表示是事实源」。
+2. ~~**graph_adjacency（D4-i）**~~：✅ 已 ship（v1.77.2，整层删除，见 §8）。
+3. **R9 同库多连接 + 五套表示**：见 §6，需要先定「谁拥有 DB / 哪个表示是事实源」。
 4. **format.py 拆分**：纯移动，风险低。
+## 8. v1.77.2（2026-10-28）：删除 graph_adjacency
+
+### 已 ship
+
+| 项 | 内容 |
+| --- | --- |
+| D4-i | `graph_adjacency` 整层删除：建表/索引、`add_relation`、`neighbors`、`all_relations`、`rebuild_from_semantic`；旧库打开时 DROP；`stats()` 只报 `engram_refs` |
+| D4-i | `GraphRetriever` 去掉 `max_hops` 与 N 跳游走，改为纯锚点实体 -> engram 反查；`DualRouteConfig.graph_relation_hops` 删除 |
+| D4-i | 删除级联不再重建整图（原来每次硬删把 2120 条 relations 展开成 3543 行邻接，1.16s；展开后最高频实体 245 邻居，一跳每锚点新增 17-217 条候选） |
+| test | 新增 `_smoke_v99.py`；`_smoke_v20.py` 改为反向索引契约。全量 89 个 smoke 全绿 |
+
+### 仍然 open
+
+1. **cluster 链（D4-g）**：需要产品决定（建簇并接注入消费方 vs 删链）。见 §7 open #1。
+2. **R9**：见 §6，五套表示（`graph_adjacency` 已删）。
+3. **format.py 拆分**：纯移动，风险低。

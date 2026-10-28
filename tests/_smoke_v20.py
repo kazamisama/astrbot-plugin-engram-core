@@ -1,17 +1,18 @@
 """Smoke v1.4 B4: GraphStore + GraphRetriever (keyword + vector + mixed).
 
 Scope of B4: data layer + retrieval. Does NOT replace semantic.py.
-- GraphStore mirrors the entities/relations tables into:
-    graph_adjacency(entity_id, neighbor_id, predicate, weight)
+- GraphStore owns the entity->engram reverse index:
     graph_engram_refs(entity_id, engram_id, weight)
+  (v1.77.2 removed the never-written graph_adjacency mirror; the graph
+  route no longer walks N hops)
 - GraphKeywordRetriever: token-level entity match + scoring
 - GraphVectorRetriever: cosine over entity name embeddings
-- GraphRetriever: fuses both, walks the graph N hops, hydrates engrams
+- GraphRetriever: fuses both, hydrates engrams from the reverse index
 - DualRouteRetriever._graph_route() now delegates to GraphRetriever
 
 Tests:
-- GraphStore schema + add_relation mirrors adjacency in both directions
-- GraphStore.neighbors BFS up to N hops
+- GraphStore reverse index: add / lookup / remove / stats
+- GraphStore drops a legacy graph_adjacency table on open
 - GraphStore.engrams_for reverse index
 - GraphKeywordRetriever exact / partial / alias matches
 - GraphVectorRetriever cosine ordering
@@ -47,64 +48,53 @@ def _new_db():
     return tmp.name
 
 
-def test_graphstore_add_relation_mirrors():
-    banner("GraphStore.add_relation mirrors adjacency + engram refs")
+def test_graphstore_engram_refs():
+    banner("GraphStore reverse index: add / lookup / remove / stats")
     db = _new_db()
     try:
         gs = GraphStore(db)
-        r = Relation(id="r1", subject_id="e1", predicate="likes",
-                      object_id="e2", source_engram_id="en1", confidence=0.9)
-        gs.add_relation(r)
-        stats = gs.stats()
-        assert stats["adjacency"] == 2, "undirected: should have 2 rows (e1<->e2, e2<->e1)"
-        assert stats["engram_refs"] == 2, "e1->en1 and e2->en1"
-        # neighbors
-        n1 = gs.neighbors("e1", max_hops=1)
-        n2 = gs.neighbors("e2", max_hops=1)
-        ids1 = {x[0] for x in n1}
-        ids2 = {x[0] for x in n2}
-        assert "e2" in ids1 and "e1" in ids2
-        # engrams_for
-        e_for_e1 = gs.engrams_for("e1", limit=10)
-        e_for_e2 = gs.engrams_for("e2", limit=10)
-        assert e_for_e1 and e_for_e1[0][0] == "en1"
-        assert e_for_e2 and e_for_e2[0][0] == "en1"
+        gs.add_entity_engram_ref("e1", "en1", weight=1.0)
+        gs.add_entity_engram_ref("e2", "en1", weight=0.5)
+        assert gs.stats() == {"engram_refs": 2}, gs.stats()
+        e1 = gs.engrams_for("e1", limit=10)
+        e2 = gs.engrams_for("e2", limit=10)
+        assert e1 and e1[0] == ("en1", 1.0), e1
+        assert e2 and e2[0] == ("en1", 0.5), e2
+        assert gs.remove_engram_refs("en1") == 2
+        assert gs.stats()["engram_refs"] == 0
+        gs.add_entity_engram_ref("e1", "en2")
+        gs.remove_entity("e1")
+        assert gs.stats()["engram_refs"] == 0
+        # Schema contract: the dead adjacency mirror must not come back.
+        names = {r[0] for r in gs._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "graph_adjacency" not in names, names
+        assert "graph_engram_refs" in names
         gs.close()
-        print("  add_relation mirror: OK (2 adj, 2 refs, both directions)")
+        print("  reverse index: OK (no graph_adjacency table)")
     finally:
         import gc; gc.collect()
         try: os.unlink(db)
         except Exception: pass
 
 
-def test_graphstore_neighbors_bfs():
-    banner("GraphStore.neighbors BFS up to N hops")
+def test_graphstore_drops_legacy_adjacency():
+    banner("GraphStore drops a legacy graph_adjacency table on open")
     db = _new_db()
     try:
+        import sqlite3
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE graph_adjacency (entity_id TEXT, neighbor_id TEXT,"
+            " predicate TEXT, weight REAL);"
+            "INSERT INTO graph_adjacency VALUES ('a','b','p',1.0);")
+        conn.commit(); conn.close()
         gs = GraphStore(db)
-        # Build chain: a - r1 - b - r2 - c - r3 - d
-        gs.add_relation(Relation(id="r1", subject_id="a", predicate="p",
-                                  object_id="b", source_engram_id="e1"))
-        gs.add_relation(Relation(id="r2", subject_id="b", predicate="p",
-                                  object_id="c", source_engram_id="e2"))
-        gs.add_relation(Relation(id="r3", subject_id="c", predicate="p",
-                                  object_id="d", source_engram_id="e3"))
-        # 1 hop from a -> only b
-        h1 = gs.neighbors("a", max_hops=1)
-        assert {x[0] for x in h1} == {"b"}
-        # 2 hops from a -> b, c
-        h2 = gs.neighbors("a", max_hops=2)
-        assert {x[0] for x in h2} == {"b", "c"}
-        # 3 hops from a -> b, c, d
-        h3 = gs.neighbors("a", max_hops=3)
-        assert {x[0] for x in h3} == {"b", "c", "d"}
-        # depth values
-        dmap = {x[0]: x[1] for x in h3}
-        assert dmap["b"] == 1 and dmap["c"] == 2 and dmap["d"] == 3
-        # starting entity not included
-        assert "a" not in {x[0] for x in h3}
+        names = {r[0] for r in gs._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "graph_adjacency" not in names, names
         gs.close()
-        print("  neighbors BFS: OK (1/2/3-hop)")
+        print("  legacy table dropped: OK")
     finally:
         import gc; gc.collect()
         try: os.unlink(db)
@@ -234,7 +224,7 @@ def test_graph_retriever_fusion_via_service():
         assert any(h.route.value == "graph" for h in hits), \
             "graph route should still find Alice via entity_refs fallback"
         # Direct GraphRetriever invocation
-        gr = GraphRetriever(svc, max_hops=1)
+        gr = GraphRetriever(svc)
         rcs = gr.search(Cue(text="Alice Americano", k=5))
         # Empty graph_engram_refs, but fallback returns at least the e1
         assert rcs, "GraphRetriever should fall back to entity_refs path"
@@ -261,7 +251,7 @@ def test_graph_retriever_fast_path():
         # No entity_refs on engram, but mirror into GraphStore.
         gs = GraphStore(db)
         gs.add_entity_engram_ref("ent_alice", e1.id, weight=1.0)
-        gr = GraphRetriever(svc, max_hops=1)
+        gr = GraphRetriever(svc)
         rcs = gr.search(Cue(text="Alice", k=5))
         assert rcs, "fast path: should hit the reverse index"
         assert any(rc.item.id == e1.id for rc in rcs)
@@ -287,8 +277,8 @@ def test_public_exports():
 
 
 def main():
-    test_graphstore_add_relation_mirrors()
-    test_graphstore_neighbors_bfs()
+    test_graphstore_engram_refs()
+    test_graphstore_drops_legacy_adjacency()
     test_keyword_retriever_scoring()
     test_vector_retriever_ordering()
     test_graph_retriever_fusion_via_service()

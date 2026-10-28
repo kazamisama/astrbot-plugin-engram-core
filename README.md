@@ -11,7 +11,9 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
 > atoms 由关系抽取驱动(中文也能产出)、帮助文本改为从命令注册表生成、两个空转的
 > `diary_message_*` 配置成为真实字段、死代码/死表/死端点清理。
 > v1.77.1: 向量索引缓存(注入的数据路径 5.3s -> 0.2s)、嵌入空间指纹 + 空向量自动修复、
-> 注入锁有界等待、LLM 关系也产原子。详见 `CHANGELOG.md`。
+> 注入锁有界等待、LLM 关系也产原子。
+> v1.77.2: 移除从未写入的 `graph_adjacency` 邻接层与 N 跳游走,graph route 改为纯
+> 实体→engram 反查;硬删不再触发整图重建。详见 `CHANGELOG.md`。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -39,7 +41,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v98,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v99,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 

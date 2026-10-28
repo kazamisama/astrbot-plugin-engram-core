@@ -81,7 +81,7 @@ class GraphKeywordRetriever:
         """Open the graph DB and do a LIKE over the entities table.
 
         We reach into the same SQLite file that SemanticStore writes to,
-        so a fresh graph_adjacency is only useful after rebuild_from_semantic.
+        so the entities table always reflects the latest ingestion.
         For a brand-new DB the entities table is empty and search returns [].
         """
         import sqlite3

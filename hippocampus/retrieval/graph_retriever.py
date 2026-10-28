@@ -1,7 +1,13 @@
 # v1.4 B4: GraphRetriever -- the high-level facade for the graph route.
 # Single-file layout.
-# Fuses keyword + vector retrievers, then walks the graph N hops to pull in
-# engrams that are transitively related to the matched entities.
+# Fuses exact-token and vector entity matches, then hydrates the entities'
+# engrams through the graph_engram_refs reverse index.
+#
+# v1.77.2: the N-hop adjacency walk is gone with GraphStore.neighbors().
+# It could never run in production (the adjacency table had no writer) and,
+# when it was rebuilt from `relations`, hub entities flooded the fusion with
+# 17-217 extra candidates per anchor. The graph route is now a precise
+# entity-mention index: exact names and name embeddings in, engrams out.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,7 +34,7 @@ class GraphRetriever:
 
     The retriever owns the GraphStore, the embedder, and the keyword /
     vector sub-retrievers. Construction takes either a MemoryService
-    (convenience) or the three components directly.
+    (convenience) or the components directly.
     """
 
     def __init__(
@@ -37,7 +43,6 @@ class GraphRetriever:
         *,
         graph: GraphStore | None = None,
         embedder: EmbeddingProvider | None = None,
-        max_hops: int = 1,
     ) -> None:
         if service is not None:
             self._service = service
@@ -49,7 +54,6 @@ class GraphRetriever:
             self._service = None
             self._graph = graph
             self._embedder = embedder
-        self._max_hops = max(1, int(max_hops))
         self._keyword = GraphKeywordRetriever(self._graph)
         if service is not None:
             vec_limit = int(getattr(service.cfg, "graph_vector_entity_limit",
@@ -115,13 +119,12 @@ class GraphRetriever:
         if not anchors:
             return []
 
-        # 3) Walk the graph up to max_hops, collecting engram ids with
-        #    depth-decayed scores.
+        # 3) Collect the engrams each anchor mentions.
         scored_engrams: dict[str, float] = {}
         matched_names: dict[str, str] = {}
         for anchor in anchors:
-            self._expand(anchor, scored_engrams, matched_names,
-                          max_hops=self._max_hops, limit=64)
+            self._collect_anchor_engrams(anchor, scored_engrams, matched_names,
+                                         limit=64)
 
         # 4) Hydrate engrams. Prefer the existing store; fall back to the
         #    service's store when standalone.
@@ -179,33 +182,23 @@ class GraphRetriever:
 
     # -- internals -----------------------------------------------------
 
-    def _expand(
+    def _collect_anchor_engrams(
         self,
         anchor: EntityMatch,
         scored_engrams: dict[str, float],
         matched_names: dict[str, str],
         *,
-        max_hops: int,
         limit: int,
     ) -> None:
-        # Anchor engrams at depth 0.
+        """Attach the engrams that mention this anchor entity.
+
+        v1.77.2: only the depth-0 reverse-index lookup remains. The old
+        one-hop neighbour expansion was removed with the adjacency table.
+        """
         for eid in anchor.engram_refs[:limit]:
             prev = scored_engrams.get(eid, 0.0)
             scored_engrams[eid] = max(prev, anchor.score * 1.0)
             matched_names.setdefault(eid, anchor.entity.name)
-        if max_hops < 1:
-            return
-        neighbors = self._graph.neighbors(anchor.entity.id, max_hops=max_hops)
-        import math
-        for nb_id, depth, _pred in neighbors:
-            # depth decay
-            decay = 1.0 / (1.0 + depth)
-            for eid, w in self._graph.engrams_for(nb_id, limit=limit):
-                prev = scored_engrams.get(eid, 0.0)
-                cand = anchor.score * decay * float(w)
-                if cand > prev:
-                    scored_engrams[eid] = cand
-                matched_names.setdefault(eid, anchor.entity.name)
 
 
 def _fuse_anchors(kw: list[EntityMatch], vc: list[EntityMatch]) -> list[EntityMatch]:
