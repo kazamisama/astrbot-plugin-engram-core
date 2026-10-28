@@ -6,6 +6,7 @@ from .llm import LLMProvider, RuleLLMProvider
 from .config import MemoryConfig
 from .valence import ValenceScorer
 from .prompts import get_prompt
+from hippocampus.observability import note as _obs_note
 
 _TOPIC_KEYWORDS = {
     "preference": ["喜欢", "讨厌", "prefer", "like", "hate", "favorite", "love", "dislike"],
@@ -41,13 +42,6 @@ _LLM_SYSTEM = (
     "importance (重要度 0-1, 含强烈偏好/计划/身份/负面情绪的取 >= 0.7)。"
 )
 
-
-def _build_extract_prompt(text: str, channel_ctx: str = "") -> str:
-    """FIX (v1.56): prepend optional channel context (群聊名 / 私聊对方)
-    so the LLM can resolve ambiguous references like "我" / "那个群" /
-    "上次说的人" in the user message."""
-    head = (channel_ctx + "\n" if channel_ctx else "")
-    return head + "用户消息：\n" + text
 
 
 class EngramEncoder:
@@ -129,7 +123,7 @@ class EngramEncoder:
                     if p:
                         sys = sys + "\n\n" + p
                 except Exception:
-                    pass
+                    _obs_note("encoder", "_try_llm_extract")
             user = get_prompt("encoder_extract_user_head", namespace=_pn).format(
                 channel_ctx=(channel_ctx + chr(10)) if channel_ctx else "", text=text)
             raw = self._llm.chat(sys, user, temperature=0.1, max_tokens=600)

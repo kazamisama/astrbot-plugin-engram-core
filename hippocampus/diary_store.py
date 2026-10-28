@@ -28,6 +28,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from hippocampus.observability import note as _obs_note
 
 
 def _now() -> float:
@@ -146,7 +147,7 @@ class DiaryStore:
                 from .sqlite_util import apply_pragmas
                 apply_pragmas(self._conn)
             except Exception:
-                pass
+                _obs_note("diary_store", "_ensure_conn")
         if not self._initialized:
             self._init_schema()
             self._initialized = True
@@ -184,7 +185,7 @@ class DiaryStore:
             if col not in cols:
                 conn.execute("ALTER TABLE " + table + " ADD COLUMN " + col + " " + decl)
         except Exception:
-            pass
+            _obs_note("diary_store", "_add_col_if_missing")
 
     def close(self) -> None:
         # FIX (v1.42) BUG-7: flush any pending buffered lines before close
@@ -192,7 +193,7 @@ class DiaryStore:
         try:
             self.flush_now()
         except Exception:
-            pass
+            _obs_note("diary_store", "close")
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -372,29 +373,6 @@ class DiaryStore:
             "DELETE FROM daily_messages WHERE " + " AND ".join(where), params)
         c.commit()
         return cur.rowcount or 0
-
-    def add_lines_batch(self, lines: list) -> int:
-        """FIX (v1.41) for BUG-7: insert N lines inside a single commit
-        so a hot channel does not fsync once per message. Same INSERT
-        shape as add_line; returns rows inserted.
-        """
-        if not lines:
-            return 0
-        c = self._ensure_conn()
-        rows = [
-            (ln.id, ln.channel_id, ln.chat_type, ln.actor_id, ln.speaker,
-             ln.content, ln.ts, 1 if ln.is_bot else 0, ln.group_id,
-             ln.group_name, ln.peer_actor_id, ln.peer_name, ln.session_id,
-             ln.platform, ln.persona_id, ln.scope_id)
-            for ln in lines]
-        c.executemany(
-            "INSERT OR REPLACE INTO daily_messages(id,channel_id,chat_type,"
-            "actor_id,speaker,content,ts,is_bot,group_id,group_name,"
-            "peer_actor_id,peer_name,session_id,platform,persona_id,scope_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            rows)
-        c.commit()
-        return len(rows)
 
     def count_lines(self) -> int:
         self.flush_now()  # BUG-7: pending buffer must be visible here

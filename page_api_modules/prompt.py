@@ -18,15 +18,6 @@ class PromptHandler:
         except Exception as e:
             return self.utils.error(f"list prompts failed: {e!r}")
 
-    def get_prompt(self, service, name: str) -> dict[str, Any]:
-        if service is None:
-            return self.utils.error("Memory service not initialized.")
-        name = (name or "").strip()
-        for item in service.list_prompts():
-            if item["name"] == name:
-                return self.utils.ok(item)
-        return self.utils.error("unknown prompt: " + name)
-
     def update_prompt(self, service, name: str, content: str) -> dict[str, Any]:
         if service is None:
             return self.utils.error("Memory service not initialized.")

@@ -6,43 +6,7 @@ Also re-checks that export/import round-trips still work end to end.
 import os, json, tempfile, sys, types, asyncio, re
 
 
-def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    captured = {}
-    def register(*args, **kwargs):
-        # main.py mirrors HIPPO_VERSION onto HippocampusStar._registered_version
-        if len(args) >= 4:
-            captured["version"] = args[3]
-        def deco(cls):
-            cls._registered_version = captured.get("version")
-            return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
-    return captured
+from _smoke_common import install_stub as _install_stub
 
 
 _captured = _install_stub()
@@ -89,7 +53,7 @@ def test_export_uses_format_version():
                     channel_id="g1", content="Shirley loves espresso")
         out = os.path.join(td, "dump.json")
         msg = export_engrams(svc, out)
-        assert "exported" in msg, msg
+        assert "exported" in msg or "已导出" in msg, msg
         payload = json.load(open(out, encoding="utf-8"))
         assert payload["version"] == EXPORT_FORMAT_VERSION, payload["version"]
         assert len(payload["engrams"]) >= 1
@@ -114,7 +78,7 @@ def test_import_roundtrip_and_warn():
         # current-version import: no warn
         svc2 = _new_service(td)
         msg = import_engrams(svc2, out)
-        assert "imported" in msg, msg
+        assert "imported" in msg or "已导入" in msg, msg
         assert "warn" not in msg, ("current version should not warn", msg)
         asyncio.run(svc2.stop_background_tasks())
         svc2.close()
@@ -128,8 +92,8 @@ def test_import_roundtrip_and_warn():
         json.dump(payload, open(stale, "w", encoding="utf-8"))
         svc3 = _new_service(td)
         msg2 = import_engrams(svc3, stale)
-        assert "imported" in msg2, msg2
-        assert "warn" in msg2 and "0.7" in msg2, ("stale import should warn", msg2)
+        assert "imported" in msg2 or "已导入" in msg2, msg2
+        assert ("warn" in msg2 or "警告" in msg2) and "0.7" in msg2, ("stale import should warn", msg2)
         asyncio.run(svc3.stop_background_tasks())
         svc3.close()
         del svc3
@@ -141,7 +105,7 @@ def test_import_roundtrip_and_warn():
         json.dump(payload, open(nov, "w", encoding="utf-8"))
         svc4 = _new_service(td)
         msg3 = import_engrams(svc4, nov)
-        assert "imported" in msg3 and "warn" not in msg3, msg3
+        assert ("imported" in msg3 or "已导入" in msg3) and "warn" not in msg3, msg3
         asyncio.run(svc4.stop_background_tasks())
         svc4.close()
         del svc4

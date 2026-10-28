@@ -93,7 +93,6 @@ class AstrBotLLMProvider(LLMProvider):
     by the plugin (it knows the AstrBot Context object)."""
     def __init__(self, bridge=None) -> None:
         self._bridge = bridge
-    def set_bridge(self, bridge) -> None: self._bridge = bridge
     def name(self) -> str: return "astrmock"
     def chat(self, system: str, user: str, **kw) -> str:
         if self._bridge is None: return ""

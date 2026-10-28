@@ -21,6 +21,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
+from hippocampus.observability import note as _obs_note
 
 if TYPE_CHECKING:
     from .service import MemoryService
@@ -78,7 +79,7 @@ def _forget_handler(service, *, engram_id: str, hard: bool = False) -> str:
             try:
                 service._invalidate_search_cache()
             except Exception:
-                pass
+                _obs_note("tools", "_forget_handler")
         except Exception as exc:
             return json.dumps({"ok": False, "error": "hard delete failed: " + str(exc)}, ensure_ascii=False)
         return json.dumps({"ok": True, "engram_id": eid, "mode": "hard"}, ensure_ascii=False)
@@ -87,7 +88,7 @@ def _forget_handler(service, *, engram_id: str, hard: bool = False) -> str:
         try:
             service._invalidate_search_cache()
         except Exception:
-            pass
+            _obs_note("tools", "_forget_handler")
     return json.dumps({"ok": bool(ok), "engram_id": eid, "mode": "soft"}, ensure_ascii=False)
 
 
@@ -230,7 +231,7 @@ def _memorize_handler(service, *, content: str, actor_id: str = "agent", importa
             e.importance = max(0.0, min(1.0, float(importance)))
             service.store.upsert(e)
         except Exception:
-            pass
+            _obs_note("tools", "_memorize_handler")
     return json.dumps({
         "ok": True,
         "engram_id": e.id,

@@ -19,7 +19,7 @@ from .format import (
     render_stats,
 )
 from .recall import emb_bridge_for_context
-from .help_text import HELP_TEXT
+from .help_text import HELP_TEXT, get_help_text
 
 __all__ = [
     "_extract",
@@ -42,4 +42,5 @@ __all__ = [
     "render_stats",
     "emb_bridge_for_context",
     "HELP_TEXT",
+    "get_help_text",
 ]

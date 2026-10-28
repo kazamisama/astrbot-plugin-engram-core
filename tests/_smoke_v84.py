@@ -81,6 +81,51 @@ def test_emb_bridge_hang_bounded():
         r.EMB_BRIDGE_TIMEOUT = old
 
 
+class _SameProvCtx:
+    """Context whose two resolution getters return the SAME provider object.
+
+    That is the real AstrBot shape: the configured provider id resolves to
+    the very instance get_all_embedding_providers() also yields. The old
+    bridge capped each attempt separately, so a wedged provider cost 2x
+    EMB_BRIDGE_TIMEOUT and swallowed the injection's whole 10s budget.
+    """
+
+    def __init__(self):
+        prov = type("P", (), {})()
+        prov.get_embedding = self._hang
+        self._prov = prov
+
+    async def _hang(self, text):
+        await asyncio.sleep(999)
+
+    def get_provider_by_id(self, pid):
+        return self._prov
+
+    def get_all_embedding_providers(self):
+        return [self._prov]
+
+    def get_using_embedding_provider(self):
+        return self._prov
+
+
+def test_emb_bridge_one_budget_for_all_steps():
+    old = EMB_BRIDGE_TIMEOUT
+    try:
+        import handlers.recall as r
+        r.EMB_BRIDGE_TIMEOUT = 0.4
+        t0 = time.perf_counter()
+        out = asyncio.run(emb_bridge_for_context(_SameProvCtx(), "x",
+                                                 provider_id="Qwen3-Embedding-8B"))
+        dt = time.perf_counter() - t0
+        assert out == [], out
+        # one budget, not two: dedupe + deadline keep this near 0.4s
+        assert dt < 0.75, dt
+        print(f"R5 emb bridge spends ONE budget across resolution steps ({dt:.2f}s): OK")
+    finally:
+        import handlers.recall as r
+        r.EMB_BRIDGE_TIMEOUT = old
+
+
 def test_worker_rebuild_after_wedge():
     # 1) hard hang -> timeout (marks worker wedged)
     async def _hang():
@@ -178,6 +223,7 @@ def test_observe_releases_on_timeout():
 
 def main():
     test_emb_bridge_hang_bounded()
+    test_emb_bridge_one_budget_for_all_steps()
     test_worker_rebuild_after_wedge()
     test_sync_fn_bounded()
     test_observe_releases_on_timeout()

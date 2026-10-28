@@ -210,6 +210,8 @@ _FIELDS: dict[str, _FieldSpec] = {
     "diary_chunk_max_chars": _FieldSpec(int, (50, 4000), label_zh="日记分块字数", label_en="Diary chunk max chars"),
     "diary_inject_top_n": _FieldSpec(int, (0, 20), label_zh="日记注入条数", label_en="Diary inject top n"),
     "diary_inject_min_score": _FieldSpec(float, (0.0, 1.0), label_zh="日记注入最低得分", label_en="Diary inject min score"),
+    "diary_message_batch_size": _FieldSpec(int, (1, 10000), label_zh="日记写入缓冲批大小", label_en="Diary message batch size"),
+    "diary_message_flush_interval_seconds": _FieldSpec(float, (0.0, 3600.0), label_zh="日记缓冲最长滞留秒数", label_en="Diary message flush interval seconds"),
     # v1.72 diary prompt overrides
     "diary_system_prompt_override": _FieldSpec(str, label_zh="日记系统提示词覆盖", label_en="Diary system prompt override"),
     "diary_user_prompt_head_override": _FieldSpec(str, label_zh="日记用户提示词头部覆盖", label_en="Diary user prompt head override"),

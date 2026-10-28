@@ -15,6 +15,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from hippocampus.observability import note as _obs_note
 
 
 def _now() -> float:
@@ -96,7 +97,7 @@ class PersonaStore:
             try:
                 conn.execute("ALTER TABLE personas ADD COLUMN tags TEXT")
             except Exception:
-                pass
+                _obs_note("persona", "_init_schema")
         conn.commit()
 
     def close(self) -> None:

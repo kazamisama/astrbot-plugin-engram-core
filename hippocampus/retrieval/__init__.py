@@ -4,8 +4,10 @@ Split out of hippocampus/recall.py for v1.3 dual-route support.
 - rrf.py                 Reciprocal Rank Fusion algorithm + result dataclass
 - dual_route.py          Document route + graph route + RRF merge
 
-The original `recall.py` PatternCompleter still works; it now delegates to
-retrieval.rrf.rrf_fuse for the merge step.
+v1.77.0: DualRouteRetriever is now the ONLY retrieval pipeline. The
+original PatternCompleter (recall.py) was merged into it and deleted --
+its tier routing, DG expansion, metamemory confidences, mood/activation/
+frequency bonuses and cue.mode handling all live in dual_route.py.
 """
 from .rrf import (
     RRFFusion,

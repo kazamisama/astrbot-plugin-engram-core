@@ -5,6 +5,7 @@ write and recall. Legacy mode keeps the old behaviour (empty scope).
 """
 from __future__ import annotations
 from typing import Any
+from hippocampus.observability import note as _obs_note
 
 GLOBAL_SCOPE = "scope:global"
 
@@ -33,7 +34,7 @@ def _event_value(event: Any, method: str, attr: str = "") -> str:
             v = fn()
             return str(v).strip() if v is not None else ""
         except Exception:
-            pass
+            _obs_note("memory_scope", "_event_value")
     v = getattr(event, attr or method, "")
     return str(v).strip() if v is not None else ""
 

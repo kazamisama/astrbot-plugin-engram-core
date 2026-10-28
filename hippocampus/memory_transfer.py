@@ -5,6 +5,7 @@ import io
 import json
 import time
 from typing import Any
+from hippocampus.observability import note as _obs_note
 
 TRANSFER_FORMAT = "engram"
 TRANSFER_SCHEMA_VERSION = 1
@@ -80,7 +81,7 @@ def _normalize_entry(raw: Any, index: int) -> dict[str, Any]:
     try:
         importance = max(0.0, min(1.0, float(raw.get("importance", 0.5) or 0.5)))
     except Exception:
-        pass
+        _obs_note("memory_transfer", "_normalize_entry")
     topics = raw.get("topics") or []
     if isinstance(topics, str):
         try:

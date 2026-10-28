@@ -32,10 +32,6 @@ class GraphEdgeV2:
     def edge_key(self) -> str:
         return f"{self.source_key}|{self.relation_type}|{self.target_key}|{self.source_memory_id}"
 
-    @property
-    def semantic_edge_key(self) -> str:
-        return f"{self.source_key}|{self.relation_type}|{self.target_key}"
-
 
 @dataclass(slots=True)
 class GraphEntryV2:

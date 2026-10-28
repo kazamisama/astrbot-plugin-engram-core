@@ -23,56 +23,17 @@ attribute.  That is why the original bug slipped past CI.  v70
 installs a minimal `astrbot.core.agent.message` stub so the real
 TextPart import succeeds and the structural code path is taken.
 """
-import sys, os, types
+import sys, os, threading, types
+
+
+from _smoke_common import install_stub as _install_core_stub, install_textpart
 
 
 def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    msg_pkg = types.ModuleType("astrbot.core")
-    msg_ag = types.ModuleType("astrbot.core.agent")
-    msg_am = types.ModuleType("astrbot.core.agent.message")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    # Minimal TextPart — real one in astrbot.core.agent.message; we only
-    # need the surface the plugin uses: text=, type=, mark_as_temp().
-    class TextPart:
-        def __init__(self, text, type="text"):
-            self.text = text
-            self.type = type
-            self._is_temp = False
-        def mark_as_temp(self):
-            self._is_temp = True
-            return self
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    msg_am.TextPart = TextPart
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
-    sys.modules["astrbot.core"] = msg_pkg
-    sys.modules["astrbot.core.agent"] = msg_ag
-    sys.modules["astrbot.core.agent.message"] = msg_am
+    # Superset astrbot stub + the TextPart module: this test exercises
+    # the structured-prompt path, so TextPart must exist.
+    _install_core_stub()
+    install_textpart()
 
 
 _install_stub()
@@ -266,8 +227,40 @@ def test_textpart_path_disabled_blocks_skipped():
     print("  selective gating respected + wrap/mark present: OK")
 
 
+def test_timeout_worker_does_not_mutate_request():
+    banner("timeout: the detached worker must not touch a released request")
+    cfg = _cfg(
+        auto_inject_enabled=True,
+        auto_inject_top_k=2,
+        auto_inject_position="before",
+        persona_inject_enabled=False,
+        relation_inject_top_n=0,
+        diary_inject_top_n=0,
+    )
+    # Once the hook's asyncio.wait_for fires it sets this event, and the
+    # still-running worker must bail out BEFORE splicing blocks into req:
+    # the LLM provider may already be reading the request by then.
+    stop = threading.Event()
+    stop.set()
+    h = InjectHandler(_FakeService(cfg))
+    req = _ReqWithParts(prompt="原始问题")
+    h._handle_inject_sync(_FakeEvent("hello"), req, stop)
+    assert req.extra_user_content_parts == [], req.extra_user_content_parts
+    assert req.prompt == "原始问题", req.prompt
+
+    # Control: the same call without a tripped flag does inject, so the
+    # assertion above is about the flag, not a dead code path.
+    h2 = InjectHandler(_FakeService(cfg))
+    req2 = _ReqWithParts(prompt="原始问题")
+    h2._handle_inject_sync(_FakeEvent("hello"), req2)
+    assert req2.extra_user_content_parts, "control run must inject"
+    assert req2.prompt == "原始问题", req2.prompt
+    print("  tripped flag aborts before req mutation; control still injects: OK")
+
+
 if __name__ == "__main__":
     test_textpart_path_order_and_wrapping()
     test_textpart_path_position_after()
     test_textpart_path_disabled_blocks_skipped()
+    test_timeout_worker_does_not_mutate_request()
     print("\nALL v1.67.1 issue #8 (TextPart order + wrap) smoke tests passed.")

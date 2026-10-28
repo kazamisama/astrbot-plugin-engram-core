@@ -2,9 +2,12 @@
 
 Scope:
 - page_api.py + 5 page_api_modules/ (utils + stats + memory + recall + graph)
-- PluginPageApi.register_routes() registers 8 endpoints with prefix
-  /astrbot_plugin_engram_core/page/{health,stats,memories,memories/detail,
-   memories/delete,recall/test,graph/overview,graph/query}
+- PluginPageApi.register_routes() registers every endpoint listed in
+  page_api.ROUTES (34 as of v1.77.0) under prefix
+  /astrbot_plugin_engram_core/page. The test asserts the route table and
+  the actual registrations agree in BOTH directions, so the list cannot
+  silently drift again (the v1.4x docstring claimed 14 while 35 were
+  registered).
 - _conf_schema.json: 15 fields (was 14), bot_language at top;
   descriptions sourced from ConfigManager.LABELS.en (B7+B9 link)
 - PluginInitializer.initialize() now calls i18n_init(bot_language)
@@ -24,44 +27,7 @@ import asyncio
 import os, sys, json, tempfile, types
 
 
-def _install_stub():
-    a = types.ModuleType("astrbot")
-    ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star")
-    em = types.ModuleType("astrbot.api.event")
-    class Star: pass
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: pass
-    class AstrMessageEvent: pass
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star
-    sm.register = register
-    sm.Context = Context
-    em.filter = _F
-    em.AstrMessageEvent = AstrMessageEvent
-    em.EventMessageType = _MT
-    sys.modules["astrbot"] = a
-    sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm
-    sys.modules["astrbot.api.event"] = em
+from _smoke_common import install_stub as _install_stub
 
 
 _install_stub()
@@ -139,7 +105,6 @@ def test_register_routes_8_endpoints():
         "/astrbot_plugin_engram_core/page/personas/update",
         "/astrbot_plugin_engram_core/page/personas/delete",
         "/astrbot_plugin_engram_core/page/prompts",
-        "/astrbot_plugin_engram_core/page/prompts/detail",
         "/astrbot_plugin_engram_core/page/prompts/update",
         "/astrbot_plugin_engram_core/page/prompts/reset",
         "/astrbot_plugin_engram_core/page/memories/export",
@@ -149,7 +114,15 @@ def test_register_routes_8_endpoints():
     assert len(set(paths)) == len(paths), "duplicate route path registered"
     for p in expected_paths:
         assert p in paths, "missing route: " + p
-    print("  24 endpoints registered with correct paths: OK")
+    # v1.77.0: ROUTES is the single source of truth -- compare both ways so
+    # an endpoint added to (or dropped from) the table must also be updated
+    # here, and a registration that bypasses the table fails loudly.
+    from page_api import PAGE_API_PREFIX, ROUTES
+    table_paths = [PAGE_API_PREFIX + suffix for suffix, _h, _m, _d in ROUTES]
+    assert sorted(paths) == sorted(table_paths), (
+        "ROUTES and register_routes disagree: "
+        + repr(sorted(set(paths) ^ set(table_paths))))
+    print("  " + str(len(paths)) + " endpoints registered, ROUTES matches: OK")
 
 
 def test_endpoint_response_shapes():

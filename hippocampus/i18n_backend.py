@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from hippocampus.observability import note as _obs_note
 
 # Module-level state. init() rewrites these.
 _translations: dict = {}
@@ -82,7 +83,7 @@ def init(language: str = "zh") -> None:
     except Exception:
         # LABELS not yet available (e.g. circular import during test
         # bootstrapping). Skip; t("config.X") will fall through to key.
-        pass
+        _obs_note("i18n_backend", "init")
 
 
 def _load_json(lang: str) -> dict:
@@ -129,6 +130,22 @@ def t(key: str, **kwargs) -> str:
             return value.format(**kwargs)
         except Exception:
             return value
+    return value
+
+
+def t_or(key: str, default: str = "") -> str:
+    """Like t(), but returns `default` instead of the missing-key sentinel.
+
+    Used where a missing translation is an acceptable fallback (generated
+    help lines) rather than a programming error (a UI string).
+    """
+    value = _walk(_translations, key)
+    if value is None:
+        value = _walk(_fallback, key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        return str(value)
     return value
 
 

@@ -1,57 +1,88 @@
 {
-  "_meta": {
-    "lang": "zh",
-    "fallback_for": [
-      "en"
-    ]
-  },
+  "_meta": {},
   "help": {
-    "full_text": "## astrbot-plugin-engram-core\nv1.4.x - 类海马体长期记忆框架\n\n/recall <query>                                   召回相关记忆(默认 hybrid)\n/mem help                                         列出本帮助\n/mem model                                        列出当前 + 可用模型\n/mem model use embedding <n>                      切换 embedding provider\n/mem model use llm <n>                            切换 llm provider\n/mem rebuild                                      手动重算全量 embedding\n/mem prospective                                  看待办触发器\n/mem stats                                        库内统计\n/mem forget <id>                                  删 engram(支持 id 前缀匹配)\n/mem search <q> [--mode=vector|fts|hybrid|dual]  显式指定召回模式(dual=双路RRF)\n/mem export <path>                                导出库到 JSON\n/mem import <path>                                从 JSON 读入(请 /mem rebuild)\n/mem graph <entity>                               拉实体 + 关系 + 来源 engram\n/mem cluster <id>                                 查 engram 的 similar_to 簇 (DG 模式分离)\n/mem narrative <topic>                            按 entity/topic 串成自传式叙事\n/mem replay                                      手动触发 SWR 复现(伴随 decay/GC/promote)\n/mem valence                                     情绪价分布直方图\n/mem streams                                     什么/何时在哪里 两流拆分\n/mem profile [actor]                              查看/构建用户自我画像(v1.1)\n/mem activate <seed1> [seed2 ...]                 联想激活网络展开(v1.1)\n/mem remember <predicate> <value> [actor]          手动写入自我画像事实(v1.1)\n/mem cluster-list                                 列出已生成的聚类摘要(v1.1)\n/mem confidence <query>                           召回并显示元记忆置信度(v1.2)\n/mem decaycurve [id|all]                          遗忘曲线可视化(v1.2)\n/mem consolidate                                  手动触发巩固(含情节->语义抽象, v1.2)\n/mem diary                                        手动生成前一日的日记(调试/验证, v1.22)\\n/mem debug <query>                                双路 retriever 诊断报告: route 分布 + RRF 拆解 + MMR 砍掉谁 (v1.64 B14)"
+    "header": "## astrbot-plugin-engram-core\nv{version} · 海马体长期记忆",
+    "usage": {
+      "recall": "/recall <query>",
+      "mem help": "/mem help",
+      "mem stats": "/mem stats",
+      "mem search": "/mem search <q> [--mode=vector|fts|hybrid|dual]",
+      "mem model": "/mem model",
+      "mem model use embedding": "/mem model use embedding <n>",
+      "mem model use llm": "/mem model use llm <n>",
+      "mem rebuild": "/mem rebuild",
+      "mem prospective": "/mem prospective",
+      "mem session": "/mem session",
+      "mem profile": "/mem profile [actor]",
+      "mem persona": "/mem persona [actor]",
+      "mem activate": "/mem activate <seed1> [seed2 ...]",
+      "mem remember": "/mem remember <predicate> <value> [actor]",
+      "mem cluster": "/mem cluster <id>",
+      "mem cluster-list": "/mem cluster-list",
+      "mem confidence": "/mem confidence <query>",
+      "mem decaycurve": "/mem decaycurve [id|all]",
+      "mem consolidate": "/mem consolidate",
+      "mem diary": "/mem diary",
+      "mem forget": "/mem forget <id>",
+      "mem export": "/mem export <path>",
+      "mem import": "/mem import <path>",
+      "mem graph": "/mem graph <entity>",
+      "mem narrative": "/mem narrative <topic>",
+      "mem debug": "/mem debug <query>",
+      "mem replay": "/mem replay",
+      "mem valence": "/mem valence",
+      "mem streams": "/mem streams",
+      "mem tier": "/mem tier [reclass]"
+    },
+    "desc": {
+      "recall": "召回相关记忆（默认 hybrid 混合检索）",
+      "mem help": "显示本帮助（随命令表生成）",
+      "mem stats": "存储统计",
+      "mem search": "按指定模式检索（dual=双路 RRF，含图谱）",
+      "mem model": "查看当前与可用模型",
+      "mem model use embedding": "切换 embedding provider",
+      "mem model use llm": "切换 LLM provider",
+      "mem rebuild": "重建全部向量",
+      "mem prospective": "列出待触发的预期记忆",
+      "mem session": "查看当前会话摘要与缓冲状态",
+      "mem profile": "查看/构建用户自我模型",
+      "mem persona": "查看 persona 画像",
+      "mem activate": "扩散激活网络",
+      "mem remember": "手工写入一条自我模型事实",
+      "mem cluster": "查看 engram 的 similar_to 聚类",
+      "mem cluster-list": "列出聚类摘要",
+      "mem confidence": "检索并显示元记忆置信度",
+      "mem decaycurve": "遗忘曲线可视化",
+      "mem consolidate": "手动触发巩固（去重合并/晋升/聚类摘要/情景→语义）",
+      "mem diary": "手动生成昨日日记（调试/补写）",
+      "mem forget": "删除 engram（支持 id 前缀）",
+      "mem export": "导出为 JSON",
+      "mem import": "从 JSON 导入（导入后需 /mem rebuild）",
+      "mem graph": "展开实体 + 关系 + 来源 engram",
+      "mem narrative": "围绕实体/主题编织自传体叙事",
+      "mem debug": "双路检索诊断（各路命中/RRF/MMR）",
+      "mem replay": "手动触发 SWR 重放（衰减/GC/晋升）",
+      "mem valence": "情绪效价直方图",
+      "mem streams": "什么 / 何时何地 双流分布",
+      "mem tier": "查看 hot/warm/cold 分层，reclass 重新分类"
+    }
   },
   "error": {
     "service_not_initialized": "Memory service not initialized."
   },
   "recall": {
     "no_memory": "No memories found.",
-    "related_header": "Related memories:\n",
-    "related_item": "- {summary}",
-    "no_hit": "[{mode}] no hit for: {query}",
-    "hits_header": "[{mode}] hits for: {query}",
-    "hits_item": "- {score}  {summary}",
-    "search_usage": "usage: /mem search <query> [--mode=vector|fts|hybrid|dual]"
+    "related_item": "- {summary}"
   },
-  "usage": {
-    "remember": "usage: /mem remember <predicate> <value> [actor]"
-  },
+  "usage": {},
   "forget": {
-    "usage": "usage: /mem forget <id>",
-    "ambiguous": "ambiguous: {n} matches: {ids}; use full id"
+    "usage": "usage: /mem forget <id>"
   },
-  "no_prospective": "No pending triggers.",
-  "cluster": {
-    "empty": "(no cluster summaries yet - try /mem replay)",
-    "summaries_header": "## cluster summaries ({n})",
-    "summary_line": "- {id8} (n={n})  {gist}"
-  },
-  "valence": {
-    "header": "## valence distribution",
-    "line": "  {k}: {n}"
-  },
-  "stream": {
-    "header": "## stream breakdown",
-    "line_what": "  what (ventral, identity/fact/preference): {n}",
-    "line_where_when": "  where_when (dorsal, place/time/plan):  {n}",
-    "line_untyped": "  untyped:                              {n}"
-  },
-  "remembered": "remembered: {pred} = {val} (id={id8})",
-  "replay": {
-    "ok": "replay: merged={m} promoted={p} archived={a} replayed={r}",
-    "err": "ERR: {err}"
-  },
-  "consolidated": "consolidated: {res}",
-  "model": {
-    "summary": "embedding.current = {cur_emb}\nembedding.available = {avail_emb}\nllm.current = {cur_llm}\nllm.available = {avail_llm}"
-  },
+  "cluster": {},
+  "valence": {},
+  "stream": {},
+  "replay": {},
+  "model": {},
   "debug": {
     "usage": "usage: /mem debug <query>",
     "header": "## debug: {query}  k={k}",
@@ -71,5 +102,120 @@
     "summary_candidates": "  total RRF candidates: {n}",
     "summary_returned": "  returned (top-k):      {n}",
     "summary_cut": "  cut by MMR/k:          {n}"
+  },
+  "common": {
+    "on": "开",
+    "off": "关"
+  },
+  "cmd": {
+    "service_down": "记忆服务未初始化。",
+    "ambiguous": "匹配到 {n} 条：{preview}；请用完整 id",
+    "not_found": "未找到：{id}",
+    "err": "错误：{err}",
+    "forget": {
+      "ok": "已遗忘 {id8}：{summary}"
+    },
+    "stats": {
+      "body": "## 统计\n记忆(engrams)：  {engrams}\nFTS 索引：       {fts}\n实体：           {entities}\n触发器待触发：   {pending}\n触发器已触发：   {fired}\n嵌入模型：       {embedding}\nLLM：            {llm}\n--- v1.0 ---\n效价分布：       {valence}\n流(stream)：     {stream}\n软遗忘：         {forgotten}\n--- v1.1 ---\n画像事实：       {profile}\n聚类摘要：       {cluster}\n--- v1.2 ---\n元记忆：         {metamemory}\n情景→语义：      {epi_sem}\n已整合事实：     {consolidated}\n"
+    },
+    "export": {
+      "usage": "用法：/mem export <路径>",
+      "done": "已导出：记忆={engrams} 实体={entities} 关系={relations} 触发器={triggers} -> {path}"
+    },
+    "import": {
+      "usage": "用法：/mem import <路径>",
+      "done": "已导入：记忆={engrams} 实体={entities} 关系={relations} 触发器={triggers}；请运行 /mem rebuild 重建嵌入{fmt_warn}",
+      "fmt_warn": " [警告：导出格式 v{fmt} != 当前 v{cur}]"
+    },
+    "cluster": {
+      "usage": "用法：/mem cluster <id>",
+      "header": "## {title} 的集群",
+      "root": "根节点：{id8}",
+      "no_links": "（没有 similar_to 关联）",
+      "similar": "similar_to：{n} 个兄弟节点",
+      "via": "经由 {id8}",
+      "orphan": "（孤立根）",
+      "sibling": "  - {id8}：{title}  [{tag}]"
+    },
+    "narrative": {
+      "usage": "用法：/mem narrative <主题>",
+      "none": "没有找到与主题相关的记忆：{topic}",
+      "header": "## 叙事：{topic}",
+      "seeds": "种子记忆：{n} 条，扩展后：{m} 条",
+      "linked": "关联:{n}"
+    },
+    "profile": {
+      "disabled": "画像层未启用（cfg.enable_profile=False）",
+      "empty": "（{actor} 还没有画像事实，需要更多记忆）"
+    },
+    "activation": {
+      "disabled": "激活层未启用（需要 cfg.enable_semantic=True）",
+      "usage": "用法：/mem activate <种子1> [种子2 ...]",
+      "none": "没有激活结果：{seeds}",
+      "header": "## 从 {seeds} 扩散激活（深度={depth} 衰减={decay} 下限={floor}）"
+    },
+    "graph": {
+      "disabled": "记忆服务或语义层未初始化。",
+      "usage": "用法：/mem graph <实体>",
+      "none": "没有找到实体/关系：{q}",
+      "header": "## {q} 的图谱",
+      "entities": "### 实体",
+      "relations": "### 关系",
+      "engrams": "### 来源记忆",
+      "entity_line": "- {name}（{type}，提及={n}）",
+      "relation_line": "- {sub} --[{pred}]--> {obj}（置信度={conf}）",
+      "engram_line": "- {id8}：{summary}"
+    },
+    "confidence": {
+      "usage": "用法：/mem confidence <查询>",
+      "none": "（没有召回到记忆：{q}）",
+      "header": "## {q} 的元记忆评估",
+      "tip": "舌尖现象"
+    },
+    "decay": {
+      "not_found": "未找到该 id 的记忆：{id}",
+      "empty": "（没有可绘制的记忆）",
+      "header": "## 遗忘曲线（未来 {days} 天）"
+    },
+    "dual": {
+      "usage": "用法：/mem search <查询> --mode=dual",
+      "no_hit": "[dual] 没有命中：{q}",
+      "header": "[dual] 命中：{q}  (doc=文档路 graph=实体路)",
+      "via": "经由 {entity}"
+    },
+    "session": {
+      "header": "## 会话过滤",
+      "enabled": "启用：          {v}",
+      "platform_allow": "平台白名单：    {v}",
+      "platform_block": "平台黑名单：    {v}",
+      "channel_allow": "频道白名单：    {v}",
+      "channel_block": "频道黑名单：    {v}",
+      "actor_allow": "用户白名单：    {v}",
+      "keywords_block": "关键词屏蔽：    {v}",
+      "quick_test": "### 快速测试",
+      "pass": "通过",
+      "deny": "拒绝({reason})",
+      "all": "（全部）",
+      "case_priv": "默认私聊",
+      "case_spam": "默认 + 广告词"
+    },
+    "tier": {
+      "err": "分层计算失败：{err}",
+      "header": "## 记忆分层 (hot/warm/cold)",
+      "hot": "  热 (hot)： {n}  → 优先召回",
+      "warm": "  温 (warm)：{n}  → 正常召回",
+      "cold": "  冷 (cold)：{n}  → 仅兜底召回",
+      "total": "  总计：    {n}",
+      "changed": "  本次重算变更：{n}",
+      "archived": "  已归档(冷存文件)：{n}"
+    },
+    "archive": {
+      "invalid": "分层归档：{v}",
+      "error": "冷层归档失败：{err}",
+      "header": "## 冷层归档",
+      "archived": "  已归档并从库中移除：{n}",
+      "skipped": "  因太新跳过：{n}",
+      "path": "  归档文件：{path}"
+    }
   }
 }

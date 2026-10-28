@@ -21,51 +21,14 @@ Covers:
 import sys, os, types
 
 
+from _smoke_common import install_stub as _install_core_stub, install_textpart
+
+
 def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    msg_pkg = types.ModuleType("astrbot.core")
-    msg_ag = types.ModuleType("astrbot.core.agent")
-    msg_am = types.ModuleType("astrbot.core.agent.message")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    class TextPart:
-        def __init__(self, text, type="text"):
-            self.text = text
-            self.type = type
-            self._is_temp = False
-        def mark_as_temp(self):
-            self._is_temp = True
-            return self
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    msg_am.TextPart = TextPart
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
-    sys.modules["astrbot.core"] = msg_pkg
-    sys.modules["astrbot.core.agent"] = msg_ag
-    sys.modules["astrbot.core.agent.message"] = msg_am
+    # Superset astrbot stub + the TextPart module: this test exercises
+    # the structured-prompt path, so TextPart must exist.
+    _install_core_stub()
+    install_textpart()
 
 
 _install_stub()

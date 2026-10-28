@@ -4,6 +4,7 @@ from typing import Iterable
 from .types import Engram
 from .embeddings import EmbeddingProvider
 from .db_migration import run_migrations
+from hippocampus.observability import note as _obs_note
 
 def _cos(a, b) -> float:
     if not a or not b: return 0.0
@@ -135,13 +136,11 @@ class HippocampalStore:
               source TEXT
             );
 
-            -- v1.3: rebuild_embeddings checkpoint (idempotent, no-op on existing DBs)
-            CREATE TABLE IF NOT EXISTS rebuild_state (
-              model TEXT PRIMARY KEY,
-              last_id TEXT DEFAULT '',
-              processed INTEGER DEFAULT 0,
-              updated_at REAL DEFAULT 0.0
-            );
+            -- v1.77.0: rebuild_state is gone. The embedding-rebuild
+            -- checkpoint was never written (the reindex command that would
+            -- have used it never existed), so the table and its three
+            -- helpers were pure residue. A DROP below also clears it from
+            -- installs created before this version.
 
             -- v1.10: small key/value meta (e.g. active tokenizer mode)
             CREATE TABLE IF NOT EXISTS hippo_meta (
@@ -161,6 +160,13 @@ class HippocampalStore:
         ran = run_migrations(self._conn, self._lock)
         for v in ran:
             print("[hippocampus] applied compat migration: " + v)
+        # v1.77.0: drop the dead rebuild_state table left by older installs
+        # (see the note where its CREATE used to be).
+        try:
+            with self._lock, self._conn:
+                self._conn.execute("DROP TABLE IF EXISTS rebuild_state")
+        except Exception as _rb:
+            print("[hippocampus] rebuild_state drop skipped: " + repr(_rb))
         # v1.36: index on persona_id, created after the column-append
         # migration guarantees the column exists (old DBs included).
         try:
@@ -262,7 +268,7 @@ class HippocampalStore:
                             if isinstance(vals, list):
                                 parts.append(" ".join(str(v) for v in vals))
                         except Exception:
-                            pass
+                            _obs_note("storage", "reindex_fts")
                 from .tokenizer import tokenize
                 fts = tokenize(" ".join(p for p in parts if p),
                                self._tokenizer_mode)
@@ -399,14 +405,6 @@ class HippocampalStore:
                 print("[hippocampus] derived delete hook error: " + repr(exc))
         return ok
 
-    def all_after(self, after_id: str, limit: int = 100) -> list:
-        """Return engrams with id > `after_id`, ordered by id ASC. Used by v1.3 rebuild checkpoint."""
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "SELECT * FROM engrams WHERE id > ? ORDER BY id ASC LIMIT ?",
-                (after_id, int(limit)))
-            return [Engram.from_row(dict(r)) for r in cur.fetchall()]
-
     def recent_for_session(self, session_id: str, k: int = 5,
                           include_forgotten: bool = False) -> list:
         """Return up to k engrams for a session, newest-first.
@@ -486,34 +484,6 @@ class HippocampalStore:
                 "UPDATE engrams SET embedding_json=?, embedding_model=? WHERE id=?",
                 (json.dumps(embedding, ensure_ascii=False), model, eid))
 
-
-    # ---------- v1.3: rebuild_state checkpoint helpers ----------
-    def get_rebuild_state(self, model: str) -> dict:
-        """Return {last_id, processed, updated_at} for `model`. Empty dict if unset."""
-        with self._lock:
-            cur = self._conn.execute(
-                "SELECT last_id, processed, updated_at FROM rebuild_state WHERE model=?",
-                (model,))
-            row = cur.fetchone()
-        if row is None:
-            return {'last_id': '', 'processed': 0, 'updated_at': 0.0}
-        return {"last_id": row[0] or "", "processed": int(row[1] or 0), "updated_at": float(row[2] or 0.0)}
-
-    def set_rebuild_state(self, model: str, last_id: str, processed: int) -> None:
-        """Upsert a checkpoint row. Raises on failure (caller decides rollback)."""
-        import time as _time
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO rebuild_state(model, last_id, processed, updated_at) "
-                "VALUES(?,?,?,?) "
-                "ON CONFLICT(model) DO UPDATE SET last_id=excluded.last_id, "
-                "processed=excluded.processed, updated_at=excluded.updated_at",
-                (model, last_id, int(processed), _time.time()))
-
-    def clear_rebuild_state(self, model: str) -> None:
-        """Remove the checkpoint row for `model`. Used when caller wants a full rebuild."""
-        with self._lock, self._conn:
-            self._conn.execute("DELETE FROM rebuild_state WHERE model=?", (model,))
 
     # ---------- v1.0 biology helpers ----------
     def iter_for_replay(self, k: int = 50) -> list:
@@ -719,7 +689,7 @@ class HippocampalStore:
                     if removed_edges:
                         stats["graph_edges"] = removed_edges
                 except Exception:
-                    pass
+                    _obs_note("storage", "_cascade_derived")
                 # `graph_engram_refs` is GraphRetriever's entity->engram reverse
                 # index, keyed by engram_id. A stale row is only harmless
                 # because `_passes_filters` re-checks `forgotten_at` on both the
@@ -732,7 +702,7 @@ class HippocampalStore:
                     if n:
                         stats["graph_engram_refs"] = n
                 except Exception:
-                    pass
+                    _obs_note("storage", "_cascade_derived")
                 stats["graph_entries"] = len(ids)
 
                 # v1.76.25: the four stores that survived the first cascade.
@@ -754,8 +724,13 @@ class HippocampalStore:
                     cur = self._conn.execute(
                         "DELETE FROM diary_chunks WHERE diary_id=?", (eid,))
                     stats["diary_chunks"] = int(cur.rowcount or 0)
-                except Exception:
+                except sqlite3.OperationalError:
+                    # DiaryStore creates this table lazily; a store that has
+                    # never written a diary (or a fresh test DB) has no table
+                    # to cascade into. That is not a swallowed failure.
                     pass
+                except Exception:
+                    _obs_note("storage", "_cascade_derived")
                 for tbl, key in (("relations", "source_engram_id"),
                                  ("llm_relations", "source_engram_id"),
                                  ("llm_relations", "engram_id")):
@@ -770,7 +745,7 @@ class HippocampalStore:
                         if n:
                             stats[tbl] = stats.get(tbl, 0) + n
                     except Exception:
-                        pass
+                        _obs_note("storage", "_cascade_derived")
                 removed_nodes = 0
                 for nid in node_ids:
                     try:
@@ -782,7 +757,7 @@ class HippocampalStore:
                                 "DELETE FROM graph_nodes_v2 WHERE id=?", (nid,))
                             removed_nodes += 1
                     except Exception:
-                        pass
+                        _obs_note("storage", "_cascade_derived")
                 stats["graph_nodes"] = removed_nodes
         except Exception as ex:
             print("[hippocampus] derived cascade error: " + repr(ex))
@@ -848,7 +823,7 @@ class HippocampalStore:
         sql = "SELECT * FROM engrams"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._lock, self._conn:
             rows = self._conn.execute(sql, params).fetchall()
@@ -887,7 +862,7 @@ class HippocampalStore:
                    SELECT 1 FROM json_each(engrams.entity_refs)
                    WHERE json_each.value = ?
                  ) AND forgotten_at = 0
-                 ORDER BY created_at DESC LIMIT ?"""
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?"""
         try:
             with self._lock, self._conn:
                 rows = self._conn.execute(sql, (entity_id, limit)).fetchall()
@@ -1168,7 +1143,7 @@ class HippocampalStore:
                 self._conn.execute(
                     "DELETE FROM memory_sources WHERE memory_id=?", (memory_id,))
         except sqlite3.OperationalError:
-            pass
+            _obs_note("storage", "delete_memory_source")
 
     # ---------- v1.1: cluster_summaries CRUD ----------
     def get_cluster_summary(self, cluster_id: str):

@@ -25,6 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
+from hippocampus.observability import note as _obs_note
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ def _copy_sqlite_consistent(src_path: str, dst_path: str) -> None:
             if os.path.exists(tmp):
                 os.remove(tmp)
         except Exception:
-            pass
+            _obs_note("backup_manager", "_copy_sqlite_consistent")
         print("[hippocampus] online sqlite backup failed, falling back to "
               "raw copy: " + repr(ex))
         shutil.copy2(src_path, dst_path)
@@ -172,6 +173,7 @@ class BackupManager:
                 try:
                     data = json.load(open(sp, "r", encoding="utf-8"))
                 except Exception:
+                    _obs_note("backup_manager", "list_backups")
                     continue
                 out.append(BackupRecord(
                     backup_id=bid, db_path=dbp, sidecar_path=sp,
@@ -263,11 +265,11 @@ class BackupManager:
             try:
                 os.unlink(r.db_path)
             except OSError:
-                pass
+                _obs_note("backup_manager", "cleanup")
             try:
                 os.unlink(r.sidecar_path)
             except OSError:
-                pass
+                _obs_note("backup_manager", "cleanup")
             removed += 1
         return removed
 

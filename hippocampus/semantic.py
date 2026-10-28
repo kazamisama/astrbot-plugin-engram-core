@@ -2,6 +2,38 @@ from __future__ import annotations
 import json, sqlite3, threading, re
 from .types import Entity, Relation, Engram
 from .config import MemoryConfig
+from hippocampus.observability import note as _obs_note
+
+PREFERENCE_PREDICATES = frozenset({"likes", "loves", "prefers", "dislikes", "hates"})
+
+
+def _relation_atom_dicts(rels, names: dict, preference_predicates) -> list[dict]:
+    """Turn Relation rows into name-keyed atom dicts.
+
+    Shared by SemanticStore.atoms_from_relations (ids resolved against the
+    entities table) and EntityExtractor.extract_atoms (names captured while
+    the extractor registers entities). Whoever produced the relations, the
+    atom shape is identical -- which is the point: the two sides of the
+    v1.4 atom plumbing used to disagree on it.
+    """
+    out: list[dict] = []
+    for r in rels:
+        subject = (names.get(r.subject_id) or "").strip()
+        obj = (names.get(r.object_id) or "").strip()
+        if not (subject and obj):
+            continue
+        kind = "preference" if r.predicate in preference_predicates else "fact"
+        out.append({
+            "subject": subject,
+            "predicate": r.predicate,
+            "object": obj,
+            "kind": kind,
+            "confidence": float(r.confidence),
+            "importance": 0.6 if kind == "preference" else 0.5,
+            "decay_type": "preference" if kind == "preference" else "semantic",
+        })
+    return out
+
 
 class SemanticStore:
     _max_source_refs = 200
@@ -212,6 +244,34 @@ class SemanticStore:
                 "UPDATE relations SET confidence=? WHERE id=?", (c, relation_id))
         return cur.rowcount > 0
 
+    def _entity_names(self, ids) -> dict[str, str]:
+        """Resolve entity ids to names in one query (no N+1)."""
+        ids = [i for i in ids if i]
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id, name FROM entities WHERE id IN (" + marks + ")",
+                tuple(ids)).fetchall()
+        return {row["id"]: row["name"] for row in rows}
+
+    def atoms_from_relations(self, rels) -> list[dict]:
+        """Convert Relation rows into atom dicts keyed by entity NAME.
+
+        AtomLifecycleManager speaks names (subject / predicate / object);
+        the relation layer speaks ids. The resolution happens here, in one
+        batched lookup, so every caller gets the same canonical names.
+
+        v1.77.0: before this, extract_atoms handed the lifecycle manager
+        subject_id / object_id, which the manager then stringified into
+        empty subjects and skipped. Result: the atoms table stayed at 0
+        rows in production for the whole life of the feature.
+        """
+        names = self._entity_names(
+            {r.subject_id for r in rels} | {r.object_id for r in rels})
+        return _relation_atom_dicts(rels, names, PREFERENCE_PREDICATES)
+
 _TYPE_HINTS: list[tuple[str, str]] = [
     ("shanghai", "place"), ("beijing", "place"), ("shenzhen", "place"),
     ("guangzhou", "place"), ("hangzhou", "place"), ("tokyo", "place"),
@@ -256,7 +316,8 @@ class EntityExtractor:
         return out
 
     def extract_relations(self, engram: Engram, entities: list[Entity],
-                          actor_id: str | None = None, resolve=None) -> list[Relation]:
+                          actor_id: str | None = None, resolve=None,
+                          name_out: dict | None = None) -> list[Relation]:
         out: list[Relation] = []
         text = engram.content.lower()
         e_by_name = {e.name.lower(): e for e in entities}
@@ -288,7 +349,7 @@ class EntityExtractor:
                 try:
                     self._identity_by_actor.pop(next(iter(self._identity_by_actor)), None)
                 except Exception:
-                    pass
+                    _obs_note("semantic", "extract_relations")
 
         def _subject() -> Entity | None:
             person = next((e for e in entities if e.type == "person"), None)
@@ -311,6 +372,9 @@ class EntityExtractor:
                 place = _ensure(place_name, "place")
                 sub = _subject()
                 if sub is not None and sub.id != place.id:
+                    if name_out is not None:
+                        name_out[sub.id] = sub.name
+                        name_out[place.id] = place.name
                     out.append(Relation(
                         subject_id=sub.id, predicate="resides_in", object_id=place.id,
                         source_engram_id=engram.id, confidence=0.8,
@@ -327,36 +391,29 @@ class EntityExtractor:
             obj = _ensure(mm.group(1).strip(), "object")
             sub = _subject()
             if sub is not None and sub.id != obj.id:
+                if name_out is not None:
+                    name_out[sub.id] = sub.name
+                    name_out[obj.id] = obj.name
                 out.append(Relation(
                     subject_id=sub.id, predicate=pred, object_id=obj.id,
                     source_engram_id=engram.id, confidence=conf,
                     created_at=engram.created_at))
         return out
-    _PREFERENCE_PREDICATES = frozenset({"likes", "loves", "prefers", "dislikes", "hates"})
+
+    _PREFERENCE_PREDICATES = PREFERENCE_PREDICATES
 
     def extract_atoms(self, engram):
         # v1.4 B3 hook: produce atom dicts from this engram.
-        # Thin wrapper over extract_relations. Each relation becomes a
-        # candidate (subject_id, predicate, object_id) atom. The caller
-        # (MemoryService) resolves id -> name on the way into the
-        # AtomStore; that is where the canonical normalization happens.
+        # v1.77.0: names are captured while extract_relations registers its
+        # entities (name_out). Before this the dicts carried subject_id /
+        # object_id, which AtomLifecycleManager stringified into empty
+        # subjects -- every atom was skipped and production had 0 rows.
         if not getattr(engram, "content", None):
             return []
+        names: dict[str, str] = {}
         try:
-            rels = self.extract_relations(engram, entities=[], actor_id=engram.actor_id)
+            rels = self.extract_relations(
+                engram, entities=[], actor_id=engram.actor_id, name_out=names)
         except Exception:
             return []
-        out_atoms = []
-        for r in rels:
-            kind = "preference" if r.predicate in self._PREFERENCE_PREDICATES else "fact"
-            decay = "preference" if kind == "preference" else "semantic"
-            out_atoms.append({
-                "subject_id": r.subject_id,
-                "predicate": r.predicate,
-                "object_id": r.object_id,
-                "kind": kind,
-                "confidence": float(r.confidence),
-                "importance": 0.6 if kind == "preference" else 0.5,
-                "decay_type": decay,
-            })
-        return out_atoms
+        return _relation_atom_dicts(rels, names, PREFERENCE_PREDICATES)

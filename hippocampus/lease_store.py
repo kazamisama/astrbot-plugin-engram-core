@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from hippocampus.observability import note as _obs_note
 
 
 def _now() -> float:
@@ -109,4 +110,4 @@ class TaskLeaseStore:
             try:
                 self._conn.close()
             except Exception:
-                pass
+                _obs_note("lease_store", "close")

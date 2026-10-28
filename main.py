@@ -70,7 +70,7 @@ from handlers import (
     format_narrative,
     format_profile,
     format_session,
-    HELP_TEXT,
+    get_help_text,
     import_engrams,
     parse_search_args,
     render_stats,
@@ -159,12 +159,12 @@ class HippocampusStar(Star):
                     if cfg is not None:
                         interval = float(getattr(
                             cfg, "summary_idle_flush_interval_seconds", 60.0) or 60.0)
-                        # FIX (v1.42) BUG-7: clamp the loop to also honour
+                        # Clamp the loop to also honour
                         # diary_message_flush_interval_seconds when it is
                         # shorter, so a low-traffic channel still has its
                         # buffer drained within its own SLA.
-                        diary_interval = float(getattr(
-                            cfg, "diary_message_flush_interval_seconds", 30.0) or 30.0)
+                        diary_interval = float(
+                            cfg.diary_message_flush_interval_seconds or 30.0)
                         if diary_interval > 0:
                             interval = min(interval, max(5.0, diary_interval))
                     await _a.sleep(max(5.0, interval))
@@ -441,7 +441,7 @@ class HippocampusStar(Star):
 
     @filter.command("mem help")
     async def cmd_mem_help(self, event: AstrMessageEvent):
-        yield event.plain_result(HELP_TEXT)
+        yield event.plain_result(get_help_text())
 
     @filter.command("mem stats")
     async def cmd_mem_stats(self, event: AstrMessageEvent):

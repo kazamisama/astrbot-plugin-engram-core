@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 import re
 
+from .jsonparse import as_list as _as_list, parse_json_loose as _parse_json
 from .llm import LLMProvider, RuleLLMProvider
 from .prompts import get_prompt
+from hippocampus.observability import note as _obs_note
 
 
 def target_length(total_chars: int, ratio: float, *,
@@ -136,7 +138,7 @@ class ConversationSummarizer:
                 if p:
                     return base + "\n\n" + p
             except Exception:
-                pass
+                _obs_note("summarizer", "_system_prompt")
         return base
 
     def summarize(self, rec) -> dict:
@@ -207,32 +209,6 @@ class ConversationSummarizer:
             # indistinguishable from a real summary (store_summary tags it)
             "_fallback": True,
         }
-
-
-def _parse_json(raw: str):
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw).strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", raw, re.S)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            return None
-    return None
-
-
-def _as_list(v) -> list:
-    if v is None:
-        return []
-    if isinstance(v, list):
-        return [x for x in v if x is not None]
-    return [v]
 
 
 _VALID_TYPES = {"person", "place", "object", "org", "unknown"}

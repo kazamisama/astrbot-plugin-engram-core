@@ -1,41 +1,7 @@
 """Smoke v0.9: DG pattern-separation (merge / link / new) + cluster expansion at recall + /mem cluster command + bidirectional + cap + kill switch."""
 import os, tempfile, sys, types, asyncio, json
 
-def _install_astrbot_stub():
-    astrbot = types.ModuleType("astrbot"); astrbot_api = types.ModuleType("astrbot.api")
-    star_mod = types.ModuleType("astrbot.api.star")
-    event_mod = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _EventMessageType: ALL = "all"
-    class _Filter:
-        EventMessageType = _EventMessageType
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    star_mod.Star = Star; star_mod.register = register; star_mod.Context = Context
-    event_mod.filter = _Filter
-    event_mod.AstrMessageEvent = AstrMessageEvent
-    event_mod.EventMessageType = _EventMessageType
-    sys.modules["astrbot"] = astrbot
-    sys.modules["astrbot.api"] = astrbot_api
-    sys.modules["astrbot.api.star"] = star_mod
-    sys.modules["astrbot.api.event"] = event_mod
+from _smoke_common import install_stub as _install_astrbot_stub
 
 _install_astrbot_stub()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -111,7 +77,7 @@ def test_enabled_separation():
         # format_cluster helper
         out = format_cluster(svc, a1.id[:4])
         print(out)
-        assert "cluster for" in out
+        assert "cluster for" in out or "的集群" in out
         assert "similar_to" in out
 
         try: svc.close()

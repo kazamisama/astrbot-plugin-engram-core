@@ -4,36 +4,7 @@
 
 import os, tempfile, sys, types, asyncio, time, json
 
-def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
+from _smoke_common import install_stub as _install_stub
 
 _install_stub()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -132,7 +103,7 @@ def test_observe_with_biology():
         assert b["what"] >= 1 and b["where_when"] >= 1
         # render_stats includes v1.0 sections
         s = render_stats(svc)
-        assert "valence" in s and "stream" in s, "render_stats should show v1.0 sections"
+        assert "--- v1.0 ---" in s, "render_stats should show v1.0 sections"
         try: svc.close()
         except Exception: pass
         del svc
@@ -354,8 +325,8 @@ def test_narrative():
                         content=msg)
         out = format_narrative(svc, "Americano")
         print(out)
-        assert "narrative: Americano" in out
-        assert "seed engrams" in out
+        assert "narrative: Americano" in out or ("Americano" in out and "叙事" in out)
+        assert "seed engrams" in out or "种子记忆" in out
         try: svc.close()
         except Exception: pass
         del svc

@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from hippocampus.observability import note as _obs_note
 
 
 class ConvBufferStore:
@@ -74,7 +75,7 @@ class ConvBufferStore:
                     if os.path.exists(tmp):
                         os.unlink(tmp)
                 except OSError:
-                    pass
+                    _obs_note("conv_buffer_store", "save")
 
     def clear(self) -> None:
         """Remove the snapshot (best-effort)."""
@@ -83,6 +84,6 @@ class ConvBufferStore:
         try:
             os.unlink(self.path)
         except FileNotFoundError:
-            pass
+            _obs_note("conv_buffer_store", "clear")
         except OSError as e:
             print("[hippocampus] conv buffer clear failed: " + repr(e))

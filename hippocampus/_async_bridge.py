@@ -31,6 +31,7 @@ import threading
 import time as _time
 from concurrent.futures import TimeoutError as _FutTimeoutError
 from typing import Any, Awaitable
+from hippocampus.observability import note as _obs_note
 
 # Hard caps for the sync<->async bridge (v1.76.13). Generous for a
 # healthy host; they exist so a wedged upstream call degrades to
@@ -101,7 +102,7 @@ def _rebuild_worker() -> bool:
         try:
             old_loop.call_soon_threadsafe(old_loop.stop)
         except Exception:
-            pass
+            _obs_note("async_bridge", "_rebuild_worker")
     if old_thread is not None and old_thread.is_alive():
         old_thread.join(timeout=1.0)
     return True

@@ -1,54 +1,88 @@
 {
-  "_meta": {
-    "lang": "en"
-  },
+  "_meta": {},
   "help": {
-    "full_text": "## astrbot-plugin-engram-core\nv1.4.x - Hippocampus-like long-term memory framework\n\n/recall <query>                                   recall related memories (default hybrid)\n/mem help                                         show this help\n/mem model                                        list current + available models\n/mem model use embedding <n>                      switch embedding provider\n/mem model use llm <n>                            switch llm provider\n/mem rebuild                                      manually rebuild all embeddings\n/mem prospective                                  list pending triggers\n/mem stats                                        store statistics\n/mem forget <id>                                  delete engram (supports id prefix match)\n/mem search <q> [--mode=vector|fts|hybrid|dual]  explicit recall mode (dual=two-route RRF)\n/mem export <path>                                export store to JSON\n/mem import <path>                                import from JSON (run /mem rebuild after)\n/mem graph <entity>                               pull entity + relations + source engrams\n/mem cluster <id>                                 show engram's similar_to cluster (DG separation)\n/mem narrative <topic>                            weave an autobiographical narrative on entity/topic\n/mem replay                                      manually trigger SWR replay (with decay/GC/promote)\n/mem valence                                     emotion valence histogram\n/mem streams                                     what / where+when two-stream breakdown\n/mem profile [actor]                              view / build user self-model (v1.1)\n/mem activate <seed1> [seed2 ...]                 spreading activation network (v1.1)\n/mem remember <predicate> <value> [actor]         manually write a self-model fact (v1.1)\n/mem cluster-list                                 list generated cluster summaries (v1.1)\n/mem confidence <query>                           recall with metamemory confidence (v1.2)\n/mem decaycurve [id|all]                          forgetting-curve visualization (v1.2)\n/mem consolidate                                  manually trigger consolidation (incl. episodic->semantic, v1.2)\n/mem diary                                        manually build yesterday's diary (debug, v1.22)\\n/mem debug <query>                                dual-route retriever diagnostic: route distribution + RRF breakdown + MMR cuts (v1.64 B14)"
+    "header": "## astrbot-plugin-engram-core\nv{version} · hippocampus-like long-term memory",
+    "usage": {
+      "recall": "/recall <query>",
+      "mem help": "/mem help",
+      "mem stats": "/mem stats",
+      "mem search": "/mem search <q> [--mode=vector|fts|hybrid|dual]",
+      "mem model": "/mem model",
+      "mem model use embedding": "/mem model use embedding <n>",
+      "mem model use llm": "/mem model use llm <n>",
+      "mem rebuild": "/mem rebuild",
+      "mem prospective": "/mem prospective",
+      "mem session": "/mem session",
+      "mem profile": "/mem profile [actor]",
+      "mem persona": "/mem persona [actor]",
+      "mem activate": "/mem activate <seed1> [seed2 ...]",
+      "mem remember": "/mem remember <predicate> <value> [actor]",
+      "mem cluster": "/mem cluster <id>",
+      "mem cluster-list": "/mem cluster-list",
+      "mem confidence": "/mem confidence <query>",
+      "mem decaycurve": "/mem decaycurve [id|all]",
+      "mem consolidate": "/mem consolidate",
+      "mem diary": "/mem diary",
+      "mem forget": "/mem forget <id>",
+      "mem export": "/mem export <path>",
+      "mem import": "/mem import <path>",
+      "mem graph": "/mem graph <entity>",
+      "mem narrative": "/mem narrative <topic>",
+      "mem debug": "/mem debug <query>",
+      "mem replay": "/mem replay",
+      "mem valence": "/mem valence",
+      "mem streams": "/mem streams",
+      "mem tier": "/mem tier [reclass]"
+    },
+    "desc": {
+      "recall": "recall related memories (hybrid by default)",
+      "mem help": "show this help (generated from the command table)",
+      "mem stats": "store statistics",
+      "mem search": "explicit recall mode (dual = two-route RRF with the graph)",
+      "mem model": "show current + available models",
+      "mem model use embedding": "switch embedding provider",
+      "mem model use llm": "switch LLM provider",
+      "mem rebuild": "rebuild all embeddings",
+      "mem prospective": "list pending prospective triggers",
+      "mem session": "show the current session summary / buffer state",
+      "mem profile": "view / build the user self-model",
+      "mem persona": "view the persona profile",
+      "mem activate": "spreading-activation network",
+      "mem remember": "write a self-model fact by hand",
+      "mem cluster": "show an engram's similar_to cluster",
+      "mem cluster-list": "list cluster summaries",
+      "mem confidence": "recall with metamemory confidence",
+      "mem decaycurve": "forgetting-curve visualisation",
+      "mem consolidate": "run consolidation (dedupe/promote/cluster/episodic->semantic)",
+      "mem diary": "build yesterday's diary (debug / backfill)",
+      "mem forget": "delete an engram (id prefix match)",
+      "mem export": "export the store to JSON",
+      "mem import": "import from JSON (run /mem rebuild after)",
+      "mem graph": "entity + relations + source engrams",
+      "mem narrative": "weave an autobiographical narrative on entity/topic",
+      "mem debug": "dual-route diagnostic (routes / RRF / MMR)",
+      "mem replay": "trigger SWR replay (decay/GC/promote)",
+      "mem valence": "emotion valence histogram",
+      "mem streams": "what / where+when two-stream breakdown",
+      "mem tier": "show hot/warm/cold tiers; reclass recomputes them"
+    }
   },
   "error": {
     "service_not_initialized": "Memory service not initialized."
   },
   "recall": {
     "no_memory": "No memories found.",
-    "related_header": "Related memories:\n",
-    "related_item": "- {summary}",
-    "no_hit": "[{mode}] no hit for: {query}",
-    "hits_header": "[{mode}] hits for: {query}",
-    "hits_item": "- {score}  {summary}",
-    "search_usage": "usage: /mem search <query> [--mode=vector|fts|hybrid|dual]"
+    "related_item": "- {summary}"
   },
-  "usage": {
-    "remember": "usage: /mem remember <predicate> <value> [actor]"
-  },
+  "usage": {},
   "forget": {
-    "usage": "usage: /mem forget <id>",
-    "ambiguous": "ambiguous: {n} matches: {ids}; use full id"
+    "usage": "usage: /mem forget <id>"
   },
-  "no_prospective": "No pending triggers.",
-  "cluster": {
-    "empty": "(no cluster summaries yet - try /mem replay)",
-    "summaries_header": "## cluster summaries ({n})",
-    "summary_line": "- {id8} (n={n})  {gist}"
-  },
-  "valence": {
-    "header": "## valence distribution",
-    "line": "  {k}: {n}"
-  },
-  "stream": {
-    "header": "## stream breakdown",
-    "line_what": "  what (ventral, identity/fact/preference): {n}",
-    "line_where_when": "  where_when (dorsal, place/time/plan):  {n}",
-    "line_untyped": "  untyped:                              {n}"
-  },
-  "remembered": "remembered: {pred} = {val} (id={id8})",
-  "replay": {
-    "ok": "replay: merged={m} promoted={p} archived={a} replayed={r}",
-    "err": "ERR: {err}"
-  },
-  "consolidated": "consolidated: {res}",
-  "model": {
-    "summary": "embedding.current = {cur_emb}\nembedding.available = {avail_emb}\nllm.current = {cur_llm}\nllm.available = {avail_llm}"
-  },
+  "cluster": {},
+  "valence": {},
+  "stream": {},
+  "replay": {},
+  "model": {},
   "debug": {
     "usage": "usage: /mem debug <query>",
     "header": "## debug: {query}  k={k}",
@@ -68,5 +102,120 @@
     "summary_candidates": "  total RRF candidates: {n}",
     "summary_returned": "  returned (top-k):      {n}",
     "summary_cut": "  cut by MMR/k:          {n}"
+  },
+  "common": {
+    "on": "on",
+    "off": "off"
+  },
+  "cmd": {
+    "service_down": "Memory service not initialized.",
+    "ambiguous": "ambiguous: {n} matches: {preview}; use full id",
+    "not_found": "not found: {id}",
+    "err": "ERR: {err}",
+    "forget": {
+      "ok": "forgot engram {id8}: {summary}"
+    },
+    "stats": {
+      "body": "## stats\nengrams:        {engrams}\nfts indexed:    {fts}\nentities:       {entities}\ntriggers pending: {pending}\ntriggers fired:   {fired}\nembedding:      {embedding}\nllm:            {llm}\n--- v1.0 ---\nvalence:        {valence}\nstream:         {stream}\nsoft-forgotten: {forgotten}\n--- v1.1 ---\nprofile facts:  {profile}\ncluster gists:  {cluster}\n--- v1.2 ---\nmetamemory:     {metamemory}\nepi->sem:       {epi_sem}\nconsolidated facts: {consolidated}\n"
+    },
+    "export": {
+      "usage": "usage: /mem export <path>",
+      "done": "exported: engrams={engrams} entities={entities} relations={relations} triggers={triggers} -> {path}"
+    },
+    "import": {
+      "usage": "usage: /mem import <path>",
+      "done": "imported: engrams={engrams} entities={entities} relations={relations} triggers={triggers}; run /mem rebuild to regenerate embeddings{fmt_warn}",
+      "fmt_warn": " [warn: export format v{fmt} != current v{cur}]"
+    },
+    "cluster": {
+      "usage": "usage: /mem cluster <id>",
+      "header": "## cluster for: {title}",
+      "root": "root: {id8}",
+      "no_links": "(no similar_to links)",
+      "similar": "similar_to: {n} sibling(s)",
+      "via": "via {id8}",
+      "orphan": "(orphan root)",
+      "sibling": "  - {id8}: {title}  [{tag}]"
+    },
+    "narrative": {
+      "usage": "usage: /mem narrative <topic>",
+      "none": "no engrams found for topic: {topic}",
+      "header": "## narrative: {topic}",
+      "seeds": "seed engrams: {n}, expanded to: {m}",
+      "linked": "linked:{n}"
+    },
+    "profile": {
+      "disabled": "profile layer not initialized (cfg.enable_profile=False)",
+      "empty": "(no profile facts yet for {actor} - need more engrams)"
+    },
+    "activation": {
+      "disabled": "activation layer not initialized (need cfg.enable_semantic=True)",
+      "usage": "usage: /mem activate <seed1> [seed2 ...]",
+      "none": "no activation for: {seeds}",
+      "header": "## spreading activation from: {seeds}  (depth={depth} decay={decay} floor={floor})"
+    },
+    "graph": {
+      "disabled": "Memory service or semantic layer not initialized.",
+      "usage": "usage: /mem graph <entity>",
+      "none": "no entities/relations found for: {q}",
+      "header": "## graph for: {q}",
+      "entities": "### entities",
+      "relations": "### relations",
+      "engrams": "### source engrams",
+      "entity_line": "- {name} ({type}, mentions={n})",
+      "relation_line": "- {sub} --[{pred}]--> {obj} (conf={conf})",
+      "engram_line": "- {id8}: {summary}"
+    },
+    "confidence": {
+      "usage": "usage: /mem confidence <query>",
+      "none": "(nothing recalled for: {q})",
+      "header": "## metamemory for: {q}",
+      "tip": "tip-of-tongue"
+    },
+    "decay": {
+      "not_found": "no engram found for id: {id}",
+      "empty": "(no engrams to plot)",
+      "header": "## forgetting curve (next {days} days)"
+    },
+    "dual": {
+      "usage": "usage: /mem search <q> --mode=dual",
+      "no_hit": "[dual] no hit for: {q}",
+      "header": "[dual] hits for: {q}  (doc=document-route graph=entity-route)",
+      "via": "via {entity}"
+    },
+    "session": {
+      "header": "## session filter",
+      "enabled": "enabled:        {v}",
+      "platform_allow": "platform allow:  {v}",
+      "platform_block": "platform block:  {v}",
+      "channel_allow": "channel  allow:  {v}",
+      "channel_block": "channel  block:  {v}",
+      "actor_allow": "actor    allow:  {v}",
+      "keywords_block": "keywords block:  {v}",
+      "quick_test": "### quick test",
+      "pass": "PASS",
+      "deny": "DENY({reason})",
+      "all": "(all)",
+      "case_priv": "default priv",
+      "case_spam": "default + spam"
+    },
+    "tier": {
+      "err": "tier classify error: {err}",
+      "header": "## memory tiers (hot/warm/cold)",
+      "hot": "  hot：  {n}  -> recalled first",
+      "warm": "  warm： {n}  -> normal recall",
+      "cold": "  cold： {n}  -> fallback only",
+      "total": "  total：{n}",
+      "changed": "  changed by this pass：{n}",
+      "archived": "  archived (cold files)：{n}"
+    },
+    "archive": {
+      "invalid": "tier archive: {v}",
+      "error": "cold archive failed: {err}",
+      "header": "## cold archive",
+      "archived": "  archived and removed from DB：{n}",
+      "skipped": "  skipped as too recent：{n}",
+      "path": "  archive file：{path}"
+    }
   }
 }

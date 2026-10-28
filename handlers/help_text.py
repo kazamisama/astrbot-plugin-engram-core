@@ -1,24 +1,54 @@
-"""Help text shown by /mem help. Extracted from main.py cmd_mem_help.
+"""Help text for /mem help, generated from the command registry.
 
-B8: HELP_TEXT is now a function-style accessor returning the
-t(help.full_text) translation for the currently active i18n
-language. The module-level HELP_TEXT constant is kept for
-back-compat (== zh default) and for any code path that imports it
-as a string. New code should call get_help_text() instead.
+v1.77.0: this module used to ship a hand-maintained wall of text that had
+rotted badly -- it still said v1.4.x, listed commands that no longer
+matched the router, omitted /mem persona, /mem session and /mem tier, and
+even contained a literal backslash-n. The text is now BUILT from
+engram_command_registry (the same table main.py dispatches through) plus
+per-command usage/description strings in hippocampus/i18n/{zh,en}.json:
+
+  * the version is read from the package, never hard-coded;
+  * a command added to the router shows up automatically;
+  * a command removed from the router disappears automatically;
+  * a missing usage/description is a test failure (smoke v94), not a
+    silently stale line.
+
+get_help_text() renders in the currently active i18n language; the
+module-level HELP_TEXT constant is the zh default captured at import and
+is kept for callers that only need a string.
 """
-from hippocampus.i18n_backend import init as i18n_init, t as _t
+from __future__ import annotations
 
-# Eagerly init i18n so the module-level HELP_TEXT default is
-# meaningful even before PluginInitializer calls init() with a
-# real language.
+from hippocampus.i18n_backend import init as i18n_init, t as _t, t_or as _t_or
+
+# Eagerly init i18n so the module-level HELP_TEXT default is meaningful
+# even before PluginInitializer calls init() with a real language.
 i18n_init("zh")
-HELP_TEXT_DEFAULT: str = _t("help.full_text")
-HELP_TEXT: str = HELP_TEXT_DEFAULT
+
+_COLUMN = 49
+
+
+def _version() -> str:
+    try:
+        from hippocampus import __version__ as ver
+        return str(ver)
+    except Exception:
+        return "?"
 
 
 def get_help_text() -> str:
-    """Return the help text in the currently active i18n language.
+    """Return the help text in the currently active i18n language."""
+    from engram_command_registry import help_command_names
 
-    Use this in new code instead of the HELP_TEXT constant.
-    """
-    return _t("help.full_text")
+    lines: list[str] = [
+        _t("help.header", version=_version()),
+        "",
+    ]
+    for name in help_command_names():
+        usage = _t_or("help.usage." + name, "/" + name)
+        desc = _t_or("help.desc." + name, "")
+        lines.append((usage.ljust(_COLUMN) + " " + desc).rstrip())
+    return chr(10).join(lines)
+
+
+HELP_TEXT: str = get_help_text()

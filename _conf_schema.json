@@ -40,6 +40,12 @@
         "default": "data/hippocampus.db",
         "description": "SQLite 数据库路径",
         "hint": "记忆数据的本地存储文件路径，相对插件数据目录。"
+      },
+      "write_op_retention_days": {
+        "type": "float",
+        "default": 7.0,
+        "description": "写入日志保留天数",
+        "hint": "memory_write_ops 里已完成的写入操作记录保留多少天后清理。默认 7，0 表示不清理。"
       }
     }
   },
@@ -94,14 +100,6 @@
         "default": "before",
         "description": "自动注入位置",
         "hint": "before=把记忆拼在用户消息之前，after=拼在之后。默认 before。"
-      },
-      "external_plugin_root_tags": {
-        "type": "list",
-        "default": [
-          "xml-extra"
-        ],
-        "description": "外部插件注入根标签白名单（审计用）",
-        "hint": "多插件协调约定：其它插件写入 extra_user_content_parts 时应使用各自的唯一 XML 根标签包裹注入块（见 README「多插件注入协调」一节）。在此登记已知的外部根标签便于审计，例如 xml_structured_output 插件的 xml-extra。仅作登记用途，不影响注入行为。"
       },
       "auto_inject_relative_time": {
         "type": "bool",
@@ -505,6 +503,439 @@
           "archive",
           "delete"
         ]
+      },
+      "working_memory_capacity": {
+        "type": "int",
+        "default": 32,
+        "description": "工作记忆容量",
+        "hint": "每个会话的工作记忆里保留多少条最近记忆，用于理解“它/这个/刚才”这类指代。默认 32。"
+      },
+      "working_memory_max_cells": {
+        "type": "int",
+        "default": 512,
+        "description": "工作记忆最大会话数",
+        "hint": "内存中最多同时保留多少个会话的工作记忆，超出时按最久未使用淘汰。默认 512。"
+      },
+      "working_memory_idle_seconds": {
+        "type": "float",
+        "default": 86400.0,
+        "description": "工作记忆会话空闲秒数",
+        "hint": "某会话多久没新消息就丢弃其工作记忆单元格。默认 86400（1 天）。"
+      },
+      "pattern_separation_threshold": {
+        "type": "float",
+        "default": 0.92,
+        "description": "模式分离阈值",
+        "hint": "两条记忆相似度达到该值即判为“同一条”，写入时直接合并。0-1，默认 0.92。"
+      },
+      "pattern_similar_threshold": {
+        "type": "float",
+        "default": 0.75,
+        "description": "相似判定阈值",
+        "hint": "相似度达到该值（但未到模式分离阈值）时建立 similar_to 双向关联，召回时可一并带出。默认 0.75。"
+      },
+      "recall_candidate_k": {
+        "type": "int",
+        "default": 50,
+        "description": "召回候选数",
+        "hint": "单路召回（向量 / 关键词）先取多少条候选，再融合排序取 top-k。越大越全面也越慢。默认 50。"
+      },
+      "importance_floor_for_long_term": {
+        "type": "float",
+        "default": 0.3,
+        "description": "长期记忆重要性下限",
+        "hint": "重要性低于该值的记忆不会进入长期记忆/晋升候选。默认 0.3。"
+      },
+      "decay_tau_base": {
+        "type": "float",
+        "default": 604800.0,
+        "description": "基础衰减时间常数（秒）",
+        "hint": "艾宾浩斯强度衰减的时间尺度：strength *= exp(-间隔/tau)。默认 604800（7 天），越大衰减越慢。"
+      },
+      "decay_floor": {
+        "type": "float",
+        "default": 0.05,
+        "description": "强度衰减下限",
+        "hint": "强度衰减不低于该值，避免记忆衰减到无法召回。默认 0.05。"
+      },
+      "replay_boost": {
+        "type": "float",
+        "default": 0.02,
+        "description": "SWR 重放强度加成",
+        "hint": "每轮后台重放给高强度记忆的强度加成，模拟睡眠巩固。默认 0.02。"
+      },
+      "reconsolidation_lock_seconds": {
+        "type": "float",
+        "default": 30.0,
+        "description": "再巩固锁窗口（秒）",
+        "hint": "记忆被召回后多少秒内允许新观察改写其内容。默认 30。"
+      },
+      "reconsolidation_update_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用再固化更新",
+        "hint": "允许锁窗口内的新观察更新已召回记忆的内容。默认开启。"
+      },
+      "interference_strength_drop": {
+        "type": "float",
+        "default": 0.05,
+        "description": "前摄干扰强度惩罚",
+        "hint": "新记忆与旧记忆相似并建立关联时，旧记忆强度降低多少。默认 0.05，0 表示不惩罚。"
+      },
+      "temporal_bucket_seconds": {
+        "type": "int",
+        "default": 3600,
+        "description": "时间桶秒数",
+        "hint": "把同一时间段的记忆归到同一桶里的粒度。默认 3600（1 小时），60=按分钟，86400=按天。"
+      },
+      "consolidation_interval_seconds": {
+        "type": "float",
+        "default": 60.0,
+        "description": "后台维护循环周期（秒）",
+        "hint": "重放/晋升/聚类摘要/遗忘等后台维护循环的运行间隔。默认 60。0 表示关闭后台维护。"
+      },
+      "consolidation_max_pairs": {
+        "type": "int",
+        "default": 200,
+        "description": "合并比较对数上限",
+        "hint": "每轮去重合并最多比较多少对相似记忆，控制单轮耗时。默认 200。"
+      },
+      "promote_min_access": {
+        "type": "int",
+        "default": 3,
+        "description": "晋升最小访问次数",
+        "hint": "记忆被召回（含自动注入）达到多少次才允许晋升为长期记忆。默认 3。"
+      },
+      "promote_min_importance": {
+        "type": "float",
+        "default": 0.5,
+        "description": "晋升最小重要性",
+        "hint": "重要性达到该值才允许晋升为长期记忆。默认 0.5。"
+      },
+      "prospective_check_interval": {
+        "type": "float",
+        "default": 5.0,
+        "description": "前瞻记忆检查间隔（秒）",
+        "hint": "待办/提醒类前瞻记忆的条件检查周期。默认 5。0 表示不自动检查。"
+      },
+      "enable_separation": {
+        "type": "bool",
+        "default": true,
+        "description": "启用模式分离（DG）",
+        "hint": "召回时把相似但不同的记忆一起带出并标注，避免张冠李戴。默认开启。"
+      },
+      "separation_max_links": {
+        "type": "int",
+        "default": 5,
+        "description": "相似链长度上限",
+        "hint": "单条记忆最多关联多少个相似记忆（similar_to 链总长度上限）。默认 5。"
+      },
+      "activation_decay": {
+        "type": "float",
+        "default": 0.55,
+        "description": "激活扩散衰减率",
+        "hint": "激活沿语义图谱每跳乘的系数，越小扩散越弱。默认 0.55。"
+      },
+      "activation_floor": {
+        "type": "float",
+        "default": 0.05,
+        "description": "激活扩散下限",
+        "hint": "激活值低于该值即停止继续扩散。默认 0.05。"
+      },
+      "activation_max_depth": {
+        "type": "int",
+        "default": 2,
+        "description": "激活最大深度",
+        "hint": "激活扩散在实体-关系-记忆图上最多走几跳。默认 2。"
+      },
+      "activation_score_weight": {
+        "type": "float",
+        "default": 0.18,
+        "description": "激活分权重",
+        "hint": "激活分数在召回重排中的权重，0 表示不参与。默认 0.18。"
+      },
+      "mood_congruence_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用心境一致召回",
+        "hint": "与当前情绪相近的记忆优先被召回（Bower 1981）。默认开启。"
+      },
+      "mood_congruence_weight": {
+        "type": "float",
+        "default": 0.1,
+        "description": "心境一致权重",
+        "hint": "情绪相近记忆的加分权重，0 表示不加分。默认 0.1。"
+      },
+      "enable_cluster_summarization": {
+        "type": "bool",
+        "default": true,
+        "description": "启用聚类摘要",
+        "hint": "把相似记忆簇总结成一条更高层的记忆（REM 合成）。默认开启。"
+      },
+      "cluster_summary_min_size": {
+        "type": "int",
+        "default": 2,
+        "description": "聚类最小成员数",
+        "hint": "一个簇至少有几条成员才值得生成摘要。默认 2。"
+      },
+      "cluster_summary_max_members": {
+        "type": "int",
+        "default": 8,
+        "description": "聚类最大成员数",
+        "hint": "生成簇摘要时最多把多少条成员喂给 LLM。默认 8。"
+      },
+      "enable_profile": {
+        "type": "bool",
+        "default": true,
+        "description": "启用用户画像事实",
+        "hint": "从关系层沉淀稳定事实到 profile_facts（新皮层类比）。默认开启。"
+      },
+      "profile_min_evidence": {
+        "type": "int",
+        "default": 2,
+        "description": "画像事实最小证据数",
+        "hint": "同一关系至少被观察到多少次才升格为画像事实。默认 2。"
+      },
+      "profile_min_confidence": {
+        "type": "float",
+        "default": 0.6,
+        "description": "画像事实最小置信度",
+        "hint": "关系置信度达到该值才升格为画像事实。默认 0.6。"
+      },
+      "profile_fact_decay_days": {
+        "type": "float",
+        "default": 180.0,
+        "description": "画像事实衰减天数",
+        "hint": "画像事实多久没被刷新后开始降置信直至删除。默认 180。0 表示不衰减。"
+      },
+      "metamemory_high_threshold": {
+        "type": "float",
+        "default": 0.66,
+        "description": "元记忆高置信阈值",
+        "hint": "召回置信度 ≥ 该值标记为“高置信”。默认 0.66。"
+      },
+      "metamemory_low_threshold": {
+        "type": "float",
+        "default": 0.33,
+        "description": "元记忆低置信阈值",
+        "hint": "召回置信度 < 该值标记为“低置信/话到嘴边”，提示 LLM 谨慎使用。默认 0.33。"
+      },
+      "metamemory_weights": {
+        "type": "object",
+        "description": "元记忆权重",
+        "hint": "元记忆置信度由这几项加权得出，权重之和建议为 1。改动后可直接在面板里调。",
+        "items": {
+          "stored": {
+            "type": "float",
+            "default": 0.2,
+            "description": "已存储权重",
+            "hint": "记忆确实存在于库中（非幻觉）的权重。"
+          },
+          "strength": {
+            "type": "float",
+            "default": 0.3,
+            "description": "强度权重",
+            "hint": "记忆当前强度/稳固程度的权重。"
+          },
+          "retrieval": {
+            "type": "float",
+            "default": 0.3,
+            "description": "检索得分权重",
+            "hint": "本次检索相关性得分的权重。"
+          },
+          "recency": {
+            "type": "float",
+            "default": 0.1,
+            "description": "新鲜度权重",
+            "hint": "记忆时间新鲜度的权重。"
+          },
+          "access": {
+            "type": "float",
+            "default": 0.1,
+            "description": "访问频次权重",
+            "hint": "被召回次数的权重。"
+          }
+        }
+      },
+      "consolidation_cluster_min_members": {
+        "type": "int",
+        "default": 3,
+        "description": "巩固聚类最小成员数",
+        "hint": "聚类抽象至少需要多少条成员记忆。默认 3。"
+      },
+      "consolidation_cluster_min_access": {
+        "type": "int",
+        "default": 2,
+        "description": "巩固聚类最小访问数",
+        "hint": "簇内成员总召回次数达到该值才做抽象（说明它反复被想起）。默认 2。"
+      },
+      "consolidation_fact_confidence": {
+        "type": "float",
+        "default": 0.7,
+        "description": "巩固新事实置信度",
+        "hint": "由整合/抽象新造事实的初始置信度。默认 0.7。"
+      },
+      "decaycurve_buckets": {
+        "type": "int",
+        "default": 12,
+        "description": "遗忘曲线采样点数",
+        "hint": "/mem decaycurve 在时间轴上采样多少个点。默认 12。"
+      },
+      "decaycurve_width": {
+        "type": "int",
+        "default": 32,
+        "description": "遗忘曲线柱宽",
+        "hint": "遗忘曲线 ASCII 图的柱宽（字符数）。默认 32。"
+      },
+      "enable_atom_extraction": {
+        "type": "bool",
+        "default": true,
+        "description": "启用原子抽取",
+        "hint": "把“主语-谓语-宾语”类偏好事实拆成 MemoryAtom，供原子层召回。默认开启。"
+      },
+      "enable_graph_indexing": {
+        "type": "bool",
+        "default": true,
+        "description": "启用图谱索引",
+        "hint": "把记忆的实体引用镜像到 GraphStore 快速通路。默认开启。"
+      },
+      "graph_max_topics": {
+        "type": "int",
+        "default": 4,
+        "description": "图谱写入最大话题数",
+        "hint": "每次图谱抽取最多写入多少个话题实体，控制磁盘增长。默认 4。"
+      },
+      "graph_max_persons": {
+        "type": "int",
+        "default": 6,
+        "description": "图谱写入最大人物数",
+        "hint": "每次图谱抽取最多写入多少个人物实体。默认 6。"
+      },
+      "graph_max_facts": {
+        "type": "int",
+        "default": 6,
+        "description": "图谱写入最大事实数",
+        "hint": "每次图谱抽取最多写入多少条事实/关系。默认 6。"
+      },
+      "graph_vector_entity_limit": {
+        "type": "int",
+        "default": 64,
+        "description": "图谱向量检索实体上限",
+        "hint": "图谱向量召回时最多对多少个实体做向量比对。默认 64。"
+      },
+      "atom_decay_interval_seconds": {
+        "type": "float",
+        "default": 0.0,
+        "description": "原子衰减间隔（秒）",
+        "hint": "原子强度衰减的后台周期。默认 0 = 不自动跑。"
+      },
+      "atom_gc_interval_seconds": {
+        "type": "float",
+        "default": 0.0,
+        "description": "原子回收间隔（秒）",
+        "hint": "低强度原子的回收周期。默认 0 = 不自动回收。"
+      },
+      "enable_session_filter": {
+        "type": "bool",
+        "default": false,
+        "description": "启用会话过滤",
+        "hint": "开启后按下面的平台/频道/发言人名单与关键词决定记录哪些消息；关闭则全部记录（旧行为）。默认关闭。"
+      },
+      "platform_allowlist": {
+        "type": "list",
+        "default": [],
+        "description": "平台白名单",
+        "hint": "只记录这些平台（适配器名，如 aiocqhttp、qq_official）的消息。留空表示不限；名单外一律不记。"
+      },
+      "platform_blocklist": {
+        "type": "list",
+        "default": [],
+        "description": "平台黑名单",
+        "hint": "这些平台的消息一律不记录，优先级高于白名单。"
+      },
+      "channel_allowlist": {
+        "type": "list",
+        "default": [],
+        "description": "频道白名单",
+        "hint": "只记录这些频道/群 ID 的消息。留空表示不限。"
+      },
+      "channel_blocklist": {
+        "type": "list",
+        "default": [],
+        "description": "频道黑名单",
+        "hint": "这些频道/群的消息一律不记录，优先级高于白名单。"
+      },
+      "actor_allowlist": {
+        "type": "list",
+        "default": [],
+        "description": "发言人白名单",
+        "hint": "只记录这些用户 ID 的消息。留空表示不限；bot 自己始终不记录。"
+      },
+      "blocked_keywords": {
+        "type": "list",
+        "default": [],
+        "description": "屏蔽关键词",
+        "hint": "消息内容包含这些子串（不区分大小写）就不记录，例如广告词。留空表示不过滤。"
+      },
+      "auto_inject_timeout": {
+        "type": "float",
+        "default": 10.0,
+        "description": "自动注入超时（秒）",
+        "hint": "自动注入的等待上限：embedding 或 SQLite 卡住时超时跳过本次注入，不拖慢回复。默认 10。"
+      },
+      "auto_rebuild_on_switch": {
+        "type": "bool",
+        "default": true,
+        "description": "切换 Embedding 时自动重建向量",
+        "hint": "切换 Embedding 提供商/模型后，自动在后台重建全部向量。关闭则需手动重建。"
+      },
+      "rebuild_batch_size": {
+        "type": "int",
+        "default": 50,
+        "description": "向量重建批大小",
+        "hint": "重建向量时每批处理多少条记忆，控制内存与单事务大小。默认 50。"
+      },
+      "diary_night_window_hours": {
+        "type": "float",
+        "default": 6.0,
+        "description": "夜间切分窗口小时",
+        "hint": "日记的“夜晚切分”只扫描每天 00:00 起多少小时内的消息。默认 6。"
+      },
+      "diary_night_gap_seconds": {
+        "type": "float",
+        "default": 1800.0,
+        "description": "夜间切分间隔（秒）",
+        "hint": "夜间消息间隔超过该秒数即视为“睡了一觉”的切点。默认 1800（30 分钟）。"
+      },
+      "diary_message_ttl_days": {
+        "type": "int",
+        "default": 7,
+        "description": "原始日记消息保留天数",
+        "hint": "日记原始消息缓存保留几天后清理。默认 7。"
+      },
+      "diary_compress_ratio": {
+        "type": "float",
+        "default": 0.025,
+        "description": "日记压缩比",
+        "hint": "日记目标字数 = 原文总字数 × 该比例 ÷ 参与人数。默认 0.025，越小越短。"
+      },
+      "diary_compress_floor": {
+        "type": "int",
+        "default": 50,
+        "description": "日记字数下限",
+        "hint": "单篇日记的最少字数。默认 50。"
+      },
+      "diary_chunk_max_chars": {
+        "type": "int",
+        "default": 400,
+        "description": "日记分块字数",
+        "hint": "日记做块级检索时每块的最大字数。默认 400。"
+      },
+      "diary_inject_min_score": {
+        "type": "float",
+        "default": 0.0,
+        "description": "日记注入最低分",
+        "hint": "日记块召回分数低于该值就不注入。默认 0 = 不过滤。"
       }
     }
   },
@@ -595,6 +1026,24 @@
         "default": 90.0,
         "description": "记忆原文保留天数",
         "hint": "保留的原文多久后清除，0 = 永久保留。此前该值只能读默认值，面板无法设置。"
+      },
+      "summary_min_messages_grace_seconds": {
+        "type": "float",
+        "default": 21600.0,
+        "description": "低频频道缓冲保留秒数",
+        "hint": "不足最少条数的频道静默这么久后丢弃缓冲，避免长期占内存。默认 21600（6 小时）。"
+      },
+      "summary_max_channels": {
+        "type": "int",
+        "default": 512,
+        "description": "内存中最多频道缓冲数",
+        "hint": "内存里最多保留多少个频道的总结缓冲，超出按最久未使用淘汰。默认 512。"
+      },
+      "summary_idle_flush_interval_seconds": {
+        "type": "float",
+        "default": 60.0,
+        "description": "空闲扫描周期（秒）",
+        "hint": "后台扫描空闲频道并结算总结的周期。默认 60。"
       }
     }
   },

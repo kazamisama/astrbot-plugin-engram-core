@@ -38,13 +38,13 @@ Behaviour:
 - The result list is sorted by rrf_score desc, ties broken by item id.
 """
 from __future__ import annotations
-import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Callable
 
 from ..types import Cue, Engram, RecallResult
 from .rrf import RRFFusion, RankedCandidate, FusedCandidate
+from hippocampus.observability import note as _obs_note
 
 if TYPE_CHECKING:
     from ..service import MemoryService
@@ -167,10 +167,11 @@ class DualRouteRetriever:
             return float(self.cfg.document_route_weight), float(self.cfg.graph_route_weight), "fixed"
         return doc_w / total, graph_w / total, intent
 
-    def _rank(self, cue: Cue) -> list[_ScoredCandidate]:
+    def _rank(self, cue: Cue, *,
+              embedding_model: str | None = None) -> list[_ScoredCandidate]:
         import math as _math
         import time as _time
-        doc_hits = self._document_route(cue)
+        doc_hits = self._document_route(cue, embedding_model=embedding_model)
         graph_hits = self._graph_route(cue)
         spread_hits = self._spread_route(cue)
         atom_hits = self._atom_route(cue)
@@ -186,6 +187,32 @@ class DualRouteRetriever:
         if not fused:
             return []
 
+        # v1.77.0: hot/warm/cold tier routing, ported from the retired
+        # PatternCompleter. Normal recall uses hot+warm; cold is held back
+        # and only merged in when hot+warm under-deliver (or when the
+        # operator opts to always include it).
+        svc_cfg = self._service.cfg
+        if bool(getattr(svc_cfg, "tiering_enabled", False)):
+            try:
+                from ..tiering import TieringEngine
+                engine = TieringEngine(self._service.store, svc_cfg)
+                hot_warm, cold = engine.split_candidates(
+                    [(fc.item, fc.rrf_score) for fc in fused])
+                include_cold = bool(getattr(svc_cfg, "tier_recall_include_cold", False))
+                min_hits = int(getattr(svc_cfg, "tier_cold_fallback_min_hits", 1) or 0)
+                if include_cold:
+                    allowed = {e.id for e, _ in hot_warm} | {e.id for e, _ in cold}
+                elif len(hot_warm) < max(0, min_hits):
+                    allowed = {e.id for e, _ in hot_warm} | {e.id for e, _ in cold}
+                else:
+                    allowed = {e.id for e, _ in hot_warm}
+                fused = [fc for fc in fused
+                         if getattr(fc.item, "id", None) in allowed]
+                if not fused:
+                    return []
+            except Exception as ex:
+                print("[hippocampus] tier routing failed: " + repr(ex))
+
         doc_map, doc_max = self._route_maps(doc_hits)
         graph_map, graph_max = self._route_maps(graph_hits)
         spread_map, spread_max = self._route_maps(spread_hits)
@@ -198,6 +225,12 @@ class DualRouteRetriever:
         decay = float(self.cfg.recency_decay_rate)
         bonus = float(self.cfg.cross_route_bonus)
         now = _time.time()
+        mood_on = (bool(getattr(svc_cfg, "mood_congruence_enabled", False))
+                   and cue.valence_hint is not None)
+        mood_weight = float(getattr(svc_cfg, "mood_congruence_weight", 0.1) or 0.0)
+        act_on = bool(getattr(cue, "activation", None))
+        act_weight = float(getattr(svc_cfg, "activation_score_weight", 0.18) or 0.0)
+        freq_w = float(getattr(svc_cfg, "frequency_recall_weight", 0.0) or 0.0)
 
         ranked: list[_ScoredCandidate] = []
         for fc in fused:
@@ -220,7 +253,21 @@ class DualRouteRetriever:
             days = max(0.0, (now - ref) / 86400.0)
             recency = _math.exp(-decay * days)
             cross = bonus if (doc_sig > 0.0 and graph_sig > 0.0) else 0.0
-            final = min(1.0, alpha * retrieval + beta * importance + gamma * recency + cross)
+            final = alpha * retrieval + beta * importance + gamma * recency + cross
+            # v1.77.0: mood congruence / spreading activation / frequency
+            # bonuses, ported from the retired PatternCompleter so that
+            # mood_congruence_weight, activation_score_weight and
+            # frequency_recall_weight keep influencing the recall path.
+            if mood_on:
+                mood_match = 1.0 - min(
+                    1.0, abs(float(cue.valence_hint) - float(getattr(e, "valence", 0.0) or 0.0)) / 2.0)
+                final += mood_weight * mood_match
+            if act_on:
+                final += act_weight * float(cue.activation.get(e.id, 0.0))
+            if freq_w:
+                final += freq_w * (_math.log1p(
+                    max(0, int(getattr(e, "access_count", 0) or 0))) / 4.0)
+            final = min(1.0, final)
             ranked.append(_ScoredCandidate(item=e, score=final, breakdown={
                 "retrieval": round(retrieval, 4),
                 "importance": round(importance, 4),
@@ -237,9 +284,17 @@ class DualRouteRetriever:
             ranked = self._mmr_rerank_ranked(ranked, max(1, cue.k))
         return ranked
 
-    def search(self, cue: Cue) -> RecallResult:
-        """Run all routes, apply weighted scoring + MMR, return top-k."""
-        ranked = self._rank(cue)
+    def search(self, cue: Cue, *,
+               embedding_model: str | None = None) -> RecallResult:
+        """Run all routes, apply weighted scoring + MMR, return top-k.
+
+        v1.77.0: this is THE retrieval path now (service.recall delegates
+        here). DG cluster expansion and metamemory confidences were ported
+        from the retired PatternCompleter so unifying the two pipelines did
+        not silently drop them.
+        """
+        import time as _time
+        ranked = self._rank(cue, embedding_model=embedding_model)
         top = ranked[: max(1, cue.k)]
         engrams = [sc.item for sc in top]
         scores = [sc.score for sc in top]
@@ -249,8 +304,37 @@ class DualRouteRetriever:
                 for e in engrams:
                     recon.touch(e)
         except Exception:
-            pass
-        return RecallResult(engrams=engrams, scores=scores, confidences=None)
+            _obs_note("dual_route", "search")
+        cfg = self._service.cfg
+        now = _time.time()
+        if bool(getattr(cfg, "enable_separation", False)) and engrams:
+            try:
+                from ..separation import PatternSeparator
+                score_by_id = {e.id: s for e, s in zip(engrams, scores)}
+                expanded = PatternSeparator.expand_cluster(
+                    list(engrams), fetch=self._service.store.get,
+                    max_total=max(cue.k * 2, cue.k + 4))
+                new_engrams: list[Engram] = []
+                new_scores: list[float] = []
+                for e, factor, origin in expanded:
+                    new_engrams.append(e)
+                    base = score_by_id.get(e.id, score_by_id.get(origin, 0.0))
+                    new_scores.append(base * factor)
+                engrams, scores = new_engrams, new_scores
+            except Exception as ex:
+                print("[hippocampus] separation expansion failed: " + repr(ex))
+        confidences = None
+        if bool(getattr(cfg, "metamemory_enabled", False)) and engrams:
+            try:
+                from ..metamemory import recall_confidence
+                top_score = max(scores) if scores else 0.0
+                confidences = [
+                    recall_confidence(e, s, top_score, cfg, now=now)
+                    for e, s in zip(engrams, scores)
+                ]
+            except Exception as ex:
+                print("[hippocampus] metamemory scoring failed: " + repr(ex))
+        return RecallResult(engrams=engrams, scores=scores, confidences=confidences)
 
     def _mmr_rerank_ranked(self, candidates: list[_ScoredCandidate], k: int) -> list[_ScoredCandidate]:
         """MMR over final weighted scores using similar_to as distance proxy."""
@@ -281,11 +365,6 @@ class DualRouteRetriever:
                 break
             selected.append(best); remaining.remove(best)
         return selected
-
-    async def asearch(self, cue: Cue) -> RecallResult:
-        """Async variant: delegate to search() so spread/atom/weighting/scope
-        behaviour can never drift from the sync path."""
-        return await asyncio.to_thread(self.search, cue)
 
     def explain(self, cue: Cue) -> list[RouteHit]:
         """Diagnostic: returns the per-route hits with rrf contribution
@@ -361,50 +440,6 @@ class DualRouteRetriever:
         return out
 
     # --- diversity -------------------------------------------------
-    def _mmr_rerank(self, candidates: list, k: int) -> list:
-        """Maximal Marginal Relevance: iteratively select the best
-        candidate that balances relevance (RRF score) with diversity
-        (dissimilarity to already-selected items).
-
-        Similarity is measured via the `similar_to` graph: if
-        candidate X lists Y in its similar_to, they are considered
-        similar (penalty weight = 0.5 per link). This is a lightweight
-        proxy for full embedding cosine distance.
-        """
-        lamb = self.cfg.mmr_lambda
-        if len(candidates) <= max(1, k):
-            return list(candidates)
-        selected: list = []
-        remaining = list(candidates)
-        # Pre-index similar_to for quick lookup
-        sim_index: dict = {}
-        for c in remaining:
-            eid = getattr(c.item, 'id', str(id(c.item)))
-            sims = set(getattr(c.item, 'similar_to', None) or [])
-            sim_index[eid] = sims
-        for _ in range(k):
-            best = None
-            best_score = -999.0
-            for c in remaining:
-                rel = c.rrf_score if hasattr(c, 'rrf_score') else c.raw_score
-                div_penalty = 0.0
-                for s in selected:
-                    sid = getattr(s.item, 'id', '')
-                    cid = getattr(c.item, 'id', '')
-                    if cid in sim_index.get(sid, set()):
-                        div_penalty += 0.5
-                    if sid in sim_index.get(cid, set()):
-                        div_penalty += 0.5
-                mmr = lamb * rel - (1.0 - lamb) * div_penalty
-                if mmr > best_score:
-                    best_score = mmr
-                    best = c
-            if best is None:
-                break
-            selected.append(best)
-            remaining.remove(best)
-        return selected
-
     # --- route implementations -----------------------------------------
     def _atom_route(self, cue: Cue) -> list[RankedCandidate]:
         """v1.76.5: atom-level keyword route. Maps active, temporally
@@ -456,7 +491,7 @@ class DualRouteRetriever:
                 try:
                     atom_store.touch(atom.atom_id)
                 except Exception:
-                    pass
+                    _obs_note("dual_route", "_atom_route")
         items: list[tuple[Engram, float]] = []
         for eid, sc in by_engram.items():
             e = svc.store.get(eid)
@@ -507,28 +542,42 @@ class DualRouteRetriever:
             for i, (e, s) in enumerate(items[:k])
         ]
 
-    def _document_route(self, cue: Cue) -> list[RankedCandidate]:
-        """Vector + FTS5 hybrid, RRF-merged into a single ranked list."""
+    def _document_route(self, cue: Cue, *,
+                        embedding_model: str | None = None) -> list[RankedCandidate]:
+        """Vector + FTS5 hybrid, RRF-merged into a single ranked list.
+
+        v1.77.0: honours cue.mode (vector / fts / hybrid / dual) and the
+        caller's embedding_model. Before this the document route always ran
+        both halves, so /mem search --mode=vector and --mode=fts were only
+        honoured by the legacy PatternCompleter path.
+        """
         embedder = self._service.embedder
         store = self._service.store
         k = self.cfg.document_candidate_k
+        mode = (cue.mode or "hybrid").lower()
+        if mode not in ("vector", "fts", "hybrid", "dual"):
+            mode = "hybrid"
         vec_pairs: list[tuple[Engram, float]] = []
         fts_pairs: list[tuple[Engram, float]] = []
-        try:
-            qvec = embedder.embed(cue.text)
-            vec_pairs = store.vector_search(
-                qvec, k=k, actor_id=cue.actor_id, channel_id=cue.channel_id,
-                persona_id=cue.persona_id, scope_id=cue.scope_id,
-                memory_types=cue.memory_types)
-        except Exception:
-            pass
-        try:
-            fts_pairs = store.fts_search(
-                cue.text, k=k, actor_id=cue.actor_id, channel_id=cue.channel_id,
-                persona_id=cue.persona_id, scope_id=cue.scope_id,
-                memory_types=cue.memory_types)
-        except Exception:
-            pass
+        if mode in ("vector", "hybrid", "dual"):
+            try:
+                qvec = embedder.embed(cue.text)
+                vec_pairs = store.vector_search(
+                    qvec, k=k, actor_id=cue.actor_id, channel_id=cue.channel_id,
+                    persona_id=cue.persona_id, scope_id=cue.scope_id,
+                    memory_types=cue.memory_types,
+                    embedding_model=embedding_model)
+            except Exception:
+                _obs_note("dual_route", "_document_route")
+        if mode in ("fts", "hybrid", "dual"):
+            try:
+                fts_pairs = store.fts_search(
+                    cue.text, k=k, actor_id=cue.actor_id, channel_id=cue.channel_id,
+                    persona_id=cue.persona_id, scope_id=cue.scope_id,
+                    memory_types=cue.memory_types,
+                    embedding_model=embedding_model)
+            except Exception:
+                _obs_note("dual_route", "_document_route")
         fusion = RRFFusion(k=self.cfg.rrf_k)
         merged = fusion.fuse([
             ("vector", [RankedCandidate(item=e, raw_score=s, rank=i + 1)

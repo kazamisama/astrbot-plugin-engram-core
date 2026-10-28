@@ -18,6 +18,7 @@ from typing import Iterable
 from .config import MemoryConfig
 from .semantic import SemanticStore
 from .storage import HippocampalStore
+from hippocampus.observability import note as _obs_note
 
 
 # Node key prefixes
@@ -197,7 +198,7 @@ class SpreadingActivation:
         the engram-only activation map (id -> [0,1]).
 
         Designed to be called from the main recall path right before
-        PatternCompleter.recall(); the result drops into cue.activation.
+        DualRouteRetriever.search(); the result drops into cue.activation.
         """
         seeds = self.build_context_seeds(
             matched_entity_ids=matched_entity_ids,
@@ -276,7 +277,7 @@ class SpreadingActivation:
                 return out
             except Exception:
                 # Fall through to the legacy path if the index is missing.
-                pass
+                _obs_note("activation", "_neighbors_entity")
         # Legacy fallback: full-table scan, filters out forgotten engrams.
         for e in self._store.all(limit=10_000_000):
             if e.forgotten_at > 0:
@@ -295,27 +296,6 @@ class SpreadingActivation:
         for sib in (e.similar_to or []):
             if sib and sib != eid:
                 out.append((N_PREFIX + sib, W_ENGRAM_SIMILAR))
-        return out
-
-    def _engram_neighbors_batch(self, eids):
-        """Batch: for each engram id, return its (entity_ref, weight) and
-        (similar_to, weight) neighbors. Avoids the per-engram
-        `_store.get` round-trip in the BFS frontier when the caller has
-        a whole layer to expand at once.
-
-        Returns {engram_id: [(node_key, weight), ...]} where node_keys
-        are 'e:<id>' or 'n:<id>'. Forgotten engrams map to an empty list.
-        """
-        out = {eid: [] for eid in eids}
-        for eid in eids:
-            e = self._store.get(eid)
-            if e is None or e.forgotten_at > 0:
-                continue
-            for ref in (e.entity_refs or []):
-                out[eid].append((E_PREFIX + ref, W_ENGRAM_TO_ENTITY))
-            for sib in (e.similar_to or []):
-                if sib and sib != eid:
-                    out[eid].append((N_PREFIX + sib, W_ENGRAM_SIMILAR))
         return out
 
     def _label(self, key: str) -> tuple[str, str]:

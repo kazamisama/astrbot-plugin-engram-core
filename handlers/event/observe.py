@@ -12,6 +12,7 @@ import os
 import threading
 from typing import TYPE_CHECKING
 from ..format import _extract, _resolve_group_name, _bot_actor_id, _resolve_bot_name
+from hippocampus.observability import note as _obs_note
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 
@@ -142,7 +143,7 @@ class ObserveHandler:
             try:
                 self._summarizer.set_llm(self.service.llm)
             except Exception:
-                pass
+                _obs_note("observe", "_get_summarizer")
         return self._summarizer
 
     # ---- v1.76.16: conversation-buffer durability ----
@@ -473,7 +474,7 @@ class ObserveHandler:
                     if nm:
                         return nm
         except Exception:
-            pass
+            _obs_note("observe", "_resolve_poke_target_name")
         return target_id
 
 
@@ -483,5 +484,5 @@ def _call_name(event):
         if callable(getter):
             return getter() or "unknown"
     except Exception:
-        pass
+        _obs_note("observe", "_call_name")
     return "unknown"

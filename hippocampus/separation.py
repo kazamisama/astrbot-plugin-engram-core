@@ -8,8 +8,9 @@ class PatternSeparator:
     """DG (dentate gyrus) analog. Decides at observe time whether an incoming
     engram should MERGE into an existing one, LINK to it, or be NEW.
 
-    Recall-side cluster expansion lives in PatternCompleter (recall.py) so
-    this class stays a pure encode-time gate.
+    Recall-side cluster expansion is PatternSeparator.expand_cluster(),
+    called by DualRouteRetriever after ranking; this class stays a pure
+    encode-time gate.
     """
 
     def __init__(self, cfg: MemoryConfig) -> None:

@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from hippocampus.observability import note as _obs_note
 
 
 def _now() -> float:
@@ -178,4 +179,4 @@ class LifeGraphStore:
             try:
                 self._conn.close()
             except Exception:
-                pass
+                _obs_note("life_graph_store", "close")

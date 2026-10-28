@@ -2,10 +2,15 @@
 
 > 类海马体长期记忆框架 — 4 层分桶 + DG 模式分离 + FTS5 hybrid + 用户可切换模型
 
-把整个 `hippocampus/` 核心包打包进来,**自包含**,不依赖任何外部 Python 包。
-仅依赖 AstrBot 本体(`astrbot.api`)。
+把整个 `hippocampus/` 核心包打包进来,**自包含**,仅依赖 AstrBot 本体(`astrbot.api`)。
+唯一的外部依赖是**可选**的中文分词库 `jieba`(`requirements.txt`):未安装时自动降级为
+bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
 
 > v1.43+: 仓库更名为 `astrbot-plugin-engram-core`。
+> v1.77.0: 一次审计驱动的收敛 —— 召回统一到 dual-route(删除并行的 PatternCompleter)、
+> atoms 由关系抽取驱动(中文也能产出)、帮助文本改为从命令注册表生成、两个空转的
+> `diary_message_*` 配置成为真实字段、死代码/死表/死端点清理。详见 `CHANGELOG.md`。
+
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
 ## 命名约定
@@ -28,11 +33,11 @@
 astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   metadata.yaml                 # AstrBot 插件元数据(name: astrbot_plugin_engram_core)
   _conf_schema.json             # 配置 schema(给 AstrBot 配置 UI 用)
-  requirements.txt              # 零依赖
+  requirements.txt              # 唯一可选依赖 jieba(缺省自动降级 bigram)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v63,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v95,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 
@@ -60,7 +65,7 @@ v1.66+ engram-core 在 `on_llm_request` 钩子里把召回的记忆作为独立 
 </xml-extra>
 ```
 
-已知的外部根标签请登记到配置项 `external_plugin_root_tags`（默认含 `xml-extra`；仅审计登记用途，不影响注入行为）。
+已知的外部根标签（目前为 `xml-extra`）由 engram-core 的剥离逻辑直接处理，不需要额外登记；该登记项在 v1.77.0 已删除（它从未被代码读取，只是徒增一个空转的配置项）。
 
 ### 公开 re-injection 工具
 

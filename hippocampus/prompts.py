@@ -34,10 +34,6 @@ BUILTIN_PROMPTS: dict[str, str] = {
 }
 
 
-def reset_all_overrides() -> None:
-    _OVERRIDES.clear()
-    _STORE_OVERRIDES.clear()
-
 
 def set_store_overrides(namespace: str, overrides: dict[str, str]) -> None:
     _STORE_OVERRIDES[namespace] = dict(overrides)

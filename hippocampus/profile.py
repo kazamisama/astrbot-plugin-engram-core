@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 
 from .config import MemoryConfig
+from hippocampus.observability import note as _obs_note
 
 
 _PROFILE_PREDICATES = {"likes", "dislikes", "resides_in", "is_a", "has"}
@@ -103,8 +104,10 @@ class ProfileStore:
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
-                try: self._conn.close()
-                except Exception: pass
+                try:
+                    self._conn.close()
+                except Exception:
+                    _obs_note("profile", "close")
                 self._conn = None
                 self._initialized = False
 
@@ -170,20 +173,6 @@ class ProfileStore:
                     " ORDER BY confidence DESC, evidence_count DESC LIMIT ?",
                     (actor_id, limit))
             return [ProfileFact.from_row(dict(r)) for r in cur.fetchall()]
-
-    def get_fact(self, fact_id: str) -> ProfileFact | None:
-        conn = self._ensure_conn()
-        with self._lock, conn:
-            cur = conn.execute(
-                "SELECT * FROM profile_facts WHERE id=? LIMIT 1", (fact_id,))
-            row = cur.fetchone()
-        return ProfileFact.from_row(dict(row)) if row else None
-
-    def delete_fact(self, fact_id: str) -> bool:
-        conn = self._ensure_conn()
-        with self._lock, conn:
-            cur = conn.execute("DELETE FROM profile_facts WHERE id=?", (fact_id,))
-            return cur.rowcount > 0
 
     def all_facts(self, limit: int = 1000) -> list[ProfileFact]:
         conn = self._ensure_conn()

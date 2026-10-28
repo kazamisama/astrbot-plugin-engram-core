@@ -10,36 +10,7 @@ Tests the new /mem search --mode=dual command without booting AstrBot:
 import os, tempfile, sys, types, asyncio
 
 
-def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
+from _smoke_common import install_stub as _install_stub
 
 
 _install_stub()
@@ -103,7 +74,7 @@ def test_dual_mode_e2e():
                     channel_id="c1", content="another sentence mentioning coffee beans")
         # Now run /mem search --mode=dual equivalent
         out = format_dual_route(svc, "Alice", k=5)
-        assert "[dual] hits for: Alice" in out
+        assert "[dual]" in out and "Alice" in out
         assert "doc" in out or "graph" in out  # at least one route tag
         print("  dual mode render: OK")
         print("  --- output ---")
@@ -120,7 +91,7 @@ def test_dual_mode_no_hit():
     svc, db = _new_service()
     try:
         out = format_dual_route(svc, "anything", k=5)
-        assert "[dual] no hit for: anything" in out
+        assert ("[dual] no hit for: anything" in out) or ("没有命中" in out and "anything" in out)
         print("  no-hit: OK")
     finally:
         import gc; del svc; gc.collect()
@@ -133,7 +104,7 @@ def test_dual_mode_empty_query():
     svc, db = _new_service()
     try:
         out = format_dual_route(svc, "", k=5)
-        assert "usage" in out
+        assert "usage" in out or "用法" in out
         print("  usage guard: OK")
     finally:
         import gc; del svc; gc.collect()
@@ -152,7 +123,7 @@ def test_dual_mode_semantic_off():
         svc.observe(session_id="s1", actor_id="u1", platform="mock",
                     channel_id="c1", content="Americano is great")
         out = format_dual_route(svc, "Americano", k=5)
-        assert "[dual] hits for: Americano" in out
+        assert "[dual] hits for: Americano" in out or ("[dual]" in out and "Americano" in out)
         assert "[doc]" in out
         print("  semantic-off fallback: OK")
     finally:

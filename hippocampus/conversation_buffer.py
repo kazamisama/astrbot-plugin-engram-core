@@ -109,11 +109,6 @@ class ConversationRecord:
             out.append("[" + t + " " + label + "] " + ln.content)
         return "\n".join(out)
 
-    def round_count(self) -> int:
-        """Rough conversational rounds: 2 messages ~= 1 round (mirrors
-        livingmemory's unsummarized_rounds = messages // 2)."""
-        return max(1, len(self.lines) // 2)
-
 
 class _ChannelBuf:
     __slots__ = ("meta", "lines", "first_ts", "last_ts", "last_msg_ts")

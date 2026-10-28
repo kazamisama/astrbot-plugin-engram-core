@@ -5,36 +5,7 @@ Independent smoke. Mocks astrbot.api so it does not require a real AstrBot runti
 import os, tempfile, sys, types, asyncio
 
 
-def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
+from _smoke_common import install_stub as _install_stub
 
 
 _install_stub()
@@ -264,7 +235,7 @@ def test_main_format_helpers():
         print(out3[-200:])
         assert "Americano" in out1 and "Shanghai" in out1
         assert "Americano" in out2 or "Alice" in out2
-        assert "v1.1" in out3 and "profile facts" in out3
+        assert "v1.1" in out3 and ("profile facts" in out3 or "\u753b\u50cf\u4e8b\u5b9e" in out3)
         svc.close()
         del svc
         import gc as _gc; _gc.collect()
@@ -297,7 +268,7 @@ def test_v09_v10_regress():
         assert res.get("replayed", 0) >= 0
         # narrative still works
         n = format_narrative(svc, "Americano")
-        assert "narrative: Americano" in n
+        assert "narrative: Americano" in n or ("Americano" in n and "叙事" in n)
         svc.close()
         del svc
         import gc as _gc; _gc.collect()

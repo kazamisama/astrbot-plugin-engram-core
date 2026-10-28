@@ -20,9 +20,3 @@ class PageApiUtils:
     def error(message: str) -> dict[str, Any]:
         return {"status": "error", "message": str(message)}
 
-    @staticmethod
-    def safe_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default

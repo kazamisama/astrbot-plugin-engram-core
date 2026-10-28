@@ -12,6 +12,7 @@ from .types import (
     DecayType,
 )
 from .memory_atom_models import make_fact_atom, make_preference_atom
+from hippocampus.observability import note as _obs_note
 
 
 # Default decay multipliers per DecayType. preference is the slowest to
@@ -47,10 +48,13 @@ class AtomLifecycleManager:
         the extractor is treated as "no atoms", and unknown payload keys
         are skipped silently.
 
-        Expected extractor API (v1.4):
+        Expected extractor API (v1.77):
             semantic.extract_atoms(engram) -> list[dict]
-        where each dict has at least: subject, predicate, object. Optional:
-            kind, confidence, importance, decay_type, attributes.
+        where each dict has at least the entity NAMES: subject, predicate,
+        object. Optional: kind, confidence, importance, decay_type,
+        attributes. (Before v1.77 SemanticStore returned subject_id /
+        object_id here, so every row was skipped and no atom was ever
+        created in production.)
         """
         extractor = getattr(semantic, "extract_atoms", None)
         if not callable(extractor):
@@ -59,6 +63,18 @@ class AtomLifecycleManager:
             raw = extractor(engram) or []
         except Exception:
             return []
+        if not isinstance(raw, list):
+            return []
+
+        return self.atoms_from_dicts(engram, raw)
+
+    def atoms_from_dicts(self, engram, raw) -> list[MemoryAtom]:
+        """Build atoms from name-keyed dicts: subject / predicate / object.
+
+        Split out of extract_atoms_from_engram so the ingest path can
+        reuse relations it has ALREADY extracted instead of asking the
+        extractor to run a second time for the same engram.
+        """
         if not isinstance(raw, list):
             return []
 
@@ -214,19 +230,19 @@ class AtomLifecycleManager:
                 # Event was set -> exit.
                 return
             except asyncio.TimeoutError:
-                pass
+                _obs_note("atom_lifecycle_manager", "_maintenance_loop")
             now = time.monotonic()
             if decay_interval > 0 and (now - last_decay) >= decay_interval:
                 try:
                     self.decay_pass()
                 except Exception:
-                    pass
+                    _obs_note("atom_lifecycle_manager", "_maintenance_loop")
                 last_decay = now
             if gc_interval > 0 and (now - last_gc) >= gc_interval:
                 try:
                     self._store.gc_pass() if self._store is not None else 0
                 except Exception:
-                    pass
+                    _obs_note("atom_lifecycle_manager", "_maintenance_loop")
                 last_gc = now
 
     def start(self, decay_interval: float = 0.0, gc_interval: float = 0.0) -> None:
@@ -256,7 +272,7 @@ class AtomLifecycleManager:
             try:
                 await t
             except Exception:
-                pass
+                _obs_note("atom_lifecycle_manager", "stop")
             self._task = None
 
     def run_decay(self) -> int:

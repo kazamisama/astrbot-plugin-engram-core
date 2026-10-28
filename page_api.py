@@ -11,21 +11,10 @@ or JSON body to the callable, so every handler here is an async wrapper
 that reads parameters from `quart.request` directly.
 
 API prefix: /astrbot_plugin_engram_core/page
-Endpoints:
-  GET  /health           -> {version, language, service_ready}
-  GET  /stats            -> {engrams, fts, entities, atoms, ...}
-  GET  /memories         -> list_memories(q, k, offset)
-  GET  /memories/detail  -> get_memory_detail(eid)
-  POST /memories/delete  -> delete_memory(eid, hard)
-  POST /memories/update  -> update_memory(eid, fields) [re-embeds on text change]
-  POST /recall/test      -> test_recall(query, mode, k)
-  GET  /graph/overview   -> graph_overview()
-  POST /graph/query      -> graph_query(name)
-  POST /graph/entity/delete   -> delete_entity(eid) [hard]
-  POST /graph/relation/delete -> delete_relation(rid) [hard]
-  POST /graph/relation/update -> update_relation(rid, confidence)
-  GET  /backups          -> list backups (newest first)
-  POST /backups/restore  -> restore from backup_id (DANGEROUS)
+
+Endpoints: the authoritative list is ROUTES below. register_routes()
+iterates it, so docs, registrations and count cannot drift apart
+(v1.77.0).
 """
 from __future__ import annotations
 import asyncio
@@ -57,6 +46,43 @@ from page_api_modules import (
 # path now points at THIS plugin, no ambiguity.
 PLUGIN_NAME = "astrbot_plugin_engram_core"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+
+ROUTES: list[tuple[str, str, list[str], str]] = [
+    ("/health", "_health", ["GET"], "Hippocampus health probe"),
+    ("/stats", "_stats", ["GET"], "Hippocampus stats"),
+    ("/memories", "_list_memories", ["GET"], "Hippocampus memory list"),
+    ("/memories/detail", "_memory_detail", ["GET"], "Hippocampus memory detail"),
+    ("/memories/delete", "_delete_memory", ["POST"], "Hippocampus memory delete"),
+    ("/memories/update", "_update_memory", ["POST"], "Hippocampus memory update"),
+    ("/memories/restore", "_restore_memory", ["POST"], "Hippocampus memory restore"),
+    ("/memories/source", "_memory_source", ["GET"], "Hippocampus memory source transcript"),
+    ("/memories/resummarize", "_resummarize_memory", ["POST"], "Hippocampus memory re-summarize"),
+    ("/memories/batch-delete", "_batch_delete_memories", ["POST"], "Hippocampus memory batch delete"),
+    ("/recall/test", "_test_recall", ["POST"], "Hippocampus recall test"),
+    ("/graph/overview", "_graph_overview", ["GET"], "Hippocampus graph overview"),
+    ("/graph/data", "_graph_data", ["GET"], "Hippocampus graph data (nodes+edges)"),
+    ("/graph/query", "_graph_query", ["POST"], "Hippocampus graph query"),
+    ("/graph/entity/delete", "_graph_entity_delete", ["POST"], "Hippocampus graph entity hard delete"),
+    ("/graph/relation/delete", "_graph_relation_delete", ["POST"], "Hippocampus graph relation hard delete"),
+    ("/graph/relation/update", "_graph_relation_update", ["POST"], "Hippocampus graph relation confidence update"),
+    ("/backups", "_list_backups", ["GET"], "Hippocampus backup list"),
+    ("/backups/restore", "_restore_backup", ["POST"], "Hippocampus backup restore"),
+    ("/diaries/options", "_diary_options", ["GET"], "Hippocampus diary filter options"),
+    ("/diaries", "_list_diaries", ["GET"], "Hippocampus diary list (filtered, paginated)"),
+    ("/diaries/detail", "_diary_detail", ["GET"], "Hippocampus diary detail"),
+    ("/diaries/delete", "_delete_diary", ["POST"], "Hippocampus diary soft/hard delete"),
+    ("/personas", "_list_personas", ["GET"], "Hippocampus persona list"),
+    ("/personas/detail", "_persona_detail", ["GET"], "Hippocampus persona detail"),
+    ("/personas/build", "_build_persona", ["POST"], "Hippocampus persona build"),
+    ("/personas/update", "_update_persona", ["POST"], "Hippocampus persona update"),
+    ("/personas/delete", "_delete_persona", ["POST"], "Hippocampus persona delete"),
+    ("/prompts", "_list_prompts", ["GET"], "Hippocampus prompt list"),
+    ("/prompts/update", "_update_prompt", ["POST"], "Hippocampus prompt update"),
+    ("/prompts/reset", "_reset_prompt", ["POST"], "Hippocampus prompt reset"),
+    ("/memories/export", "_export_memories", ["POST"], "Hippocampus memory export"),
+    ("/memories/import", "_import_memories", ["POST"], "Hippocampus memory import"),
+    ("/memories/import/preview", "_preview_memory_import", ["POST"], "Hippocampus memory import preview"),
+]
 
 
 async def _query_args() -> dict:
@@ -150,95 +176,18 @@ class PluginPageApi:
             return self.utils.error(repr(ex))
 
     def register_routes(self) -> None:
-        """Register all endpoints. The plugin's context must expose
-        `register_web_api(route, handler, methods, desc)`; a missing
-        method on older AstrBot is handled by the caller."""
-        register = self.plugin.context.register_web_api
+        """Register all endpoints from ROUTES. The plugin's context must expose
+        register_web_api(route, handler, methods, desc); a missing method on
+        older AstrBot is handled by the caller.
 
-        register(f"{PAGE_API_PREFIX}/health", self._health,
-                 ["GET"], "Hippocampus health probe")
-        register(f"{PAGE_API_PREFIX}/stats", self._stats,
-                 ["GET"], "Hippocampus stats")
-        register(f"{PAGE_API_PREFIX}/memories", self._list_memories,
-                 ["GET"], "Hippocampus memory list")
-        register(f"{PAGE_API_PREFIX}/memories/detail", self._memory_detail,
-                 ["GET"], "Hippocampus memory detail")
-        register(f"{PAGE_API_PREFIX}/memories/delete", self._delete_memory,
-                 ["POST"], "Hippocampus memory delete")
-        register(f"{PAGE_API_PREFIX}/memories/update", self._update_memory,
-                 ["POST"], "Hippocampus memory update")
-        register(f"{PAGE_API_PREFIX}/memories/restore", self._restore_memory,
-                 ["POST"], "Hippocampus memory restore")
-        register(f"{PAGE_API_PREFIX}/memories/source", self._memory_source,
-                 ["GET"], "Hippocampus memory source transcript")
-        register(f"{PAGE_API_PREFIX}/memories/resummarize", self._resummarize_memory,
-                 ["POST"], "Hippocampus memory re-summarize")
-        register(f"{PAGE_API_PREFIX}/memories/batch-delete", self._batch_delete_memories,
-                 ["POST"], "Hippocampus memory batch delete")
-        register(f"{PAGE_API_PREFIX}/recall/test", self._test_recall,
-                 ["POST"], "Hippocampus recall test")
-        register(f"{PAGE_API_PREFIX}/graph/overview", self._graph_overview,
-                 ["GET"], "Hippocampus graph overview")
-        register(f"{PAGE_API_PREFIX}/graph/data", self._graph_data,
-                 ["GET"], "Hippocampus graph data (nodes+edges)")
-        register(f"{PAGE_API_PREFIX}/graph/query", self._graph_query,
-                 ["POST"], "Hippocampus graph query")
-        register(f"{PAGE_API_PREFIX}/graph/entity/delete",
-                 self._graph_entity_delete,
-                 ["POST"], "Hippocampus graph entity hard delete")
-        register(f"{PAGE_API_PREFIX}/graph/relation/delete",
-                 self._graph_relation_delete,
-                 ["POST"], "Hippocampus graph relation hard delete")
-        register(f"{PAGE_API_PREFIX}/graph/relation/update",
-                 self._graph_relation_update,
-                 ["POST"], "Hippocampus graph relation confidence update")
-        register(f"{PAGE_API_PREFIX}/backups", self._list_backups,
-                 ["GET"], "Hippocampus backup list")
-        register(f"{PAGE_API_PREFIX}/backups/restore", self._restore_backup,
-                 ["POST"], "Hippocampus backup restore")
-        # FIX (v1.43) WebUI diary routes. The async handlers
-        # (_list_diaries, _diary_options, _diary_detail) were already
-        # defined on this class but never wired up here, so the
-        # frontend `apiGet("page/diaries[/options|detail]")` calls
-        # returned "route not found". Frontend URLs (line 693/753/786
-        # of app.js) are:
-        #   page/diaries/options  -> filter dropdowns
-        #   page/diaries          -> paginated list
-        #   page/diaries/detail   -> full diary engram
-        register(f"{PAGE_API_PREFIX}/diaries/options", self._diary_options,
-                 ["GET"], "Hippocampus diary filter options")
-        register(f"{PAGE_API_PREFIX}/diaries", self._list_diaries,
-                 ["GET"], "Hippocampus diary list (filtered, paginated)")
-        register(f"{PAGE_API_PREFIX}/diaries/detail", self._diary_detail,
-                 ["GET"], "Hippocampus diary detail")
-        # FIX (v1.46): WebUI inline delete (mirrors /memories/delete).
-        register(f"{PAGE_API_PREFIX}/diaries/delete", self._delete_diary,
-                 ["POST"], "Hippocampus diary soft/hard delete")
-        # v1.65: persona management
-        register(f"{PAGE_API_PREFIX}/personas", self._list_personas,
-                 ["GET"], "Hippocampus persona list")
-        register(f"{PAGE_API_PREFIX}/personas/detail", self._persona_detail,
-                 ["GET"], "Hippocampus persona detail")
-        register(f"{PAGE_API_PREFIX}/personas/build", self._build_persona,
-                 ["POST"], "Hippocampus persona build")
-        register(f"{PAGE_API_PREFIX}/personas/update", self._update_persona,
-                 ["POST"], "Hippocampus persona update")
-        register(f"{PAGE_API_PREFIX}/personas/delete", self._delete_persona,
-                 ["POST"], "Hippocampus persona delete")
-        register(f"{PAGE_API_PREFIX}/prompts", self._list_prompts,
-                 ["GET"], "Hippocampus prompt list")
-        register(f"{PAGE_API_PREFIX}/prompts/detail", self._get_prompt,
-                 ["GET"], "Hippocampus prompt detail")
-        register(f"{PAGE_API_PREFIX}/prompts/update", self._update_prompt,
-                 ["POST"], "Hippocampus prompt update")
-        register(f"{PAGE_API_PREFIX}/prompts/reset", self._reset_prompt,
-                 ["POST"], "Hippocampus prompt reset")
-        register(f"{PAGE_API_PREFIX}/memories/export", self._export_memories,
-                 ["POST"], "Hippocampus memory export")
-        register(f"{PAGE_API_PREFIX}/memories/import", self._import_memories,
-                 ["POST"], "Hippocampus memory import")
-        register(f"{PAGE_API_PREFIX}/memories/import/preview", self._preview_memory_import,
-                 ["POST"], "Hippocampus memory import preview")
+        v1.77.0: ROUTES is the single source of truth. The old hand-written
+        register() list and the module docstring both drifted from reality
+        (14 documented vs 35 registered), so the table now feeds both.
+        """
+        register = self.plugin.context.register_web_api
+        for suffix, handler_name, methods, desc in ROUTES:
+            register(PAGE_API_PREFIX + suffix, getattr(self, handler_name),
+                     methods, desc)
 
     # ---------- async route handlers ----------
     async def _health(self) -> dict[str, Any]:
@@ -461,11 +410,6 @@ class PluginPageApi:
 
     async def _list_prompts(self) -> dict[str, Any]:
         return await self._run_blocking(self.prompt_handler.list_prompts, self._service())
-
-    async def _get_prompt(self) -> dict[str, Any]:
-        args = await _query_args()
-        return await self._run_blocking(
-            self.prompt_handler.get_prompt, self._service(), str(args.get("name", "")))
 
     async def _update_prompt(self) -> dict[str, Any]:
         body = await _json_body()

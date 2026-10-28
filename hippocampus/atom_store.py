@@ -266,15 +266,21 @@ class AtomStore:
         q = (query or "").strip()
         if not q or limit <= 0:
             return []
-        escaped = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        # v1.77.0: '!' is the escape character on purpose. The old code
+        # wrote ESCAPE '\' inside a normal (non-raw) Python string, which
+        # turned into ESCAPE '' in SQL and raised
+        # "ESCAPE expression must be a single character" on every search --
+        # so the atom route crashed the first time it was actually reached
+        # (when atoms started being produced again).
+        escaped = q.replace('!', '!!').replace('%', '!%').replace('_', '!_')
         like = "%" + escaped + "%"
         with self._lock:
             rows = self._conn.execute(
                 """SELECT * FROM atoms
                    WHERE status = 'active'
-                     AND (subject LIKE ? ESCAPE '\'
-                          OR predicate LIKE ? ESCAPE '\'
-                          OR object LIKE ? ESCAPE '\')
+                     AND (subject LIKE ? ESCAPE '!'
+                          OR predicate LIKE ? ESCAPE '!'
+                          OR object LIKE ? ESCAPE '!')
                    ORDER BY last_seen DESC LIMIT ?""",
                 (like, like, like, int(limit)),
             ).fetchall()

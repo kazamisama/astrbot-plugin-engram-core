@@ -294,3 +294,59 @@ dlines = ["- " + t for t, _sc in hits if (t or "").strip()]
 
 旧文件状态：建议删除 `ROADMAP.md` 和 `TODO_summarization_B.md`（已合并），保留 `TODO.md`。
 `CHANGELOG.md` 独立保留（格式不同，功能不同）。
+
+---
+
+## 6. 2026-10-27 审计收口（v1.77.0）
+
+一次完整审计（完备性 + 冗余性）后的落地清单。详细证据见
+docs/HANDOFF_2026-10-27.md 与 CHANGELOG.md 的 [1.77.0] 节。
+
+### 已 ship
+
+| 项 | 内容 |
+| --- | --- |
+| C1 | diary_message_batch_size / diary_message_flush_interval_seconds 成为真实配置字段（此前落 extra，永远读默认） |
+| C2 | /mem help 改为由 engram_command_registry + i18n 生成；补回 persona/session/tier；清掉字面反斜杠 n |
+| C3 | 召回权重（document/graph/cross/dynamic/recency）全部作用于主链路（dual-route） |
+| C4 | handlers/format.py 的输出全部走 i18n（cmd.），zh/en 各一套；死键从 27 个降到 1 个（recall.related_item 仅 t_list 测试用） |
+| C5 | CHANGELOG 按版本切分（1.76.13–1.76.28）；新增 HANDOFF_2026-10-27；README/jieba 描述纠正；page_api 文档串改由 ROUTES 生成 |
+| R1 | atoms 由关系抽取驱动，中文关系可产出原子；契约改为实体名字 |
+| R2 | consolidation 收敛：maintenance() 每轮必跑，step() 全量手动/强制，LLM 版按开关附加 |
+| R3 | 删除 PatternCompleter，recall() 统一走 recall_dual_route() |
+| R4 | 删除重复的 _rrf_fuse 与 _mmr_rerank |
+| R6 | 删除 17 个生产零调用定义 |
+| R7 | 删除 rebuild_state 表 + 3 个 helper（旧库启动时 DROP） |
+| R9 | 删除 /page/prompts/detail；_parse_json 两份合并为 hippocampus/jsonparse.py |
+| C6 | `_conf_schema.json` 补到 167 个入口（只留 3 个内部字段）；v94 三条断言锁住「字段↔schema 全覆盖 / 类型合法 / 默认值一致」 |
+| C7 | 92 个静默 except 走 `hippocampus/observability.py`；v95 用 AST 守卫宽泛 except |
+| R5 | 35 个 smoke 的 33 份 `_install_stub` 收敛到 `tests/_smoke_common.py` |
+| E1 | embedding 桥接超时改为整段解析的**总预算**，provider 按 `id()` 去重（原来同一实例经两条路径各花 5s = 注入硬超时 10s，整次注入被丢） |
+| E2 | 注入超时后 detached worker 不再改动已释放的 `req`（`threading.Event` 停止标志） |
+| E3 | 注入 banner 去掉硬编码 `v1.73` 与手转义 `最近日记`（日志乱码） |
+
+### 顺带修掉的真实缺陷
+
+- HippocampalStore.list_active / list_active_by_entity_ref 的 newest-first 只按 created_at 排序，
+  同一时钟 tick 内的记忆顺序不稳定（v22 的 list_recent 断言因此偶发失败）；补 rowid DESC 稳定次序。
+- 线上日志（2026-10-28）：49 次 embedding 桥接 5s 超时、1 次注入 10s 丢弃；实测 siliconflow
+  端点 0.29–0.52s（4096 维），确认是超时结构问题而非 API 慢 —— 见上表 E1/E2。
+
+### 仍然 open（按建议顺序）
+
+1. **R9 剩余：同库多连接 + 六套实体/关系表示**。
+   现状：11 个 store 类各自 `sqlite3.connect` 到同一个 DB，`MemoryService` 初始化按开关会建
+   6–9 条独立连接（`store / semantic / relation_store / diary_store / lease_store / life_graph /
+   prospective_store / profile / persona_store`），各持有自己的 `threading.Lock`，跨连接可见性
+   与写并发全靠 SQLite。表示层则同时存在 `entities/relations`、`llm_relations`、`graph_adjacency`、
+   `graph_v2`、`profile_facts`、`life_*`。
+   为什么没动：连接收敛需要先决定「谁拥有 DB」以及事务边界（当前很多方法是 `with self._lock, conn`
+   的隐式提交），表示收敛要定哪个体系是事实源。两者都不是机械改动，做错会伤到线上 170MB 数据。
+2. **R8：长期空表**。线上 34 张表里 8 张 0 行：`atoms`（v1.77.0 接通后开始增长，先观察）、
+   `cluster_summaries` / `profile_facts`（依赖的开关线上是关的）、`graph_adjacency`（graph_store 仍在
+   维护但查询走 graph_v2）、`life_entities` / `life_entity_links` / `task_leases` / `triggers`。
+   为什么没动：`task_leases` 对应 agent 工具（claim/renew/release task）这一公开 API，`life_*` 是否上线
+   是产品决定 —— 删表等于删功能，需要明确「这些体系还做不做」。
+3. **format.py 拆分**。本地化后函数边界清晰了，但文件仍 907 行、15 个 `format_*` 与解析/工具函数混在
+   一起。可按 stats / recall / graph / diary 拆模块并让 format.py 做 re-export 门面；纯移动，风险低，
+   但收益只是可维护性，所以排在这些之后。

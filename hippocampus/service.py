@@ -14,12 +14,13 @@ from .llm import LLMProvider, RuleLLMProvider
 from .encoder import EngramEncoder
 from .separation import PatternSeparator
 from .working_memory import WorkingMemory
-from .recall import PatternCompleter, Reconsolidator
+from .recall import Reconsolidator
 from .consolidator import ReplayConsolidator
 from .profile import ProfileStore, ProfileFact
 from .persona import PersonaStore, Persona
 from .activation import SpreadingActivation
 import math as _math
+from hippocampus.observability import note as _obs_note
 
 
 def _diary_cos(a, b) -> float:
@@ -94,7 +95,6 @@ class MemoryService:
         self.separator = PatternSeparator(self.cfg)
         self.working = WorkingMemory(self.cfg)
         self.reconsolidator = Reconsolidator(self.store, self.cfg)
-        self.completer = PatternCompleter(self.store, self.embedder, self.cfg, self.reconsolidator)
         self.consolidator = ReplayConsolidator(self.store, self.cfg, llm=self.llm)
         # v1.76.5: optional LLM consolidation manager (lazy import).
         self.consolidation_manager = None
@@ -102,11 +102,9 @@ class MemoryService:
         from .relation_store import RelationStore
         self.relation_store = RelationStore(self.cfg.sqlite_path)
         from .diary_store import DiaryStore
-        # FIX (v1.42) BUG-7: pass diary_message_batch_size so the in-memory
-        # write buffer is sized from config. When the key is absent we
-        # inherit DiaryStore.DEFAULT_BATCH_SIZE (50).
-        _diary_bs = int(getattr(self.cfg, "diary_message_batch_size",
-                                DiaryStore.DEFAULT_BATCH_SIZE) or DiaryStore.DEFAULT_BATCH_SIZE)
+        # v1.77.0: diary_message_batch_size is a real MemoryConfig field now,
+        # not a leftover in cfg.extra.
+        _diary_bs = int(self.cfg.diary_message_batch_size or DiaryStore.DEFAULT_BATCH_SIZE)
         self.diary_store = DiaryStore(self.cfg.sqlite_path,
                                       batch_size=max(1, _diary_bs))
         from .lease_store import TaskLeaseStore
@@ -234,17 +232,17 @@ class MemoryService:
         try:
             self.encoder.set_llm(self.llm)
         except Exception:
-            pass
+            _obs_note("service", "set_llm")
         if getattr(self, "extractor", None) is not None:
             try:
                 self.extractor.set_llm(self.llm)
             except Exception:
-                pass
+                _obs_note("service", "set_llm")
         if getattr(self, "consolidator", None) is not None:
             try:
                 self.consolidator._llm = self.llm
             except Exception:
-                pass
+                _obs_note("service", "set_llm")
         return f"switched llm {old} -> {name}"
 
     # ---------- provider registration (delegates to registry) ----------
@@ -273,6 +271,7 @@ class MemoryService:
                 if batch and n % batch == 0:
                     pass
             except Exception:
+                _obs_note("service", "rebuild_embeddings")
                 continue
         return n
 
@@ -333,6 +332,7 @@ class MemoryService:
                 self.store.upsert(e)
                 n += 1
             except Exception:
+                _obs_note("service", "reembed_stale")
                 continue
         if n:
             self._invalidate_search_cache()
@@ -734,6 +734,7 @@ class MemoryService:
                 try:
                     from .diary_writer import split_chunks as _split
                 except Exception:
+                    _obs_note("service", "recall_diary_chunks")
                     continue
                 try:
                     pieces = _split(text, 0.0, 0.0, max_chars=400)
@@ -750,7 +751,7 @@ class MemoryService:
                     if s >= min_score:
                         scored.append((ptext, s))
         except Exception:
-            pass
+            _obs_note("service", "recall_diary_chunks")
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:max(0, top_n)]
 
@@ -784,7 +785,7 @@ class MemoryService:
             try:
                 writer.set_llm(self.llm)
             except Exception:
-                pass
+                _obs_note("service", "run_daily_diary")
         night_h = float(getattr(self.cfg, "diary_night_window_hours", 6.0) or 6.0)
         gap = float(getattr(self.cfg, "diary_night_gap_seconds", 1800.0) or 1800.0)
         consume = bool(getattr(self.cfg, "diary_consume_cache_on_write", True))
@@ -1040,6 +1041,7 @@ class MemoryService:
         # crash mid-pipeline can be detected and replayed at next startup.
         op_id = self.store.start_write_op(
             "post_ingest", {"engram_id": e.id}, memory_id=e.id)
+        rels: list = []
         if self.semantic is not None and self.extractor is not None:
             from .semantic import _classify
             ents = self.extractor.extract_entities(e)
@@ -1086,61 +1088,25 @@ class MemoryService:
                 ref_ids.append(r.object_id)
             e.entity_refs = list(dict.fromkeys([*e.entity_refs, *ref_ids]))
             self.store.upsert(e)
-        # v1.4 B3: extract atoms from this engram and upsert.
-        # Walk a small set of preference patterns and pair them against
-        # engram.entities (which always reflect what the encoder extracted).
-        if self.cfg.enable_atom_extraction and self.extractor is not None and e.entities and e.actor_id:
+        # v1.4 B3 atoms, rewired in v1.77.0: derived from the SAME relation
+        # extraction
+        # that feeds the semantic graph, instead of three English-only
+        # regexes ("i love/like ...", "i hate/dislike ...", "i live in ...")
+        # that could never match Chinese text and left the atoms table at
+        # zero rows on the live store. The extractor already resolves
+        # subject/object names, so this pass is language-agnostic and needs
+        # no second extraction run.
+        if self.cfg.enable_atom_extraction and self.semantic is not None and rels:
             self._ensure_atom_layer()
-            if self.atom_store is not None:
+            if self.atom_store is not None and self.atom_lifecycle is not None:
                 try:
-                    from .memory_atom_models import make_fact_atom, make_preference_atom
-                    import re as _re
-                    text = (e.content or "").lower()
-                    subject_name = None
-                    for nm in e.entities:
-                        if nm and nm.lower() in text:
-                            subject_name = nm
-                            break
-                    if subject_name is None:
-                        pass
-                    else:
-                        for pattern, pred, kind in [
-                            (_re.compile(r"i (?:love|like)\s+"), "likes", "preference"),
-                            (_re.compile(r"i (?:hate|dislike)\s+"), "dislikes", "preference"),
-                            (_re.compile(r"i live in\s+"), "resides_in", "fact"),
-                        ]:
-                            m = pattern.search(text)
-                            if not m:
-                                continue
-                            tail = text[m.end():]
-                            object_name = None
-                            for nm in e.entities:
-                                if not nm or nm == subject_name:
-                                    continue
-                                if nm.lower() in tail or tail.startswith(nm.lower()):
-                                    object_name = nm
-                                    break
-                            if object_name is None:
-                                continue
-                            factory = make_preference_atom if kind == "preference" else make_fact_atom
-                            atom = factory(
-                                subject_name, pred, object_name,
-                                source_engram_id=e.id,
-                                confidence=0.8 if kind == "preference" else 0.7,
-                                actor_id=e.actor_id or "",
-                                platform=e.platform or "",
-                                channel_id=e.channel_id or "",
-                                importance=0.6 if kind == "preference" else 0.5,
-                            )
-                            if kind == "preference":
-                                atom.decay_type = "preference"
-                            else:
-                                atom.decay_type = "semantic"
-                            from .memory_atom_models import stamp_atom_temporal
-                            atom = stamp_atom_temporal(atom, now=e.created_at)
-                            self.atom_store.upsert(atom)
-                except Exception:
-                    pass
+                    from .memory_atom_models import stamp_atom_temporal
+                    dicts = self.semantic.atoms_from_relations(rels)
+                    for atom in self.atom_lifecycle.atoms_from_dicts(e, dicts):
+                        atom = stamp_atom_temporal(atom, now=e.created_at)
+                        self.atom_store.upsert(atom)
+                except Exception as _aex:
+                    print("[hippocampus] atom extract failed: " + repr(_aex))
         # v1.76.10: persistent full-graph extraction (nodes/edges/entries).
         if self.cfg.enable_graph_indexing:
             self._ensure_atom_layer()
@@ -1158,7 +1124,7 @@ class MemoryService:
                     for ref in e.entity_refs:
                         self.graph_store.add_entity_engram_ref(ref, e.id, weight=1.0)
                 except Exception:
-                    pass
+                    _obs_note("service", "_post_ingest")
         if self.prospective_scheduler is not None:
             self.prospective_scheduler.create_from_engram(e)
         if op_id is not None:
@@ -1225,12 +1191,16 @@ class MemoryService:
             return ("unhashable-activation",)
 
     def _recall_config_fingerprint(self) -> tuple:
-        """Snapshot every live config knob that changes PatternCompleter output.
+        """Snapshot every live config knob that changes retrieval output.
 
         The recall cache TTL only protects against strength/recency drift;
         it cannot know when an operator flips tiering / mood / activation
         weights at runtime. Folding this snapshot into the cache key makes
         such changes effective immediately instead of returning stale top-k.
+
+        v1.77.0: the dual-route weights are part of this snapshot now that
+        they drive the main recall path (they used to be read only by the
+        side path, and were simply missing from this key).
         """
         cfg = self.cfg
         try:
@@ -1254,6 +1224,17 @@ class MemoryService:
             bool(getattr(cfg, "enable_separation", True)),
             bool(getattr(cfg, "metamemory_enabled", True)),
             mm_weights,
+            float(getattr(cfg, "score_alpha", 0.5)),
+            float(getattr(cfg, "score_beta", 0.25)),
+            float(getattr(cfg, "score_gamma", 0.25)),
+            float(getattr(cfg, "document_route_weight", 0.65)),
+            float(getattr(cfg, "graph_route_weight", 0.35)),
+            float(getattr(cfg, "cross_route_bonus", 0.08)),
+            bool(getattr(cfg, "dynamic_route_weighting", True)),
+            float(getattr(cfg, "recency_decay_rate", 0.01)),
+            bool(getattr(cfg, "mmr_enabled", True)),
+            float(getattr(cfg, "mmr_lambda", 0.75)),
+            bool(getattr(cfg, "spread_route_enabled", True)),
             str(getattr(self.store, "_tokenizer_mode", "") or ""),
         )
 
@@ -1337,7 +1318,7 @@ class MemoryService:
         _cached = self._recall_cache_get(_ckey)
         if _cached is not None:
             return _cached
-        result = self.completer.recall(cue, embedding_model=self._current_embedding_name)
+        result = self.recall_dual_route(cue)
         # v1.76.4: WorkingMemory indexes cells by both session_id and
         # channel_id. Prefer the caller-provided session when present; group
         # events that only set channel_id still resolve through the alias.
@@ -1788,6 +1769,7 @@ class MemoryService:
                         ts=float(item.get("ts", 0.0) or 0.0),
                         is_bot=bool(item.get("is_bot", False))))
                 except Exception:
+                    _obs_note("service", "resummarize_engram")
                     continue
             if not conv_lines:
                 return False
@@ -1830,7 +1812,7 @@ class MemoryService:
             try:
                 e.importance = min(1.0, max(0.0, float(summ.get("importance", e.importance) or e.importance)))
             except Exception:
-                pass
+                _obs_note("service", "resummarize_engram")
             try:
                 e.embedding = self.embedder.embed(e.content)
                 e.embedding_model = self._current_embedding_name
@@ -1911,10 +1893,16 @@ class MemoryService:
         )
 
     def recall_dual_route(self, cue: Cue) -> RecallResult:
-        # v1.3 dual route lives in retrieval.dual_route. We delegate.
+        """The one retrieval implementation (v1.77.0).
+
+        Kept under its historical name because /mem search --mode=dual and
+        /mem debug call it; service.recall() now delegates here too, so the
+        documented dual-route weights/diagnostics describe the path that
+        actually feeds the prompt.
+        """
         from .retrieval.dual_route import DualRouteRetriever
         dr = DualRouteRetriever(self, self._dual_route_config())
-        return dr.search(cue)
+        return dr.search(cue, embedding_model=self._current_embedding_name)
 
     def explain_dual_route(self, cue: Cue) -> dict:
         """Serializable per-route score breakdown for the recall debug page.
@@ -2051,7 +2039,7 @@ class MemoryService:
                     try:
                         self._atom_loop.close()
                     except Exception:
-                        pass
+                        _obs_note("service", "_self_threaded_start._runner")
             self._atom_thread = _threading.Thread(
                 target=_runner, name="hippocampus-atom-maint", daemon=True
             )
@@ -2075,7 +2063,7 @@ class MemoryService:
             try:
                 worker_loop.call_soon_threadsafe(worker_loop.stop)
             except Exception:
-                pass
+                _obs_note("service", "_self_threaded_stop")
         thread = getattr(self, "_atom_thread", None)
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
@@ -2087,11 +2075,11 @@ class MemoryService:
         try:
             self._stop_decay_loop()
         except Exception:
-            pass
+            _obs_note("service", "stop_background_tasks")
         try:
             await self._stop_prospective_loop()
         except Exception:
-            pass
+            _obs_note("service", "stop_background_tasks")
         if self.atom_lifecycle is None:
             return
         import asyncio as _asyncio
@@ -2100,51 +2088,11 @@ class MemoryService:
             try:
                 await self.atom_lifecycle.stop()
             except Exception:
-                pass
+                _obs_note("service", "stop_background_tasks")
             self._atom_task = None
             return
         # Worker-thread task: stop the loop, join the thread, then clear.
         await _asyncio.to_thread(self._self_threaded_stop)
-
-    def stop_background_tasks_sync(self) -> None:
-        # Sync variant for callers without a running loop (e.g. close()).
-        try:
-            self._stop_decay_loop()
-        except Exception:
-            pass
-        ptask = getattr(self, "_prospective_task", None)
-        if ptask is not None:
-            self._prospective_task = None
-            if not ptask.done():
-                try:
-                    ptask.cancel()
-                except Exception:
-                    pass
-        if self.atom_lifecycle is None:
-            return
-        import asyncio as _asyncio
-        task = self._atom_task
-        if isinstance(task, _asyncio.Task):
-            try:
-                task.cancel()
-            except Exception:
-                pass
-            self._atom_task = None
-            return
-        self._self_threaded_stop()
-    async def stop_background_tasks_async(self) -> None:
-        # Awaitable variant for callers that already have a running loop.
-        try:
-            await self._stop_prospective_loop()
-        except Exception:
-            pass
-        if self.atom_lifecycle is None:
-            return
-        try:
-            await self.atom_lifecycle.stop()
-        except Exception:
-            pass
-        self._atom_task = None
 
     def run_atom_decay(self) -> int:
         if self.atom_lifecycle is None:
@@ -2200,11 +2148,19 @@ class MemoryService:
                 out["profile_facts"] = self.decay_profile()
         except Exception as ex:
             print("[hippocampus] profile decay error: " + repr(ex))
-        # v1.76.5: optionally consolidate stale low-importance memories
-        # after the decay sweep (own cooldown; no-op when disabled).
+        # v1.77.0: the deterministic replay pass runs on EVERY sweep, not
+        # only when the opt-in LLM manager is enabled. maintenance() is the
+        # cheap subset (promote / SWR replay / cluster summaries /
+        # episodic->semantic); the O(n*k) pairwise dedupe merge stays on
+        # /mem replay, where its cosine scan is paid deliberately.
+        try:
+            out["consolidation"] = self.consolidator.maintenance()
+        except Exception as ex:
+            print("[hippocampus] consolidation sweep error: " + repr(ex))
+        # v1.76.5: LLM consolidation stays opt-in and keeps its own cooldown.
         try:
             if bool(getattr(self.cfg, "memory_consolidation_enabled", False)):
-                self.run_memory_consolidation()
+                out["llm_consolidation"] = self.run_memory_consolidation()
         except Exception as ex:
             print("[hippocampus] memory consolidation sweep error: " + repr(ex))
         # v1.76.15: bound working-memory cells and journal/source tables on
@@ -2230,7 +2186,7 @@ class MemoryService:
         try:
             self.store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
-            pass
+            _obs_note("service", "run_memory_decay")
         return out
 
     def _start_prospective_loop(self) -> None:
@@ -2272,7 +2228,7 @@ class MemoryService:
             try:
                 await task
             except BaseException:
-                pass
+                _obs_note("service", "_stop_prospective_loop")
 
     def _start_decay_loop(self) -> None:
         """Run run_memory_decay() on a fixed interval in a daemon thread.
@@ -2308,13 +2264,13 @@ class MemoryService:
             try:
                 stop.set()
             except Exception:
-                pass
+                _obs_note("service", "_stop_decay_loop")
         thread = getattr(self, "_decay_thread", None)
         if thread is not None and thread.is_alive():
             try:
                 thread.join(timeout=2.0)
             except Exception:
-                pass
+                _obs_note("service", "_stop_decay_loop")
         self._decay_thread = None
         self._decay_stop = None
 
@@ -2406,7 +2362,7 @@ class MemoryService:
                     if bp:
                         full_system = full_system + "\n\n你的人格设定：" + bp[:200]
             except Exception:
-                pass
+                _obs_note("service", "build_persona")
             raw = self.llm.chat(full_system, corpus, max_tokens=320) or ""
         except Exception as ex:
             print("[hippocampus] build_persona llm error: " + repr(ex))
@@ -2462,7 +2418,7 @@ class MemoryService:
                     tags = [str(t).strip() for t in tags_raw if str(t).strip()][:5]
                 return summary, tags
             except Exception:
-                pass
+                _obs_note("service", "_parse_persona_output")
         # FIX (v1.57) P1-5: refuse to store non-JSON output. The
         # old fallback silently wrote the whole raw text as the
         # persona summary, which meant "Sure! Here is your JSON: ..."
@@ -2510,21 +2466,31 @@ class MemoryService:
                 if act_map:
                     cue.activation = act_map
             except Exception:
-                pass
+                _obs_note("service", "recall_with_activation")
         return self.recall(cue)
 
-    def force_consolidate(self):
+    def force_consolidate(self) -> dict:
+        """Run BOTH consolidation paths and report each one's result.
+
+        v1.77.0: this used to be an either/or switch -- enabling the LLM
+        manager turned the deterministic replay pass OFF, and vice versa.
+        They fix different things (dedupe / promote / SWR replay vs LLM
+        merging), so one being enabled must not disable the other.
+        """
         self._invalidate_search_cache()
+        out: dict = {}
+        try:
+            out.update(self.consolidator.step())
+        except Exception as exc:
+            print("[hippocampus] replay consolidation failed: " + repr(exc))
+            out["replay_error"] = repr(exc)
         if bool(getattr(self.cfg, "memory_consolidation_enabled", False)):
             try:
-                return self.run_memory_consolidation(force=True)
+                out["llm"] = self.run_memory_consolidation(force=True)
             except Exception as exc:
                 print("[hippocampus] LLM consolidation failed: " + repr(exc))
-                return {"error": repr(exc)}
-        try:
-            return self.consolidator.step()
-        except Exception:
-            return {}
+                out["llm_error"] = repr(exc)
+        return out
 
     def run_memory_consolidation(self, *, force: bool = False) -> dict:
         """Group + LLM-merge stale low-importance memories."""
@@ -2538,7 +2504,7 @@ class MemoryService:
         try:
             self._stop_decay_loop()
         except Exception:
-            pass
+            _obs_note("service", "close")
         ptask = getattr(self, "_prospective_task", None)
         if ptask is not None:
             self._prospective_task = None
@@ -2546,7 +2512,7 @@ class MemoryService:
                 try:
                     ptask.cancel()
                 except Exception:
-                    pass
+                    _obs_note("service", "close")
         for name in ("store", "semantic", "atom_store", "graph_store",
                      "prospective_store", "profile", "persona_store",
                      "relation_store", "diary_store", "lease_store",
@@ -2557,13 +2523,13 @@ class MemoryService:
             try:
                 obj.close()
             except Exception:
-                pass
+                _obs_note("service", "close")
         t = getattr(self, "_atom_task", None)
         if t is not None and not t.done():
             try:
                 t.cancel()
             except Exception:
-                pass
+                _obs_note("service", "close")
             self._atom_task = None
         import gc as _gc
         _gc.collect()

@@ -18,8 +18,8 @@ Convention (see README "多插件注入协调"):
      (do NOT reuse ``<engram-context>``);
   2. the root tag carries stable inner sub-labels used for the
      re-injection defense match;
-  3. known external root tags are listed in the
-     ``external_plugin_root_tags`` config whitelist for auditing.
+  3. known external root tags are documented in the README section
+     "多插件注入协调" (there is no config whitelist to maintain).
 """
 from __future__ import annotations
 

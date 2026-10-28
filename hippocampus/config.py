@@ -227,6 +227,12 @@ class MemoryConfig:
     diary_night_window_hours: float = 6.0         # scan [00:00, +N h) for the night cut gap
     diary_night_gap_seconds: float = 1800.0       # idle gap that marks the night cut (30min)
     diary_message_ttl_days: int = 7               # daily-message cache retention before purge
+    # v1.77.0: these two were declared in _conf_schema.json but never existed
+    # as MemoryConfig fields, so ConfigManager filed them under `extra` and
+    # every reader's getattr() fell through to the hard-coded default. They
+    # are real, validated fields now.
+    diary_message_batch_size: int = 50            # in-memory diary write buffer size
+    diary_message_flush_interval_seconds: float = 30.0  # max age of a buffered diary line
     diary_compress_ratio: float = 0.025           # target = total * (ratio / participants)
     diary_compress_floor: int = 50                # min diary chars
     diary_compress_cap: int = 2500                # max diary chars

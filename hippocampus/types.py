@@ -53,11 +53,6 @@ class Engram:
     def to_json(self) -> str: return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "Engram":
-        d = json.loads(raw)
-        return cls(**d)
-
-    @classmethod
     def from_row(cls, row: dict[str, Any]) -> "Engram":
         d = dict(row)
         for k in ("topics", "entities", "entity_refs", "supersedes", "tags", "similar_to", "source_relation_ids", "source_engram_ids"):

@@ -20,6 +20,7 @@ try:
 except ImportError:
     TextPart = None  # pre-v4 AstrBot: fallback to string concat
 from engram_core_helpers import strip_injected_blocks  # v1.73: public re-injection defense
+from hippocampus.observability import note as _obs_note
 
 # v1.76.15: cap concurrent injection workers so timed-out injections cannot
 # pile up threads on the default executor. When saturated, injection is
@@ -98,6 +99,13 @@ _SELF_RECALL_NOTE = (
 )
 
 
+# The diary block's inner label, kept in one place so the load-time
+# diagnostic below cannot drift from what is actually injected. The banner
+# used to carry a hand-escaped copy ("\xe6\x9c\x80...") that Python decoded
+# as Latin-1 and printed as mojibake.
+_DIARY_BLOCK_LABEL = "[最近日记]"
+
+
 class InjectHandler:
     """Auto-inject recalled memories into the outgoing LLM request."""
 
@@ -113,11 +121,12 @@ class InjectHandler:
         # serving cached module - hard-kill AstrBot process + restart,
         # not just /plugin reload.
         try:
-            print("[hippocampus] v1.73 loaded: diary-label=\xe6\x9c\x80\xe8\xbf\x91\xe6\x97\xa5\xe8\xae\xb0, "
-                  "LRU dedup=enabled, recent-dialog engram.id dedup=enabled, "
+            print("[hippocampus] inject handler ready: diary-label="
+                  + _DIARY_BLOCK_LABEL
+                  + ", LRU dedup=enabled, recent-dialog engram.id dedup=enabled, "
                   "_fallback=return None, strip_injected_blocks=public", flush=True)
         except Exception:
-            pass
+            _obs_note("inject", "__init__")
 
     @staticmethod
     def _wrap_engram(body: str, *, preamble: bool = False) -> str:
@@ -152,7 +161,7 @@ class InjectHandler:
         "[用户画像]", "[人物关系]", _MEMORY_BLOCK_LABEL,
         _LEGACY_MEMORY_BLOCK_LABEL,  # v1.76.21: strips pre-rename blocks
         "[今日回顾]",  # legacy v1.72 keep-strip label
-        "[最近日记]",   # v1.72+: truthful label (diary is for prev day)
+        _DIARY_BLOCK_LABEL,  # v1.72+: truthful label (diary is for prev day)
     )
 
     @classmethod
@@ -207,18 +216,26 @@ class InjectHandler:
             timeout = self._INJECT_HARD_TIMEOUT
         timeout = max(self._INJECT_TIMEOUT_MIN,
                       min(timeout, self._INJECT_TIMEOUT_MAX))
+        stop = threading.Event()
         try:
-            await asyncio.wait_for(self._run_inject(event, req), timeout=timeout)
+            await asyncio.wait_for(self._run_inject(event, req, stop),
+                                   timeout=timeout)
         except asyncio.TimeoutError:
             # Circuit breaker tripped: log once and let the LLM request
             # proceed. The worker thread keeps running detached; the
             # per-call run_sync timeout inside it also unblocks it.
+            #
+            # v1.77.0: signal the detached worker to stop BEFORE it touches
+            # req. It used to keep building blocks and splice them into a
+            # request the provider was already consuming.
+            stop.set()
             print(f"[hippocampus] auto inject timed out after {timeout:.1f}s "
                   "- proceeding WITHOUT injection (LLM request released)")
         except Exception as ex:
             print("[hippocampus] auto inject error: " + repr(ex))
 
-    async def _run_inject(self, event, req) -> None:
+    async def _run_inject(self, event, req,
+                          stop: threading.Event | None = None) -> None:
         # v1.76.4 (M5): recall / persona / diary lookups are synchronous
         # SQLite + embedding work. Run them off the event loop while
         # serializing with this handler's lock (req mutation + _seen_diary
@@ -231,13 +248,14 @@ class InjectHandler:
 
             def _worker():
                 try:
-                    self._handle_inject_sync(event, req)
+                    self._handle_inject_sync(event, req, stop)
                 finally:
                     _INJECT_SLOTS.release()
 
             await asyncio.to_thread(_worker)
 
-    def _handle_inject_sync(self, event, req) -> None:
+    def _handle_inject_sync(self, event, req,
+                            stop: threading.Event | None = None) -> None:
         svc = self.service
         if svc is None or req is None:
             return
@@ -365,7 +383,8 @@ class InjectHandler:
                             seen.append(t)
                         dlines = [t if t.startswith("- ") else "- " + t for t, _sc in fresh]
                         if dlines:
-                            diary_block = "[最近日记]\n" + "\n".join(dlines)
+                            diary_block = (_DIARY_BLOCK_LABEL + "\n"
+                                           + "\n".join(dlines))
                 except Exception as dex:
                     print("[hippocampus] diary inject skipped: " + repr(dex))
 
@@ -408,6 +427,12 @@ class InjectHandler:
             # persona->relation->memory->diary. Build the new parts
             # first, then splice them in one shot so the order is
             # preserved.
+            # v1.77.0: the wrapper may have timed out while this thread was
+            # still recalling (lock wait, slow SQLite, slow embed). Once it
+            # has, the LLM request is already released and the provider may
+            # be reading req -- mutating it now would race that read.
+            if stop is not None and stop.is_set():
+                return
             if TextPart is not None and hasattr(req, "extra_user_content_parts"):
                 position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
                 parts_list = getattr(req, "extra_user_content_parts", None)

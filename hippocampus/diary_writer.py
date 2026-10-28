@@ -26,7 +26,9 @@ import json
 import re
 import time
 
+from .jsonparse import as_list as _as_list, parse_json_loose as _parse_json
 from .llm import LLMProvider, RuleLLMProvider
+from hippocampus.observability import note as _obs_note
 
 
 DAY_SECONDS = 86400.0
@@ -228,7 +230,7 @@ class DiaryWriter:
                 if p:
                     return base + "\n\n" + p
             except Exception:
-                pass
+                _obs_note("diary_writer", "_system_prompt")
         return base
 
     def compose(self, lines: list, day_label: str) -> dict | None:
@@ -345,32 +347,6 @@ def split_chunks(text: str, first_ts: float, last_ts: float,
         ts1 = (first_ts or 0.0) + span * ((i + 1) / n) if n > 0 else (last_ts or 0.0)
         out.append((i, piece, ts0, ts1))
     return out
-
-
-def _parse_json(raw: str):
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw).strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", raw, re.S)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            return None
-    return None
-
-
-def _as_list(v) -> list:
-    if v is None:
-        return []
-    if isinstance(v, list):
-        return [x for x in v if x is not None]
-    return [v]
 
 
 def _normalize(data: dict) -> dict:

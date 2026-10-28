@@ -17,6 +17,7 @@ from __future__ import annotations
 import sqlite3
 import time
 import uuid
+from hippocampus.observability import note as _obs_note
 
 
 def _now() -> float:
@@ -87,7 +88,7 @@ class RelationStore:
                 from .sqlite_util import apply_pragmas
                 apply_pragmas(self._conn)
             except Exception:
-                pass
+                _obs_note("relation_store", "_ensure_conn")
         if not self._initialized:
             self._init_schema()
             self._initialized = True
@@ -189,18 +190,6 @@ class RelationStore:
         return {"action": "candidate", "id": r.id, "superseded": []}
 
     # ---- read ----
-    def active_for_subjects(self, subjects, limit: int = 50) -> list:
-        if not subjects:
-            return []
-        conn = self._ensure_conn()
-        qs = ",".join("?" for _ in subjects)
-        rows = conn.execute(
-            "SELECT * FROM llm_relations WHERE subject IN (" + qs + ") "
-            "AND superseded_by='' AND (forgotten_at IS NULL OR forgotten_at=0) "
-            "ORDER BY confidence DESC, updated_at DESC LIMIT ?",
-            (*subjects, limit)).fetchall()
-        return [Relation.from_row(x) for x in rows]
-
     def all_active(self, limit: int = 500) -> list:
         conn = self._ensure_conn()
         rows = conn.execute(

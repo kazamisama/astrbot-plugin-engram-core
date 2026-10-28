@@ -32,18 +32,37 @@ async def emb_bridge_for_context(context, text: str,
 
     The official EmbeddingProvider exposes `async get_embedding(text)`;
     we still probe a few aliases so this keeps working across versions.
-    Every provider await is hard-bounded by EMB_BRIDGE_TIMEOUT.
+    The whole resolution is hard-bounded by EMB_BRIDGE_TIMEOUT: one shared
+    budget, not one cap per attempt (see the v1.77.0 note below).
     """
     method_names = ("get_embedding", "embedding", "embed", "encode")
+    # v1.77.0: EMB_BRIDGE_TIMEOUT is a budget for the WHOLE resolution. The
+    # old per-attempt cap could spend it twice on the same hung provider --
+    # the configured id is reachable through two resolution steps, so a
+    # wedged provider cost 5s + 5s == _INJECT_HARD_TIMEOUT and the designed
+    # "degrade to the FTS/keyword route" path was unreachable: the whole
+    # injection was dropped instead. Observed live on 2026-10-28 14:25
+    # (one 10.0s inject drop followed by the second 5.0s timeout line).
+    # Providers are now deduplicated by identity; every await is bounded by
+    # the time LEFT, and an exhausted budget aborts the rest of the chain.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + float(EMB_BRIDGE_TIMEOUT)
+    seen: set = set()
+
+    def _left() -> float:
+        return deadline - loop.time()
 
     async def _try_call(obj, name: str):
         if obj is None or not hasattr(obj, name):
+            return None
+        left = _left()
+        if left <= 0.0:
             return None
         fn = getattr(obj, name)
         try:
             out = fn(text)
             if asyncio.iscoroutine(out):
-                out = await asyncio.wait_for(out, timeout=EMB_BRIDGE_TIMEOUT)
+                out = await asyncio.wait_for(out, timeout=left)
         except asyncio.TimeoutError:
             print("[hippocampus] emb bridge " + name + " timed out after "
                   + str(EMB_BRIDGE_TIMEOUT) + "s; skipping provider")
@@ -59,7 +78,15 @@ async def emb_bridge_for_context(context, text: str,
     async def _embed_with(prov):
         if asyncio.iscoroutine(prov):
             prov = await prov
+        if prov is None:
+            return None
+        key = id(prov)
+        if key in seen:          # same provider via two resolution steps
+            return None
+        seen.add(key)
         for name in method_names:
+            if _left() <= 0.0:
+                return None
             out = await _try_call(prov, name)
             if out is not None:
                 return out

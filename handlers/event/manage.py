@@ -117,13 +117,15 @@ class ManageHandler:
             yield event.plain_result("Memory service not initialized.")
             return
         try:
-            from hippocampus.consolidator import ReplayConsolidator
-            rc = ReplayConsolidator(self.service.store, self.service.cfg)
-            res = rc.step()
+            # v1.77.0: use the service's consolidator -- it carries the llm /
+            # semantic / profile handles. Building a bare one here silently
+            # dropped cluster summaries and episodic->semantic abstraction.
+            res = self.service.consolidator.step()
             msg = ("replay: merged=" + str(res.get("merged", 0))
                    + " promoted=" + str(res.get("promoted", 0))
                    + " archived=" + str(res.get("archived", 0))
-                   + " replayed=" + str(res.get("replayed", 0)))
+                   + " replayed=" + str(res.get("replayed", 0))
+                   + " abstracted=" + str(res.get("abstracted", 0)))
             yield event.plain_result(msg)
         except Exception as e:
             yield event.plain_result("ERR: " + repr(e))

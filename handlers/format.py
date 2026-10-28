@@ -3,7 +3,8 @@ import json, math, time
 from typing import TYPE_CHECKING
 from astrbot.api.event import AstrMessageEvent
 from hippocampus import EXPORT_FORMAT_VERSION, __version__ as HIPPO_VERSION, Cue
-from hippocampus.i18n_backend import t
+from hippocampus.i18n_backend import t, t_or
+from hippocampus.observability import note as _obs_note
 if TYPE_CHECKING:
     from hippocampus import MemoryService
 def _call(obj, name, default=None):
@@ -99,7 +100,7 @@ async def _resolve_group_name(event) -> str:
         if name:
             return str(name)
     except Exception:
-        pass
+        _obs_note("format", "_resolve_group_name")
     try:
         getter = getattr(event, "get_group", None)
         if callable(getter):
@@ -108,7 +109,7 @@ async def _resolve_group_name(event) -> str:
             if name:
                 return str(name)
     except Exception:
-        pass
+        _obs_note("format", "_resolve_group_name")
     return ""
 
 
@@ -125,13 +126,13 @@ def _bot_actor_id(event) -> str:
             if sid:
                 return str(sid)
     except Exception:
-        pass
+        _obs_note("format", "_bot_actor_id")
     try:
         sid = getattr(getattr(event, "message_obj", None), "self_id", None)
         if sid:
             return str(sid)
     except Exception:
-        pass
+        _obs_note("format", "_bot_actor_id")
     return "bot"
 
 
@@ -185,7 +186,7 @@ def banner_text(service):
 
 def render_stats(service: MemoryService) -> str:
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     try:
         n_engram = len(service.store.list_active(limit=10_000_000))
     except Exception as e:
@@ -202,34 +203,55 @@ def render_stats(service: MemoryService) -> str:
             n_entity = "ERR " + repr(e)
     n_pending = len(service.list_prospective("pending"))
     n_fired = len(service.list_prospective("fired"))
-    return (
-        "## stats\n"
-        "engrams:        " + str(n_engram) + "\n"
-        "fts indexed:    " + str(n_fts) + "\n"
-        "entities:       " + str(n_entity) + "\n"
-        "triggers pending: " + str(n_pending) + "\n"
-        "triggers fired:   " + str(n_fired) + "\n"
-        "embedding:      " + service.current_embedding() + "\n"
-        "llm:            " + service.current_llm() + "\n"
-        "--- v1.0 ---\n"
-        "valence:        " + str(service.store.valence_histogram()) + "\n"
-        "stream:         " + str(service.store.stream_breakdown()) + "\n"
-        "soft-forgotten: " + str(len([e for e in service.store.all(limit=10_000_000) if e.forgotten_at > 0])) + "\n"
-        "--- v1.1 ---\n"
-        "profile facts:  " + str(len(service.profile.all_facts()) if service.profile is not None else 0) + "\n"
-        "cluster gists:  " + str(len(service.store.list_cluster_summaries(limit=10_000))) + "\n"
-        "--- v1.2 ---\n"
-        "metamemory:     " + ("on" if service.cfg.metamemory_enabled else "off") + "\n"
-        "epi->sem:       " + ("on" if service.cfg.enable_episodic_semantic else "off") + "\n"
-        "consolidated facts: " + str(len([e for e in service.store.all(limit=10_000_000) if e.profile_fact_id])) + "\n"
+    on = t_or("common.on", "on")
+    off = t_or("common.off", "off")
+    return t_or("cmd.stats.body", DEFAULT_STATS).format(
+        engrams=n_engram,
+        fts=n_fts,
+        entities=n_entity,
+        pending=n_pending,
+        fired=n_fired,
+        embedding=service.current_embedding(),
+        llm=service.current_llm(),
+        valence=service.store.valence_histogram(),
+        stream=service.store.stream_breakdown(),
+        forgotten=len([e for e in service.store.all(limit=10_000_000) if e.forgotten_at > 0]),
+        profile=(len(service.profile.all_facts()) if service.profile is not None else 0),
+        cluster=len(service.store.list_cluster_summaries(limit=10_000)),
+        metamemory=(on if service.cfg.metamemory_enabled else off),
+        epi_sem=(on if service.cfg.enable_episodic_semantic else off),
+        consolidated=len([e for e in service.store.all(limit=10_000_000) if e.profile_fact_id]),
     )
+
+
+DEFAULT_STATS = (
+    "## stats\n"
+    "engrams:        {engrams}\n"
+    "fts indexed:    {fts}\n"
+    "entities:       {entities}\n"
+    "triggers pending: {pending}\n"
+    "triggers fired:   {fired}\n"
+    "embedding:      {embedding}\n"
+    "llm:            {llm}\n"
+    "--- v1.0 ---\n"
+    "valence:        {valence}\n"
+    "stream:         {stream}\n"
+    "soft-forgotten: {forgotten}\n"
+    "--- v1.1 ---\n"
+    "profile facts:  {profile}\n"
+    "cluster gists:  {cluster}\n"
+    "--- v1.2 ---\n"
+    "metamemory:     {metamemory}\n"
+    "epi->sem:       {epi_sem}\n"
+    "consolidated facts: {consolidated}\n"
+)
 
 def find_and_forget(service: MemoryService, eid: str) -> str:
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     eid = (eid or "").strip()
     if not eid:
-        return "usage: /mem forget <id>"
+        return t("forget.usage")
     e = service.store.get(eid)
     if e is None:
         all_e = service.store.all(limit=10_000_000)
@@ -238,29 +260,37 @@ def find_and_forget(service: MemoryService, eid: str) -> str:
             e = matches[0]
         elif len(matches) > 1:
             preview = ", ".join(m.id[:8] for m in matches[:5])
-            return ("ambiguous: " + str(len(matches)) + " matches: " + preview
-                    + "; use full id")
+            return t_or("cmd.ambiguous", DEFAULT_AMBIGUOUS).format(
+                n=len(matches), preview=preview)
         else:
-            return "not found: " + eid
+            return t_or("cmd.not_found", DEFAULT_NOT_FOUND).format(id=eid)
     try:
         service.store.delete(e.id)
         # v1.76.4: drop any cached recall result containing this id.
         try:
             service._invalidate_search_cache()
         except Exception:
-            pass
+            _obs_note("format", "find_and_forget")
     except Exception as ex:
-        return "ERR: " + repr(ex)
-    return "forgot engram " + e.id[:8] + ": " + repr(e.summary[:60])
+        return t_or("cmd.err", DEFAULT_ERR).format(err=repr(ex))
+    return t_or("cmd.forget.ok", DEFAULT_FORGET_OK).format(
+        id8=e.id[:8], summary=repr((e.summary or "")[:60]))
+
+
+DEFAULT_AMBIGUOUS = "ambiguous: {n} matches: {preview}; use full id"
+DEFAULT_NOT_FOUND = "not found: {id}"
+DEFAULT_ERR = "ERR: {err}"
+DEFAULT_FORGET_OK = "forgot engram {id8}: {summary}"
 
 
 
 def export_engrams(service, path):
-    """Export all engrams + entities + relations + triggers to JSON. Skips embeddings (rebuild later)."""
+    """Export all engrams + entities + relations + triggers to JSON.
+    Embeddings are skipped (rebuild later)."""
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     if not path:
-        return "usage: /mem export <path>"
+        return t_or("cmd.export.usage", "usage: /mem export <path>")
     try:
         engrams = service.store.all(limit=10_000_000)
         entities = service.semantic.all_entities(limit=10_000_000) if service.semantic else []
@@ -283,30 +313,32 @@ def export_engrams(service, path):
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        return ("exported: engrams=" + str(len(engrams))
-                + " entities=" + str(len(entities))
-                + " relations=" + str(len(relations))
-                + " triggers=" + str(len(triggers))
-                + " -> " + path)
+        return t_or("cmd.export.done", DEFAULT_EXPORT_DONE).format(
+            engrams=len(engrams), entities=len(entities),
+            relations=len(relations), triggers=len(triggers), path=path)
     except Exception as e:
-        return "ERR: " + repr(e)
+        return t_or("cmd.err", DEFAULT_ERR).format(err=repr(e))
+
+
+DEFAULT_EXPORT_DONE = ("exported: engrams={engrams} entities={entities} "
+                       "relations={relations} triggers={triggers} -> {path}")
 
 
 def import_engrams(service, path):
     """Import from a JSON file produced by export_engrams. Skips embeddings;
     caller should run /mem rebuild after import to regenerate them."""
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     if not path:
-        return "usage: /mem import <path>"
+        return t_or("cmd.import.usage", "usage: /mem import <path>")
     try:
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         fmt = str(payload.get("version", ""))
         fmt_warn = ""
         if fmt and fmt != EXPORT_FORMAT_VERSION:
-            fmt_warn = (" [warn: export format v" + fmt
-                        + " != current v" + EXPORT_FORMAT_VERSION + "]")
+            fmt_warn = t_or("cmd.import.fmt_warn", DEFAULT_FMT_WARN).format(
+                fmt=fmt, cur=EXPORT_FORMAT_VERSION)
         from hippocampus.types import Engram, Entity, Relation, Trigger
         n_e = n_ent = n_rel = n_tr = 0
         for d in payload.get("engrams", []):
@@ -328,24 +360,28 @@ def import_engrams(service, path):
             n_rel += 1
         for d in payload.get("triggers", []):
             if service.prospective_store is not None:
-                t = Trigger(**{k: v for k, v in d.items() if k in Trigger.__dataclass_fields__})
-                service.prospective_store.add(t)
+                trig = Trigger(**{k: v for k, v in d.items() if k in Trigger.__dataclass_fields__})
+                service.prospective_store.add(trig)
             n_tr += 1
-        return ("imported: engrams=" + str(n_e)
-                + " entities=" + str(n_ent)
-                + " relations=" + str(n_rel)
-                + " triggers=" + str(n_tr)
-                + "; run /mem rebuild to regenerate embeddings" + fmt_warn)
+        return t_or("cmd.import.done", DEFAULT_IMPORT_DONE).format(
+            engrams=n_e, entities=n_ent, relations=n_rel,
+            triggers=n_tr, fmt_warn=fmt_warn)
     except Exception as e:
-        return "ERR: " + repr(e)
+        return t_or("cmd.err", DEFAULT_ERR).format(err=repr(e))
+
+
+DEFAULT_IMPORT_DONE = ("imported: engrams={engrams} entities={entities} "
+                       "relations={relations} triggers={triggers}"
+                       "; run /mem rebuild to regenerate embeddings{fmt_warn}")
+DEFAULT_FMT_WARN = " [warn: export format v{fmt} != current v{cur}]"
 
 
 def format_cluster(service, eid):
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     eid = (eid or "").strip()
     if not eid:
-        return "usage: /mem cluster <id>"
+        return t_or("cmd.cluster.usage", "usage: /mem cluster <id>")
     e = service.store.get(eid)
     if e is None:
         all_e = service.store.all(limit=10_000_000)
@@ -354,35 +390,38 @@ def format_cluster(service, eid):
             e = matches[0]
         elif len(matches) > 1:
             preview = ", ".join(m.id[:8] for m in matches[:5])
-            return ("ambiguous: " + str(len(matches)) + " matches: " + preview
-                    + "; use full id")
+            return t_or("cmd.ambiguous", DEFAULT_AMBIGUOUS).format(
+                n=len(matches), preview=preview)
         else:
-            return "not found: " + eid
+            return t_or("cmd.not_found", DEFAULT_NOT_FOUND).format(id=eid)
     from hippocampus.separation import PatternSeparator
     cluster = PatternSeparator.expand_cluster(
         [e], fetch=service.store.get, max_total=20)
-    lines = ["## cluster for: " + (e.summary or e.content)[:60]]
-    lines.append("root: " + e.id[:8])
+    lines = [t_or("cmd.cluster.header", "## cluster for: {title}").format(
+        title=(e.summary or e.content)[:60])]
+    lines.append(t_or("cmd.cluster.root", "root: {id8}").format(id8=e.id[:8]))
     sibs = cluster[1:]
     if not sibs:
-        lines.append("(no similar_to links)")
+        lines.append(t_or("cmd.cluster.no_links", "(no similar_to links)"))
     else:
-        lines.append("similar_to: " + str(len(sibs)) + " sibling(s)")
+        lines.append(t_or("cmd.cluster.similar", "similar_to: {n} sibling(s)").format(n=len(sibs)))
         for sib, _s, origin in sibs:
-            tag = "via " + origin[:8] if origin else "(orphan root)"
-            lines.append("  - " + sib.id[:8] + ": "
-                          + (sib.summary or sib.content)[:60] + "  [" + tag + "]")
+            if origin:
+                tag = t_or("cmd.cluster.via", "via {id8}").format(id8=origin[:8])
+            else:
+                tag = t_or("cmd.cluster.orphan", "(orphan root)")
+            lines.append(t_or("cmd.cluster.sibling", "  - {id8}: {title}  [{tag}]").format(
+                id8=sib.id[:8], title=(sib.summary or sib.content)[:60], tag=tag))
     return chr(10).join(lines)
 
 def format_narrative(service, topic, k=8, *, persona_id=None, scope_id=None):
-    """Chain engrams that share entities/topics with `topic` and present
+    """Chain engrams that share entities/topics with topic and present
     them as an autobiographical narrative in temporal order."""
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     topic = (topic or "").strip()
     if not topic:
-        return "usage: /mem narrative <topic>"
-    # Find seed engrams via FTS-like topic/entity match
+        return t_or("cmd.narrative.usage", "usage: /mem narrative <topic>")
     topic_l = topic.lower()
     allowed = service.store.engram_ids_for_persona(persona_id) if persona_id is not None else None
     if scope_id is not None:
@@ -394,20 +433,21 @@ def format_narrative(service, topic, k=8, *, persona_id=None, scope_id=None):
             continue
         if topic_l in (e.content or "").lower():
             seeds.append(e); continue
-        if any(topic_l in (t or "").lower() for t in e.topics):
+        if any(topic_l in (tp or "").lower() for tp in e.topics):
             seeds.append(e); continue
-        if any(topic_l in (n or "").lower() for n in e.entities):
+        if any(topic_l in (nm or "").lower() for nm in e.entities):
             seeds.append(e); continue
     if not seeds:
-        return "no engrams found for topic: " + topic
+        return t_or("cmd.narrative.none", "no engrams found for topic: {topic}").format(topic=topic)
     seeds.sort(key=lambda e: e.created_at)
     head = seeds[:k]
-    # Expand to cluster siblings (1-hop) to flesh out the story
     from hippocampus.separation import PatternSeparator
     cluster = PatternSeparator.expand_cluster(head, fetch=service.store.get, max_total=k * 2)
     items = [e for e, _s, _o in cluster]
     items.sort(key=lambda e: e.created_at)
-    lines = ["## narrative: " + topic, "seed engrams: " + str(len(seeds)) + ", expanded to: " + str(len(items))]
+    lines = [t_or("cmd.narrative.header", "## narrative: {topic}").format(topic=topic),
+             t_or("cmd.narrative.seeds", "seed engrams: {n}, expanded to: {m}").format(
+                 n=len(seeds), m=len(items))]
     import datetime
     for e in items:
         ts = datetime.datetime.fromtimestamp(e.created_at).strftime("%Y-%m-%d %H:%M")
@@ -417,22 +457,23 @@ def format_narrative(service, topic, k=8, *, persona_id=None, scope_id=None):
         s_tag = "" if not e.stream else " (" + e.stream + ")"
         line = "- " + ts + v_tag + s_tag + "  " + (e.summary or e.content)[:80]
         if e.similar_to:
-            line += "  [linked:" + str(len(e.similar_to)) + "]"
+            line += "  [" + t_or("cmd.narrative.linked", "linked:{n}").format(n=len(e.similar_to)) + "]"
         lines.append(line)
     return chr(10).join(lines)
 
 def format_profile(service, actor_id):
     """Render the user self-model (v1.1). If facts are absent, try a build first."""
     if service is None or service.profile is None:
-        return "profile layer not initialized (cfg.enable_profile=False)"
+        return t_or("cmd.profile.disabled",
+                    "profile layer not initialized (cfg.enable_profile=False)")
     actor_id = (actor_id or "").strip() or "default"
     facts = service.profile_facts(actor_id)
     if not facts:
-        # auto-build on first view so /mem profile is useful out of the box
         built = service.build_profile(actor_id)
         facts = service.profile_facts(actor_id)
         if not built and not facts:
-            return "(no profile facts yet for " + actor_id + " - need more engrams)"
+            return t_or("cmd.profile.empty",
+                        "(no profile facts yet for {actor} - need more engrams)").format(actor=actor_id)
     return service.profile.render(actor_id)
 
 
@@ -440,10 +481,11 @@ def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8, *,
                       persona_id=None, scope_id=None):
     """Spread activation from seed entity names / engram ids and show the top-k."""
     if service is None or service.activation is None:
-        return "activation layer not initialized (need cfg.enable_semantic=True)"
+        return t_or("cmd.activation.disabled",
+                    "activation layer not initialized (need cfg.enable_semantic=True)")
     seeds = [s for s in (seeds or "").split() if s]
     if not seeds:
-        return "usage: /mem activate <seed1> [seed2 ...]"
+        return t_or("cmd.activation.usage", "usage: /mem activate <seed1> [seed2 ...]")
     acts = service.spread_activation(seeds, depth=int(depth),
                                     decay=float(decay), floor=float(floor))
     if persona_id is not None and acts:
@@ -453,10 +495,12 @@ def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8, *,
         scoped = service.store.engram_ids_for_scope(scope_id)
         acts = {eid: val for eid, val in acts.items() if eid in scoped}
     if not acts:
-        return "no activation for: " + " ".join(seeds)
-    header = "## spreading activation from: " + " ".join(seeds) \
-        + "  (depth=" + str(depth) + " decay=" + str(decay) \
-        + " floor=" + str(floor) + ")"
+        return t_or("cmd.activation.none", "no activation for: {seeds}").format(
+            seeds=" ".join(seeds))
+    header = t_or("cmd.activation.header",
+                  "## spreading activation from: {seeds}"
+                  "  (depth={depth} decay={decay} floor={floor})").format(
+        seeds=" ".join(seeds), depth=depth, decay=decay, floor=floor)
     lines = [header]
     for ln in service.activation.explain(acts, top_k=k):
         lines.append(ln)
@@ -465,21 +509,22 @@ def format_activation(service, seeds, depth=2, decay=0.55, floor=0.05, k=8, *,
 
 def format_graph(service, query, k=5, *, persona_id=None, scope_id=None):
     if service is None or service.semantic is None:
-        return "Memory service or semantic layer not initialized."
+        return t_or("cmd.graph.disabled",
+                    "Memory service or semantic layer not initialized.")
     if not query:
-        return "usage: /mem graph <entity>"
+        return t_or("cmd.graph.usage", "usage: /mem graph <entity>")
     result = service.recall_semantic(query, k=k, persona_id=persona_id,
                                     scope_id=scope_id)
     if not result.entities and not result.relations:
-        return "no entities/relations found for: " + query
-    lines = ["## graph for: " + query]
+        return t_or("cmd.graph.none", "no entities/relations found for: {q}").format(q=query)
+    lines = [t_or("cmd.graph.header", "## graph for: {q}").format(q=query)]
     if result.entities:
-        lines.append("### entities")
+        lines.append(t_or("cmd.graph.entities", "### entities"))
         for ent in result.entities:
-            lines.append("- " + ent.name + " (" + ent.type
-                         + ", mentions=" + str(ent.mention_count) + ")")
+            lines.append(t_or("cmd.graph.entity_line", "- {name} ({type}, mentions={n})").format(
+                name=ent.name, type=ent.type, n=ent.mention_count))
     if result.relations:
-        lines.append("### relations")
+        lines.append(t_or("cmd.graph.relations", "### relations"))
         ent_by_id = {e.id: e for e in result.entities}
         for ent in service.semantic.all_entities(limit=1000):
             ent_by_id.setdefault(ent.id, ent)
@@ -488,12 +533,15 @@ def format_graph(service, query, k=5, *, persona_id=None, scope_id=None):
             obj = ent_by_id.get(r.object_id)
             sub_name = sub.name if sub else r.subject_id[:8]
             obj_name = obj.name if obj else r.object_id[:8]
-            lines.append("- " + sub_name + " --[" + r.predicate + "]--> " + obj_name
-                         + " (conf=" + str(round(r.confidence, 2)) + ")")
+            lines.append(t_or("cmd.graph.relation_line",
+                              "- {sub} --[{pred}]--> {obj} (conf={conf})").format(
+                sub=sub_name, pred=r.predicate, obj=obj_name,
+                conf=round(r.confidence, 2)))
     if result.engrams:
-        lines.append("### source engrams")
+        lines.append(t_or("cmd.graph.engrams", "### source engrams"))
         for e in result.engrams:
-            lines.append("- " + e.id[:8] + ": " + e.summary[:60])
+            lines.append(t_or("cmd.graph.engram_line", "- {id8}: {summary}").format(
+                id8=e.id[:8], summary=e.summary[:60]))
     return chr(10).join(lines)
 
 
@@ -512,57 +560,58 @@ def parse_search_args(arg):
 def format_confidence(service, query, k=5, *, persona_id=None, scope_id=None):
     """v1.2 metamemory: recall + show a feeling-of-knowing per hit."""
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     if not query:
-        return "usage: /mem confidence <query>"
+        return t_or("cmd.confidence.usage", "usage: /mem confidence <query>")
     from hippocampus.metamemory import confidence_label, is_tip_of_tongue
     res = service.recall(Cue(text=query, k=int(k), persona_id=persona_id, scope_id=scope_id))
     if not res.engrams:
-        return "(nothing recalled for: " + query + ")"
+        return t_or("cmd.confidence.none", "(nothing recalled for: {q})").format(q=query)
     confs = res.confidences or [0.0] * len(res.engrams)
-    lines = ["## metamemory for: " + query]
+    lines = [t_or("cmd.confidence.header", "## metamemory for: {q}").format(q=query)]
+    tip = t_or("cmd.confidence.tip", "tip-of-tongue")
     for e, sc, cf in zip(res.engrams, res.scores, confs):
         label = confidence_label(cf, service.cfg)
-        tot = " [tip-of-tongue]" if is_tip_of_tongue(cf, sc, service.cfg) else ""
+        tot = " [" + tip + "]" if is_tip_of_tongue(cf, sc, service.cfg) else ""
         lines.append("- " + ("%.2f" % cf) + " " + label + tot
                      + "  " + (e.summary or e.content)[:70])
     return chr(10).join(lines)
 
 
 def format_decaycurve(service, arg, k=8):
-    """v1.2 forgetting-curve viz: project each engram's strength forward in time
+    """v1.2 forgetting-curve viz: project each engram strength forward in time
     using the Ebbinghaus decay model and draw an ASCII curve."""
     import math, time
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     cfg = service.cfg
     arg = (arg or "").strip()
     if arg and arg.lower() != "all":
         e = service.store.get(arg)
         if e is None:
-            # allow id prefix
             for cand in service.store.all(limit=10_000):
                 if cand.id.startswith(arg):
                     e = cand
                     break
         if e is None:
-            return "no engram found for id: " + arg
+            return t_or("cmd.decay.not_found", "no engram found for id: {id}").format(id=arg)
         targets = [e]
     else:
         targets = sorted(service.store.all(limit=10_000),
                          key=lambda x: x.strength, reverse=True)[:k]
     if not targets:
-        return "(no engrams to plot)"
+        return t_or("cmd.decay.empty", "(no engrams to plot)")
     buckets = max(2, int(cfg.decaycurve_buckets))
     width = max(8, int(cfg.decaycurve_width))
     now = time.time()
-    horizon = cfg.decay_tau_base * 3.0  # ~3 base time-constants ahead
-    lines = ["## forgetting curve (next " + ("%.1f" % (horizon / 86400.0)) + " days)"]
+    horizon = cfg.decay_tau_base * 3.0
+    lines = [t_or("cmd.decay.header", "## forgetting curve (next {days} days)").format(
+        days="%.1f" % (horizon / 86400.0))]
     for e in targets:
         tau = cfg.decay_tau_base * (1.0 + 4.0 * e.importance)
         last = max(e.last_accessed or 0.0, e.created_at)
-        head = "- " + e.id[:8] + " imp=" + ("%.2f" % e.importance) \
-               + " s0=" + ("%.2f" % e.strength) + ": " + (e.summary or e.content)[:36]
+        head = "- " + e.id[:8] + " imp=" + ("%.2f" % e.importance)
+        head += " s0=" + ("%.2f" % e.strength) + ": " + (e.summary or e.content)[:36]
         lines.append(head)
         row_chars = []
         for i in range(buckets):
@@ -571,7 +620,6 @@ def format_decaycurve(service, arg, k=8):
             filled = int(round(max(0.0, min(1.0, s)) * width))
             row_chars.append("  " + "#" * filled + "." * (width - filled)
                              + " " + ("%.2f" % s))
-        # show first / middle / last sample to stay compact
         idxs = sorted(set([0, buckets // 2, buckets - 1]))
         for i in idxs:
             day = (horizon * (i / (buckets - 1))) / 86400.0
@@ -691,7 +739,7 @@ def format_debug(service, query, k=5, *, persona_id=None, scope_id=None):
     lines.append("")
     lines.append(t("debug.cut_header"))
     if not cut:
-        lines.append("  (none \u2014 all RRF survivors made top-k)")
+        lines.append(t("debug.cut_none"))
     else:
         lines.append(t("debug.cut_total", n=str(len(cut))))
         for rec in cut[:5]:  # cap to 5 to keep output bounded
@@ -722,16 +770,17 @@ def format_dual_route(service, query, k=5, *, persona_id=None, scope_id=None):
     with which route(s) contributed and the rrf score breakdown.
     """
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     query = (query or "").strip()
     if not query:
-        return "usage: /mem search <q> --mode=dual"
-    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None, persona_id=persona_id, scope_id=scope_id)
+        return t_or("cmd.dual.usage", "usage: /mem search <q> --mode=dual")
+    cue = Cue(text=query, k=int(k), actor_id=None, channel_id=None,
+              persona_id=persona_id, scope_id=scope_id)
     from hippocampus.retrieval import DualRouteRetriever, RouteKind
     retriever = DualRouteRetriever(service, service._dual_route_config())
     res = retriever.search(cue)
     if not res.engrams:
-        return "[dual] no hit for: " + query
+        return t_or("cmd.dual.no_hit", "[dual] no hit for: {q}").format(q=query)
     hits = retriever.explain(cue)
     by_id = {}
     for h in hits:
@@ -742,19 +791,21 @@ def format_dual_route(service, query, k=5, *, persona_id=None, scope_id=None):
             by_id[h.engram.id]["graph"] = h.rrf_contribution
             if h.matched_entity:
                 by_id[h.engram.id]["entity"] = h.matched_entity
-    lines = ["[dual] hits for: " + query + "  (doc=document-route graph=entity-route)"]
+    lines = [t_or("cmd.dual.header",
+                  "[dual] hits for: {q}  (doc=document-route graph=entity-route)").format(q=query)]
+    via = t_or("cmd.dual.via", "via {entity}")
     for e, s in zip(res.engrams, res.scores):
         info = by_id.get(e.id, {})
         tag = ""
         if info.get("doc") and info.get("graph"):
             tag = "[doc+graph"
             if info.get("entity"):
-                tag += " via " + info["entity"]
+                tag += " " + via.format(entity=info["entity"])
             tag += "]"
         elif info.get("graph"):
             tag = "[graph"
             if info.get("entity"):
-                tag += " via " + info["entity"]
+                tag += " " + via.format(entity=info["entity"])
             tag += "]"
         else:
             tag = "[doc]"
@@ -763,49 +814,51 @@ def format_dual_route(service, query, k=5, *, persona_id=None, scope_id=None):
     return chr(10).join(lines)
 
 def format_session(service):
-    """v1.4 /mem session: render the current session filter policy.
-
-    Shows whether the filter is enabled and which rules are active.
-    Tests against a few example contexts to demonstrate pass/deny.
-    """
+    """v1.4 /mem session: render the current session filter policy."""
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     from hippocampus.session_filter import SessionFilter, FilterContext
     sf = SessionFilter(service.cfg)
     s = sf.summary()
-    lines = ["## session filter"]
-    lines.append("enabled:        " + str(s["enabled"]))
-    lines.append("platform allow:  " + _join_or_all(s["platform_allowlist"]))
-    lines.append("platform block:  " + _join_or_all(s["platform_blocklist"]))
-    lines.append("channel  allow:  " + _join_or_all(s["channel_allowlist"]))
-    lines.append("channel  block:  " + _join_or_all(s["channel_blocklist"]))
-    lines.append("actor    allow:  " + _join_or_all(s["actor_allowlist"]))
-    lines.append("keywords block:  " + _join_or_all(s["blocked_keywords"]))
+    lines = [t_or("cmd.session.header", "## session filter")]
+    lines.append(t_or("cmd.session.enabled", "enabled:        {v}").format(v=s["enabled"]))
+    lines.append(t_or("cmd.session.platform_allow", "platform allow:  {v}").format(
+        v=_join_or_all(s["platform_allowlist"])))
+    lines.append(t_or("cmd.session.platform_block", "platform block:  {v}").format(
+        v=_join_or_all(s["platform_blocklist"])))
+    lines.append(t_or("cmd.session.channel_allow", "channel  allow:  {v}").format(
+        v=_join_or_all(s["channel_allowlist"])))
+    lines.append(t_or("cmd.session.channel_block", "channel  block:  {v}").format(
+        v=_join_or_all(s["channel_blocklist"])))
+    lines.append(t_or("cmd.session.actor_allow", "actor    allow:  {v}").format(
+        v=_join_or_all(s["actor_allowlist"])))
+    lines.append(t_or("cmd.session.keywords_block", "keywords block:  {v}").format(
+        v=_join_or_all(s["blocked_keywords"])))
     if s["enabled"]:
         lines.append("")
-        lines.append("### quick test")
+        lines.append(t_or("cmd.session.quick_test", "### quick test"))
         for plat, chan, actor, content, label in (
-            ("qq", "group-1", "alice", "hello world", "default priv"),
-            ("qq", "group-1", "alice", "this is spam content", "default + spam"),
+            ("qq", "group-1", "alice", "hello world", t_or("cmd.session.case_priv", "default priv")),
+            ("qq", "group-1", "alice", "this is spam content", t_or("cmd.session.case_spam", "default + spam")),
         ):
-            d = sf.decide(FilterContext(platform=plat, channel_id=chan, actor_id=actor, content=content))
-            tag = "PASS" if d.is_pass() else "DENY(" + d.reason + ")"
+            d = sf.decide(FilterContext(platform=plat, channel_id=chan,
+                                        actor_id=actor, content=content))
+            if d.is_pass():
+                tag = t_or("cmd.session.pass", "PASS")
+            else:
+                tag = t_or("cmd.session.deny", "DENY({reason})").format(reason=d.reason)
             lines.append("  [" + label + "] " + tag)
     return chr(10).join(lines)
 
 
 def _join_or_all(xs):
-    return "(all)" if not xs else ", ".join(xs)
+    return t_or("cmd.session.all", "(all)") if not xs else ", ".join(xs)
 
 
 def format_tier(service, counts=None):
-    """v1.13 /mem tier: hot/warm/cold breakdown.
-
-    When `counts` (from reclassify_tiers) is given, show the persisted
-    result; otherwise classify live over all engrams for a fresh view.
-    """
+    """v1.13 /mem tier: hot/warm/cold breakdown."""
     if service is None:
-        return "Memory service not initialized."
+        return t("cmd.service_down")
     cfg = getattr(service, "cfg", None)
     if counts is None:
         try:
@@ -817,36 +870,39 @@ def format_tier(service, counts=None):
                 c[classify(e, cfg, now)] += 1
             counts = c
         except Exception as ex:
-            return "tier classify error: " + repr(ex)
+            return t_or("cmd.tier.err", "tier classify error: {err}").format(err=repr(ex))
     hot = counts.get("hot", 0)
     warm = counts.get("warm", 0)
     cold = counts.get("cold", 0)
     total = hot + warm + cold
-    lines = ["## 记忆分层 (hot/warm/cold)",
-             "  热 (hot)： " + str(hot) + "  → 优先召回",
-             "  温 (warm)：" + str(warm) + "  → 正常召回",
-             "  冷 (cold)：" + str(cold) + "  → 仅兑底召回",
-             "  总计：    " + str(total)]
+    lines = [t_or("cmd.tier.header", "## 记忆分层 (hot/warm/cold)"),
+             t_or("cmd.tier.hot", "  热 (hot)： {n}  → 优先召回").format(n=hot),
+             t_or("cmd.tier.warm", "  温 (warm)：{n}  → 正常召回").format(n=warm),
+             t_or("cmd.tier.cold", "  冷 (cold)：{n}  → 仅兜底召回").format(n=cold),
+             t_or("cmd.tier.total", "  总计：    {n}").format(n=total)]
     if "changed" in counts:
-        lines.append("  本次重算变更：" + str(counts.get("changed", 0)))
+        lines.append(t_or("cmd.tier.changed", "  本次重算变更：{n}").format(
+            n=counts.get("changed", 0)))
     try:
         from hippocampus.cold_archive import ColdArchiver
         n_arch = ColdArchiver(service.store, cfg).count_archived()
-        lines.append("  已归档(冷存文件)：" + str(n_arch))
+        lines.append(t_or("cmd.tier.archived", "  已归档(冷存文件)：{n}").format(n=n_arch))
     except Exception:
-        pass
+        _obs_note("format", "format_tier")
     return chr(10).join(lines)
 
 
 def format_tier_archive(res):
     """Render the result of service.archive_cold()."""
     if not isinstance(res, dict):
-        return "tier archive: " + str(res)
+        return t_or("cmd.archive.invalid", "tier archive: {v}").format(v=str(res))
     if res.get("error"):
-        return "冷层归档失败：" + str(res.get("error"))
-    lines = ["## 冷层归档",
-             "  已归档并从库中移除：" + str(res.get("archived", 0)),
-             "  因太新跳过：" + str(res.get("skipped_recent", 0)),
-             "  归档文件：" + str(res.get("path", ""))]
+        return t_or("cmd.archive.error", "冷层归档失败：{err}").format(err=str(res.get("error")))
+    lines = [t_or("cmd.archive.header", "## 冷层归档"),
+             t_or("cmd.archive.archived", "  已归档并从库中移除：{n}").format(
+                 n=res.get("archived", 0)),
+             t_or("cmd.archive.skipped", "  因太新跳过：{n}").format(
+                 n=res.get("skipped_recent", 0)),
+             t_or("cmd.archive.path", "  归档文件：{path}").format(path=res.get("path", ""))]
     return chr(10).join(lines)
 

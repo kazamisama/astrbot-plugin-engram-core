@@ -1,7 +1,110 @@
 # Changelog
 
-
 ## [Unreleased]
+
+Nothing yet.
+
+## [1.77.0] - 2026-10-27
+
+审计驱动的一次结构与正确性收敛。P0 修复空转配置与过期帮助文本，P1 让 atoms /
+consolidation / recall 三条半废链路真正接通，P2 清理死代码、死表、死端点与重复实现。
+
+### Added
+- **两个 `diary_message_*` 配置真正生效**。`diary_message_batch_size` 与
+  `diary_message_flush_interval_seconds` 此前只存在于 `_conf_schema.json`，
+  `ConfigManager._build` 把它们塞进 `MemoryConfig.extra`，而消费方
+  (`service.py` / `main.py`) 读的是 `getattr(cfg, ...)` —— 面板上的值从未被使用。
+  现在是 `MemoryConfig` 的真实字段（默认 50 / 30.0），schema、`_FIELDS`、消费方三方一致，
+  `tests/_smoke_v94.py` 用 schema 叶子 ⊆ 字段集 + roundtrip 断言锁住。
+- **帮助文本改为生成式**。新增 `engram_command_registry.py`（`COMMAND_TABLE` 28 条路由命令 +
+  `DIRECT_COMMANDS` 2 条），`handlers/help_text.py` 依据它和 i18n 的 `help.header/usage/desc`
+  渲染，版本号取自 `hippocampus.__version__`。`/mem help` 因此补回了缺失的
+  `/mem persona`、`/mem session`、`/mem tier`，并清掉了原来字面打印的反斜杠 n。
+  旧实现是手写死字符串（标题还停在 v1.4.x），这类漂移以后由 `_smoke_v94` 双向断言拦下。
+- **atoms 子系统接通**。生产代码此前只有三条英文正则能产出原子（中文关系永远为零）；
+  现在 `_post_ingest` 直接用抽取到的 relations 生成原子：
+  `SemanticStore.atoms_from_relations()` / `EntityExtractor.extract_atoms()` 改为以
+  实体**名字**为契约（`_entity_names()` 一次查询，`_relation_atom_dicts()` 统一四种谓词判定），
+  `AtomLifecycleManager.atoms_from_dicts()` 承接原生命周期逻辑。中文「我叫张三，我喜欢咖啡」
+  现在能产出原子。
+- **`ReplayConsolidator.maintenance()`**：把每个维护周期真正需要的子集（聚类摘要、晋升、
+  SWR 回放、抽象化）从 `step()` 里拆出来，不再需要调用方理解整套流程。
+- **`hippocampus/jsonparse.py`**：`diary_writer` 与 `summarizer` 各自私藏一份完全相同的
+  `_parse_json` / `_as_list`（含围栏代码块处理），现合并为 `parse_json_loose()` / `as_list()`。
+- **`page_api.ROUTES`**：页面 API 注册表成为唯一事实来源，`register_routes()` 遍历它；
+  模块 docstring 的端点清单不再手写（原来是 14 条文档 vs 35 条注册）。
+- **配置面补齐（C6）**：`_conf_schema.json` 从 96 个入口扩到 167 个。审计时 169 个
+  `MemoryConfig` 字段里有 74 个只能在 JSON 里手改（会话过滤的平台/频道/发言人名单与
+  `blocked_keywords`、tier 与召回阈值、激活扩散参数、原子/图谱写入上限、日记细化、总结缓冲、
+  写入日志保留、`metamemory_weights` ……），面板上看不到也改不了。现在只保留 3 个内部字段
+  不暴露：`extra`（未知键兜底）、`embedding_name` / `llm_name`（运行时解析）。
+  `_smoke_v94` 新增三条断言锁住这件事：字段 ↔ schema 全覆盖（少一个就红）、schema 类型必须是
+  AstrBot 能建默认值的（`int/float/bool/string/text/list/file/object/template_list`，写错成
+  `dict` 会在插件加载时直接抛错）、schema 默认值与 `MemoryConfig` 默认值逐个一致
+  （默认值写错会静默覆盖 dataclass，此前无人检查）。
+- **`hippocampus/observability.py`（C7）**：92 个 `except ...: pass/continue` 统一改为
+  `_obs_note(scope, where)`，按（调用点, 异常类型）去重后向 stderr 打印一行
+  `[hippocampus:<module>] <function>: <ExcType>: <message>`。此前这些容错分支把真实故障
+  （图谱索引器静默死掉、日记 flush 一直失败、persona 每轮抛异常）变得和「功能就是安静」一模一样。
+  去重是为了热路径不刷屏：一个原先静默的失败现在会出现一次，重复出现不再重复打印。
+  `tests/_smoke_v95.py` 用 AST 扫描做守卫：任何**宽泛** except（`Exception` / `BaseException` /
+  bare）的 body 只有 pass/continue 就失败；具名异常（如缺失可选表的 `OperationalError`）豁免。
+- **`tests/_smoke_common.py`（R5）**：`install_stub()` / `install_textpart()` 收敛了 35 个 smoke
+  里 8 个变体的 33 份 `_install_stub` 与 2 份 `_install_astrbot_stub`（约 990 行）。
+  v70/v71/v72 各保留一个三行包装（它们要额外的 `astrbot.core.agent.message.TextPart`）。
+  `_svc` / `_build_service` 仍由各测试自带：它们构造的 service 配置差异太大，合并反而更难读。
+- `tests/_smoke_v94.py`（配置/帮助/注册表契约）与 v25 的 ROUTES 双向断言。
+
+### Changed
+- **召回统一到 dual-route**。`PatternCompleter` 与它的 `_rrf_fuse` 被删除，
+  `MemoryService.recall()` 走 `recall_dual_route()`；`DualRouteRetriever.search()` 现在完整承接
+  旧主链路的行为：`cue.mode`（vector/fts/hybrid/dual）真正生效、分层（tier）过滤、
+  mood/activation/frequency 打分项、重巩固 touch、`enable_separation` 的集群扩展、
+  metamemory 置信度。`document_route_weight` 等 5 个此前只作用于支路的权重现在决定主路径。
+- **两套 consolidation 不再互斥**。维护扫描每次都会跑 replay 的廉价子集
+  （`maintenance()`），LLM 版只在 `memory_consolidation_enabled` 时附加；
+  `force_consolidate()` 先跑 `step()` 再按开关跑 LLM 版，并各自容错；
+  `/mem replay` 改用 service 持有的 consolidator（原来现场裸建一个，丢掉 llm/semantic/profile）。
+- **配置指纹扩容**：`score_alpha/beta/gamma`、路由权重、`cross_route_bonus`、
+  `dynamic_route_weighting`、`recency_decay_rate`、MMR 与 spread 开关纳入召回缓存键。
+- `# /mem help` 的标题/用法/说明全部进 i18n（zh/en 各 30 条），并新增 `t_or()` 以支持默认值。
+
+### Fixed
+- `AtomStore.search_text` 的 `LIKE ... ESCAPE` 在 Python 普通字符串里把反斜杠吃掉，
+  SQL 变成 `ESCAPE ''`，一旦 atom 路由真的被走到就抛
+  `ESCAPE expression must be a single character`。改用 `!` 作转义符。
+- `resummarize` 之外的死表 `rebuild_state` 及其三个 helper 删除；旧库启动时 DROP。
+- 删除 17 个生产零调用的定义（`set_bridge`、`Engram.from_json`、`PageApiUtils.safe_int`、
+  `ProfileStore.get_fact/delete_fact`、`reset_all_overrides`、`active_for_subjects`、
+  `ConversationRecord.round_count`、`_build_extract_prompt`、`GraphEdgeV2.semantic_edge_key`、
+  `SpreadingActivation._engram_neighbors_batch`、`DualRouteRetriever._mmr_rerank`、
+  `MemoryService.stop_background_tasks_*`、`HippocampalStore.all_after`、
+  `DiaryStore.add_lines_batch`），以及 `page_api` 的 `/prompts/detail`（与 `/prompts` 重复）。
+- **embedding 桥接的超时是「总预算」，不再是「每次尝试」。** `emb_bridge_for_context`
+  原来对每个 provider 调用各套一个 `EMB_BRIDGE_TIMEOUT`（5s），而配置的 provider 会经过
+  两条解析路径（`get_provider_by_id` 与 `get_all_embedding_providers`）被**同一个实例**
+  命中两次 —— 一次卡住的调用正好烧掉 5s + 5s = 10s，等于
+  `InjectHandler._INJECT_HARD_TIMEOUT`，「降级到 FTS/关键词」的设计路径永远来不及走，
+  整次注入被丢弃。线上 2026-10-28 14:25 就是这样：一条
+  `auto inject timed out after 10.0s` 紧跟第二条 `timed out after 5.0s`。
+  现在 provider 按 `id()` 去重，每个 await 只拿**剩余**预算，预算耗尽即中止后续解析；
+  `_smoke_v84` 新增「同一个 provider 走两条路径只花一份预算」断言（0.4s < 0.75s）。
+- **注入超时后，后台线程不再改动已释放的请求。** `asyncio.wait_for` 到期只是让 hook
+  释放 LLM 请求，worker 线程仍在跑；它原本会继续把 `<engram-context>` 块拼进 `req`
+  （此时 provider 可能正在读这个请求）。现在 `handle_inject` 在超时时置
+  `threading.Event`，worker 在改动 `req` 前检查并直接返回；`_smoke_v70` 断言
+  「置位后不注入、不置位仍注入」。
+- **注入模块的加载横幅不再说谎。** `handlers/event/inject.py` 的 banner 硬编码
+  `v1.73`，且把 `最近日记` 写成手转义的 `\xe6\x9c\x80...` —— Python 把它当
+  Latin-1 码点，日志里一直是 `diary-label=ææè¿æ¥è®°`。现在打印
+  `inject handler ready`，标签取自模块常量 `_DIARY_BLOCK_LABEL`
+  （注入路径本身也复用该常量），版本号由插件加载横幅统一提供。
+
+### Notes
+- 85 个 smoke 全绿；新增 v94（配置/帮助/注册表契约）与 v95（吞异常可见化）。`metadata.yaml` / `hippocampus/__init__.py` 版本 1.77.0。
+- CHANGELOG 的 [Unreleased] 里积累了 v1.76.13–v1.76.28 十六个版本，现按版本切分。
+
+## [1.76.28] - 2026-09-23
 
 ### Fixed
 - **v1.76.28: re-summarizing stacked a new layer of graph rows instead of
@@ -43,6 +146,9 @@
   1), verified `graph_entries_v2` rows containing `<output>` = **0** store-wide
   and the engram left with its 9 freshly extracted rows. `engrams` untouched.
 
+## [1.76.27] - 2026-09-23
+
+### Fixed
 - **v1.76.27: the fallback summarizer wrote the raw transcript into memory, so
   the bot's own `<output>` XML was injected back to her as an observed fact —
   and the forget cascade still left edge rows behind.**
@@ -101,6 +207,9 @@
   disabling the edge delete — exactly the D1 check goes red (exit 1) while the
   two guard checks stay green. 82/82 green.
 
+## [1.76.26] - 2026-09-22
+
+### Fixed
 - **v1.76.26: a memory forgotten mid-session kept being injected — working
   memory was the one merge point that never filtered `forgotten_at`, and it
   prepends at score 1.0, ahead of every route that does.**
@@ -147,6 +256,9 @@
   Restarting AstrBot clears that buffer, which is why the bug looked
   intermittent and why fixing the cascade alone did not make forgetting stick.
 
+## [1.76.25] - 2026-09-22
+
+### Fixed
 - **v1.76.25: the v1.76.24 cascade was still incomplete — four more stores held
   the same text, one of them injected into the prompt every single turn.**
 
@@ -186,6 +298,9 @@
   verified to 0. `tests/_smoke_v90.py` extended to 20 checks, including that a
   shared node survives. 80/80 green.
 
+## [1.76.24] - 2026-09-22
+
+### Fixed
 - **v1.76.24: forgetting only touched `engrams`, so a "forgotten" memory stayed
   fully readable — and came back after a `/reset`.** The same text also lives
   in stores with **no forgetting concept at all**. Measured live on 2026-09-22,
@@ -218,7 +333,6 @@
   produced the bug. `diary_chunks` is deliberately **not** touched: its
   `diary_id` has not been verified to be an engram id, and guessing would
   delete the wrong rows.
-
 - **v1.76.24: `reclassify_all` wrote an epoch into `tier` for every forgotten
   engram.** The 11-positional-argument UPDATE passed `now` where the first
   placeholder — the forgotten branch,
@@ -228,6 +342,9 @@
   bogus tier = **18 of 19**. One-token fix; `tests/_smoke_v90.py` asserts a
   forgotten engram lands on `'cold'` and that the value is not numeric.
 
+## [1.76.23] - 2026-09-21
+
+### Fixed
 - **v1.76.23: `reembed_stale()` could never repair a vectorless row.** The
   selector matched on `embedding_model != target` **only**:
 
@@ -262,6 +379,9 @@
   `'[]'`, wrong label, already-good row untouched, forgotten row skipped,
   idempotent second pass).
 
+## [1.76.22] - 2026-09-21
+
+### Fixed
 - **v1.76.22: the `<engram-context>` wrapper licensed the model to ignore its
   own memories.** The tag (v1.67.1) said only what a block is *not* —
   "injected background, not part of the user's actual message" — which fixed
@@ -303,6 +423,9 @@
   sits after the opening tag and before the inner `[xxx]` label, so
   re-injection defence still matches noted and note-less blocks alike.
 
+## [1.76.21] - 2026-09-21
+
+### Fixed
 - **v1.76.21: the inject path dropped every key fact, and labelled long-term
   memory as "recent conversation".** Two defects in the same render loop of
   `InjectHandler._handle_inject_sync`:
@@ -337,6 +460,9 @@
   re-injection defence: blocks injected by <= v1.76.20 still have to be
   stripped, or they would accumulate across turns forever.
 
+## [1.76.20] - 2026-09-21
+
+### Fixed
 - **v1.76.20: no conversation's original text was ever retained — the raw
   transcript branch never fired once.** `store_summary` keeps the window's raw
   lines only when `importance >= source_retention_min_importance`, and that
@@ -369,6 +495,9 @@
   schema. Both the schema default and `MemoryConfig` were changed so a fresh
   install behaves the same way.
 
+## [1.76.19] - 2026-09-21
+
+### Fixed
 - **v1.76.19: the first memory after every restart was written into the wrong
   vector space (and stayed invisible to vector recall).** `vector_search`
   filters by `embedding_model` (storage.py), so a row labelled with anything
@@ -398,6 +527,9 @@
   plugin-owned daemon thread after a successful switch, so it neither blocks the
   event loop nor is tied to it. This also repairs the historical leftovers.
 
+## [1.76.18] - 2026-09-21
+
+### Fixed
 - **v1.76.18: the recall path ignored the configured score weights.** The
   injection path (`handlers/event/inject.py` → `MemoryService.recall` →
   `PatternCompleter.recall`) hardcoded
@@ -420,6 +552,9 @@
   excludes. The one consistent miss is a retrieval/wording miss, not a ranking
   one.
 
+## [1.76.17] - 2026-09-20
+
+### Fixed
 - **v1.76.17: the plugin never read its own config — every WebUI setting was
   ignored.** This is why no new engrams were being created. Two defects
   compounded:
@@ -454,7 +589,6 @@
   include_cold=...`) so panel-vs-runtime drift is visible instead of silent.
   Tests that relied on the old (broken) `get_config` path now pass their config
   to `initialize()`, which is the real contract.
-
 - **v1.76.17b: bounded the summarizer's provider retries, and made its slowness
   visible.** Investigating "why does the summarizer's LLM call time out at 45s
   when the chat's calls succeed" turned up two things:
@@ -482,6 +616,9 @@
     chat's calls to the same provider/model completed in ~6s. The added
     diagnostics are there to catch it next time.
 
+## [1.76.16] - 2026-09-20
+
+### Fixed
 - **v1.76.16 memory-recall repair (root cause of "记忆没有被正确召回")**:
   - **`HippocampalStore.decay_pass` compounded the decay.** It multiplied the
     *already-decayed* strength by `exp(-(now - anchor)/tau)`, where
@@ -619,6 +756,8 @@
   - New regression test: `tests/_smoke_v86.py`.
   - Version bump: 1.76.15 → 1.76.16.
 
+## [1.76.15] - 2026-09-08
+
 ### Changed
 - **v1.76.15 audit fixes (memory + event-loop hardening)**:
   - Command dispatch and Dashboard page-API handlers now run heavy sync work
@@ -640,6 +779,8 @@
     thread is shut down on plugin terminate.
   - `_stamp_persona` is bounded (10s) in all hook and command paths.
   - Version bump: 1.76.14 → 1.76.15.
+
+## [1.76.14] - 2026-09-07
 
 ### Fixed
 - **Recurring freeze hardening (v1.76.14, 2026-09-07 recurrence)**: the
@@ -698,6 +839,17 @@
 - `BackupManager.restore()` restores into the live database through the
   SQLite online backup API instead of replacing the open database file
   with `shutil.copy2`.
+
+## [1.76.13] - 2026-09-07
+
+### Fixed
+- **注入链路的硬上限**：2026-09-07 线上故障 —— judge 判定回复但 bot 从未答复，
+  钩子链卡在 inject_memory 36 分钟（run_sync 对一个挂死的 embedding 调用无限等待），
+  最终 OOM。_async_bridge.run_sync 增加默认硬超时（embedding/短操作 20s、LLM 60s），
+  到期取消底层任务并抛错；InjectHandler.handle_inject 包 asyncio.wait_for
+  （auto_inject_timeout，默认 10s），超时则释放 LLM 请求而不注入；
+  代理 bridge 增加显式超时；tests/_smoke_v83.py 覆盖成功/挂起/取消恢复。
+
 
 ## [1.76.12] - 2026-08-16
 

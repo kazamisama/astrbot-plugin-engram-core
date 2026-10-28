@@ -6,36 +6,7 @@ Independent smoke. Mocks astrbot.api so it does not require a real AstrBot runti
 import os, tempfile, sys, types, asyncio
 
 
-def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
+from _smoke_common import install_stub as _install_stub
 
 
 _install_stub()
@@ -184,12 +155,12 @@ def test_decaycurve_render():
         e = svc.observe(session_id="s1", actor_id="u1", platform="qq",
                         channel_id="g1", content="a memory that will fade")
         out_all = format_decaycurve(svc, "all")
-        assert "forgetting curve" in out_all
+        assert "forgetting curve" in out_all or "遗忘曲线" in out_all
         assert e.id[:8] in out_all
         out_one = format_decaycurve(svc, e.id)
         assert e.id[:8] in out_one
         out_bad = format_decaycurve(svc, "deadbeef")
-        assert "no engram" in out_bad
+        assert "no engram" in out_bad or "未找到" in out_bad
         svc.close()
         del svc
         import gc as _gc; _gc.collect()
@@ -203,9 +174,9 @@ def test_main_helpers_and_stats():
         svc.observe(session_id="s1", actor_id="u1", platform="qq",
                     channel_id="g1", content="espresso every morning")
         conf = format_confidence(svc, "espresso")
-        assert "metamemory for" in conf
+        assert "metamemory for" in conf or "元记忆评估" in conf
         stats = render_stats(svc)
-        assert "--- v1.2 ---" in stats and "metamemory:" in stats
+        assert "--- v1.2 ---" in stats and ("metamemory:" in stats or "元记忆：" in stats)
         svc.close()
         del svc
         import gc as _gc; _gc.collect()

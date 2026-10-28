@@ -23,6 +23,7 @@ from hippocampus.config_manager import ConfigManager
 from hippocampus.i18n_backend import init as i18n_init
 from .recall import emb_bridge_for_context, EMB_BRIDGE_TIMEOUT
 from .format import banner_text
+from hippocampus.observability import note as _obs_note
 
 
 class PluginInitializer:
@@ -67,7 +68,7 @@ class PluginInitializer:
             from hippocampus._async_bridge import set_host_loop
             set_host_loop(asyncio.get_running_loop())
         except RuntimeError:
-            pass          # sync init path: no host loop to bind to
+            _obs_note("init", "initialize")  # sync init path: no host loop to bind to
         except Exception as exc:
             print(f"[hippocampus] set_host_loop failed: {exc!r}")
         # B9: respect bot_language (default "zh", also accepts "en")
@@ -565,11 +566,11 @@ class PluginInitializer:
             try:
                 stop.set()
             except Exception:
-                pass
+                _obs_note("init", "shutdown")
         thread = getattr(self, "_backup_thread", None)
         if thread is not None and thread.is_alive():
             try:
                 thread.join(timeout=5.0)
             except Exception:
-                pass
+                _obs_note("init", "shutdown")
         self._backup_thread = None

@@ -8,9 +8,9 @@ Higher rrf_score = more confident. The k constant (typically 60) dampens
 the impact of high ranks so that documents appearing consistently in the
 middle of multiple lists still surface.
 
-In hippocampus v1.3 this layer is shared by:
-- PatternCompleter.recall (document route: vector + FTS5) - the original use
-- DualRouteRetriever (document route + graph route) - the new use
+In hippocampus v1.77.0 DualRouteRetriever is the only consumer: the
+document route (vector + FTS5) and the graph / spread / atom routes are
+fused here after each route produced its own RankedCandidate list.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field

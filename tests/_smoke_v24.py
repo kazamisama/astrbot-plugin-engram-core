@@ -10,10 +10,12 @@ Scope:
   under the synthetic `config.<field_name>` namespace
 - handlers/help_text.py: HELP_TEXT is a string (back-compat) +
   get_help_text() returns the current language translation
+  (v1.77.0: the text is generated from engram_command_registry, so the
+  old help.full_text i18n blob key is gone)
 
 Tests:
-- init(zh) -> t(help.full_text) contains 中文 HELP_TEXT marker
-- init(en) -> t(help.full_text) contains English HELP_TEXT marker
+- init(zh) -> get_help_text() contains 中文 marker
+- init(en) -> get_help_text() contains English marker
 - t format kwargs work
 - config.<field> resolves to LABELS for both langs
 - missing key returns [i18n-missing:...] sentinel
@@ -36,6 +38,18 @@ from hippocampus.i18n_backend import (
 def banner(t_): print(chr(10) + "=== " + t_ + " ===")
 
 
+def _help_mod():
+    """Load handlers/help_text.py standalone (no handlers/__init__ import)."""
+    import importlib.util as _ilu
+    _ht_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "handlers", "help_text.py")
+    _spec = _ilu.spec_from_file_location("help_text_under_test_v24", _ht_path)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    return _mod
+
+
 def test_supported_langs():
     banner("SUPPORTED_LANGS is exactly (zh, en)")
     assert SUPPORTED_LANGS == ("zh", "en"), SUPPORTED_LANGS
@@ -43,34 +57,41 @@ def test_supported_langs():
 
 
 def test_init_zh_loads_chinese_help():
-    banner("init(zh) -> t(help.full_text) contains Chinese marker")
+    banner("init(zh) -> generated help is Chinese")
+    # NB: loading the module eagerly calls i18n_init("zh"), so the
+    # language must be selected AFTER the module is loaded.
+    mod = _help_mod()
     init("zh")
     assert current_language() == "zh"
-    s = t("help.full_text")
-    # Chinese HELP_TEXT must contain a known Chinese phrase
-    assert "召回" in s, f"zh help missing 召回: {s[:80]!r}"
+    # v1.77.0: help.full_text no longer exists -- the help is generated
+    # from engram_command_registry + per-command i18n strings, so the
+    # language check is on the rendered text instead of one blob key.
+    s = mod.get_help_text()
+    assert "召回" in s, f"zh help missing 召回: {s[:120]!r}"
     print("  zh help contains 召回: OK")
 
 
 def test_init_en_loads_english_help():
-    banner("init(en) -> t(help.full_text) contains English marker")
+    banner("init(en) -> generated help is English")
+    mod = _help_mod()
     init("en")
     assert current_language() == "en"
-    s = t("help.full_text")
-    # English HELP_TEXT must contain a known English phrase
+    s = mod.get_help_text()
     assert "recall related memories" in s, (
-        f"en help missing English marker: {s[:80]!r}")
+        f"en help missing English marker: {s[:120]!r}")
     print("  en help contains 'recall related memories': OK")
 
 
 def test_format_kwargs():
     banner("t(key, **kwargs) formats templates")
     init("en")
-    s = t("replay.ok", m=1, p=2, a=3, r=4)
-    assert s == "replay: merged=1 promoted=2 archived=3 replayed=4", s
-    s2 = t("recall.no_hit", mode="dual", query="foo")
-    assert s2 == "[dual] no hit for: foo", s2
-    print("  replay.ok + recall.no_hit format: OK")
+    # v1.77.0: the sample keys are real production strings now, so this
+    # also guards that the command-output templates stay formattable.
+    s = t("cmd.import.fmt_warn", fmt="0.7", cur="1.1")
+    assert s == " [warn: export format v0.7 != current v1.1]", s
+    s2 = t("cmd.ambiguous", n=2, preview="abcd1234")
+    assert "2" in s2 and "abcd1234" in s2, s2
+    print("  cmd.* templates format: OK")
 
 
 def test_config_labels_resolve_for_both_langs():
@@ -92,10 +113,11 @@ def test_missing_key_returns_sentinel():
 
 def test_unknown_lang_falls_back_to_zh():
     banner("init(unknown) falls back to zh silently")
+    mod = _help_mod()
     init("ja")
     assert current_language() == "zh"
     # zh help marker should still be there
-    assert "召回" in t("help.full_text")
+    assert "召回" in mod.get_help_text()
     print("  unknown lang -> zh: OK")
 
 

@@ -28,12 +28,43 @@ class ReplayConsolidator:
         self._profile = profile
 
     def step(self) -> dict:
+        """Full consolidation pass -- the manual / replay path.
+
+        Dedupe-merge is an O(n * consolidation_max_pairs) cosine scan, so it
+        is NOT part of the background sweep; maintenance() is the cheap
+        recurring subset (see service._run_maintenance).
+        """
         engrams = self._store.all(limit=10_000)
-        # v1.1: cluster auto-summarization (REM-style dream synthesis)
         if self._cfg.enable_cluster_summarization:
             self._refresh_cluster_summaries(engrams)
+        merged = self._merge_duplicates(engrams)
+        promoted = self._promote()
+        replayed = self._swr_replay()
+        archived = self._decay()
+        abstracted = self._abstract()
+        return {"merged": merged, "promoted": promoted, "archived": archived,
+                "replayed": replayed, "abstracted": abstracted}
+
+    def maintenance(self) -> dict:
+        """Cheap recurring subset, run by the background maintenance sweep.
+
+        v1.77.0: the sweep used to call ONLY the LLM consolidation manager,
+        which is disabled by default -- so promotion, SWR replay, cluster
+        summaries and episodic->semantic abstraction never ran at all, and
+        cluster_summaries / profile_facts / promoted_at stayed empty on the
+        live store for months. These four are cheap; the pairwise dedupe
+        merge stays on the manual/replay path, where its O(n*k) cosine scan
+        is paid deliberately.
+        """
+        engrams = self._store.all(limit=10_000)
+        if self._cfg.enable_cluster_summarization:
+            self._refresh_cluster_summaries(engrams)
+        return {"promoted": self._promote(),
+                "replayed": self._swr_replay(),
+                "abstracted": self._abstract()}
+
+    def _merge_duplicates(self, engrams) -> int:
         merged = 0
-        promoted = 0
         seen: set[str] = set()
         for i, a in enumerate(engrams):
             if a.id in seen: continue
@@ -47,19 +78,24 @@ class ReplayConsolidator:
                     a.importance = min(1.0, a.importance + 0.05)
                     self._store.delete(b.id); seen.add(b.id); merged += 1
             self._store.upsert(a)
-        # Promote: high-importance + frequently recalled -> semantic
-        if self._cfg.enable_promotion:
-            now = time.time()
-            for e in self._store.all(limit=10_000):
-                if (e.memory_type == "episodic"
-                        and e.access_count >= self._cfg.promote_min_access
-                        and e.importance >= self._cfg.promote_min_importance):
-                    e.memory_type = "semantic"
-                    e.promoted_at = now
-                    self._store.upsert(e)
-                    promoted += 1
-        # v1.0: SWR replay — re-strengthen the top-K by a small amount,
-        # simulating hippocampal-cortical replay during quiet wake / NREM.
+        return merged
+
+    def _promote(self) -> int:
+        if not self._cfg.enable_promotion:
+            return 0
+        promoted = 0
+        now = time.time()
+        for e in self._store.all(limit=10_000):
+            if (e.memory_type == "episodic"
+                    and e.access_count >= self._cfg.promote_min_access
+                    and e.importance >= self._cfg.promote_min_importance):
+                e.memory_type = "semantic"
+                e.promoted_at = now
+                self._store.upsert(e)
+                promoted += 1
+        return promoted
+
+    def _swr_replay(self) -> int:
         replayed = 0
         boost = self._cfg.replay_boost
         for e in self._store.iter_for_replay(k=64):
@@ -67,7 +103,9 @@ class ReplayConsolidator:
             e.access_count = (e.access_count or 0) + 1
             self._store.upsert(e)
             replayed += 1
-        # Decay
+        return replayed
+
+    def _decay(self) -> int:
         alive = DecayScheduler(self._cfg).step(self._store.all(limit=10_000))
         kept_ids = {e.id for e in alive}
         archived = 0
@@ -75,16 +113,17 @@ class ReplayConsolidator:
             if e.id not in kept_ids:
                 self._store.delete(e.id)
                 archived += 1
-        # v1.2: episodic -> semantic consolidation (abstract recurring clusters into profile facts)
-        abstracted = 0
-        if (self._cfg.enable_episodic_semantic
-                and self._semantic is not None and self._profile is not None):
-            try:
-                abstracted = self._consolidate_episodic_semantic()
-            except Exception as e:
-                print("[hippocampus] episodic->semantic consolidation error: " + repr(e))
-        return {"merged": merged, "promoted": promoted, "archived": archived,
-                "replayed": replayed, "abstracted": abstracted}
+        return archived
+
+    def _abstract(self) -> int:
+        if (not self._cfg.enable_episodic_semantic
+                or self._semantic is None or self._profile is None):
+            return 0
+        try:
+            return self._consolidate_episodic_semantic()
+        except Exception as e:
+            print("[hippocampus] episodic->semantic consolidation error: " + repr(e))
+            return 0
 
     # ---------- v1.1: cluster auto-summarization ----------
     def _refresh_cluster_summaries(self, engrams) -> None:

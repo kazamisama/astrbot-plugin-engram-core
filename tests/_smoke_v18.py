@@ -14,36 +14,7 @@ Tests:
 import os, tempfile, sys, types
 
 
-def _install_stub():
-    a = types.ModuleType("astrbot"); ai = types.ModuleType("astrbot.api")
-    sm = types.ModuleType("astrbot.api.star"); em = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _MT: ALL = "all"
-    class _F:
-        EventMessageType = _MT
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    sm.Star = Star; sm.register = register; sm.Context = Context
-    em.filter = _F; em.AstrMessageEvent = AstrMessageEvent; em.EventMessageType = _MT
-    sys.modules["astrbot"] = a; sys.modules["astrbot.api"] = ai
-    sys.modules["astrbot.api.star"] = sm; sys.modules["astrbot.api.event"] = em
+from _smoke_common import install_stub as _install_stub
 
 
 _install_stub()
@@ -177,13 +148,13 @@ def test_format_session_renders():
     svc = MemoryService(cfg)
     try:
         out = format_session(svc)
-        assert "## session filter" in out
-        assert "enabled:        True" in out
+        assert "## session filter" in out or "## 会话过滤" in out
+        assert "True" in out and ("enabled" in out or "启用" in out)
         assert "qq, wx" in out  # allowlist rendered
         assert "spam" in out
         # quick test section should appear
-        assert "### quick test" in out
-        assert "PASS" in out or "DENY" in out
+        assert "### quick test" in out or "### 快速测试" in out
+        assert "PASS" in out or "DENY" in out or "通过" in out or "拒绝" in out
         print("  format_session: OK")
         print("  ---")
         for ln in out.splitlines():
@@ -201,8 +172,8 @@ def test_format_session_disabled():
     svc = MemoryService(cfg)
     try:
         out = format_session(svc)
-        assert "enabled:        False" in out
-        assert "### quick test" not in out
+        assert "False" in out and ("enabled" in out or "启用" in out)
+        assert "### quick test" not in out and "### 快速测试" not in out
         print("  disabled format: OK")
     finally:
         import gc; del svc; gc.collect()

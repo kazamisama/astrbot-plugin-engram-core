@@ -15,6 +15,7 @@ Best-effort: any failure resolves to "" and never raises into a hook.
 from __future__ import annotations
 
 from hippocampus.memory_scope import resolve_scope_id
+from hippocampus.observability import note as _obs_note
 
 EXTRA_KEY = "hippo_persona_id"
 EXTRA_SCOPE_KEY = "hippo_scope_id"
@@ -33,7 +34,7 @@ async def resolve_persona_id(context, event) -> str:
             if pid:
                 return str(pid)
         except Exception:
-            pass
+            _obs_note("persona_resolver", "resolve_persona_id")
         cm = getattr(context, "conversation_manager", None)
         # tier 2: conversation-bound persona
         if cm is not None:
@@ -47,7 +48,7 @@ async def resolve_persona_id(context, event) -> str:
                     if pid:
                         return str(pid)
             except Exception:
-                pass
+                _obs_note("persona_resolver", "resolve_persona_id")
         # tier 3: global default persona
         try:
             pm = getattr(context, "persona_manager", None)
@@ -57,9 +58,9 @@ async def resolve_persona_id(context, event) -> str:
                 if pid:
                     return str(pid)
         except Exception:
-            pass
+            _obs_note("persona_resolver", "resolve_persona_id")
     except Exception:
-        pass
+        _obs_note("persona_resolver", "resolve_persona_id")
     return ""
 
 
@@ -89,12 +90,12 @@ async def stamp_persona_id(context, event, *, enabled: bool) -> str:
             if existing is not None:
                 return str(existing)
     except Exception:
-        pass
+        _obs_note("persona_resolver", "stamp_persona_id")
     pid = await resolve_persona_id(context, event)
     try:
         event.set_extra(EXTRA_KEY, pid)
     except Exception:
-        pass
+        _obs_note("persona_resolver", "stamp_persona_id")
     return pid
 
 
@@ -111,10 +112,10 @@ async def stamp_scope_id(context, event, cfg=None) -> str:
             if existing is not None:
                 return str(existing)
     except Exception:
-        pass
+        _obs_note("persona_resolver", "stamp_scope_id")
     scope = resolve_scope_id(cfg, event)
     try:
         event.set_extra(EXTRA_SCOPE_KEY, scope)
     except Exception:
-        pass
+        _obs_note("persona_resolver", "stamp_scope_id")
     return scope

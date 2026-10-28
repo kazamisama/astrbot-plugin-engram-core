@@ -1,41 +1,7 @@
 """Smoke v0.8: render_stats / find_and_forget / emb_bridge / search / export / import / graph / banner."""
 import os, tempfile, sys, types, asyncio, json
 
-def _install_astrbot_stub():
-    astrbot = types.ModuleType("astrbot"); astrbot_api = types.ModuleType("astrbot.api")
-    star_mod = types.ModuleType("astrbot.api.star")
-    event_mod = types.ModuleType("astrbot.api.event")
-    class Star: ...
-    def register(*a, **k):
-        def deco(cls): return cls
-        return deco
-    class Context: ...
-    class AstrMessageEvent: ...
-    class _EventMessageType: ALL = "all"
-    class _Filter:
-        EventMessageType = _EventMessageType
-        def event_message_type(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        def command(self, *a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_request(*a, **k):
-            def deco(fn): return fn
-            return deco
-        @staticmethod
-        def on_llm_response(*a, **k):
-            def deco(fn): return fn
-            return deco
-    star_mod.Star = Star; star_mod.register = register; star_mod.Context = Context
-    event_mod.filter = _Filter
-    event_mod.AstrMessageEvent = AstrMessageEvent
-    event_mod.EventMessageType = _EventMessageType
-    sys.modules["astrbot"] = astrbot
-    sys.modules["astrbot.api"] = astrbot_api
-    sys.modules["astrbot.api.star"] = star_mod
-    sys.modules["astrbot.api.event"] = event_mod
+from _smoke_common import install_stub as _install_astrbot_stub
 
 _install_astrbot_stub()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -78,7 +44,7 @@ def main_test():
         out = os.path.join(td, "out.json")
         msg = export_engrams(svc, out)
         print("  " + msg)
-        assert "exported" in msg
+        assert "exported" in msg or "已导出" in msg
         assert os.path.exists(out)
         with open(out, "r", encoding="utf-8") as f:
             payload = json.load(f)
@@ -89,7 +55,7 @@ def main_test():
                                           embedding_dim=64))
         msg = import_engrams(svc2, out)
         print("  " + msg)
-        assert "imported: engrams=3" in msg
+        assert ("imported: engrams=3" in msg) or ("已导入" in msg and "=3" in msg)
         print("  fresh service after import, stats:")
         print(render_stats(svc2))
         try: asyncio.run(svc2.stop())
@@ -100,15 +66,15 @@ def main_test():
         banner("graph")
         g = format_graph(svc, "Alice")
         print(g)
-        assert "graph for: Alice" in g
-        assert "entities" in g
+        assert "graph for: Alice" in g or ("Alice" in g and "图谱" in g)
+        assert "entities" in g or "实体" in g
         assert "likes" in g or "resides_in" in g  # we ingested identity but not in this round; likes maybe missing
         g2 = format_graph(svc, "")
         print("  empty query:", g2)
-        assert "usage" in g2
+        assert "usage" in g2 or "用法" in g2
         g3 = format_graph(svc, "zzz_nothing_matches_zzz")
         print("  no hit:", g3)
-        assert "no entities" in g3
+        assert "no entities" in g3 or "没有找到" in g3
 
         banner("banner_text")
         print(banner_text(svc))
@@ -118,15 +84,15 @@ def main_test():
         all_e = svc.store.all(limit=10)
         assert all_e
         m = find_and_forget(svc, all_e[0].id)
-        assert "forgot" in m
+        assert "forgot" in m or "已遗忘" in m
         all_e = svc.store.all(limit=10)
         prefix = all_e[0].id[:4]
         m = find_and_forget(svc, prefix)
-        assert "forgot" in m
+        assert "forgot" in m or "已遗忘" in m
         m = find_and_forget(svc, "deadbeef")
-        assert "not found" in m
+        assert "not found" in m or "未找到" in m
         m = find_and_forget(svc, "")
-        assert "usage" in m
+        assert "usage" in m or "用法" in m
 
         banner("emb_bridge: emb provider sync")
         class MockEmbProv:

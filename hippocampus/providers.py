@@ -4,6 +4,7 @@ from .embeddings import EmbeddingProvider
 from .llm import LLMProvider, RuleLLMProvider, OpenAILLMProvider, AstrBotLLMProvider
 from ._async_bridge import run_sync, DEFAULT_SYNC_TIMEOUT
 from ._bounded import bounded_sync_call as _bounded_sync_call
+from hippocampus.observability import note as _obs_note
 
 class ProviderRegistry:
     """User-selectable provider pool. Names are stable string IDs."""
@@ -112,7 +113,7 @@ class ProxyEmbeddingProvider(EmbeddingProvider):
                         and all(isinstance(x, (int, float)) for x in sample)):
                     self._dim = len(sample)
             except Exception:
-                pass
+                _obs_note("providers", "__init__")
     @property
     def dim(self) -> int: return self._dim
     def name(self) -> str: return self._id
