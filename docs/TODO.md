@@ -458,3 +458,87 @@ R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事
 
 1. **R9**：同库多连接（实测 WAL + busy_timeout 10s + 0 次锁冲突，不建议合并）与五套表示（各有读写方，合并需先定事实源）。见 §10。
 2. **R8 空表**：`atoms` / `life_*` / `task_leases` 为 0 是旧代码仍在跑的直接后果；重载到 1.78.2 后观察一轮再决定去留。`triggers` 依赖 LLM 产出 topics，可能长期空。
+
+## 12. R9 决策（2026-10-29）：五套表示的职责边界
+
+### 结论：全部保留，不合并；边界用测试钉住
+
+| 表示 | 角色 | 写入方 | 读取方 |
+| --- | --- | --- | --- |
+| `llm_relations` | LLM 三元组，**关系事实的事实源** | `store_summary` 的 relations（带 supersede/置信度） | 注入 `recall_relations`、WebUI 基础图谱、decay/purge |
+| `entities` / `relations` | 派生语义图索引（规则抽取 + LLM 镜像） | `_post_ingest` 规则抽取、`_mirror_relation_to_semantic` | dual-route graph 锚点、激活扩散、profile 构建、atom 抽取 |
+| `graph_v2`（nodes/edges/entries） | **WebUI-only** 全量图谱（topic/person/fact → memory） | `_index_graph_v2`（每次 ingest 一次 regex 抽取） | 仅 `page/graph/data?full=1` 与统计，**召回不读** |
+| `profile_facts` | 按需物化的稳定事实 | `remember_fact` / `build_from_relations`（/mem profile 触发） | /mem profile、decay sweep |
+| `life_*` / `task_leases` | 跨插件域数据 | `your_own_life`（adapter 修复后） | 该插件与 /mem 工具命令 |
+
+### 为什么保留 graph_v2 而不是删掉
+
+- 它是 dashboard「全量图谱」开关的唯一数据源；实测 `full_graph_snapshot_v2()`
+  818 节点 / 2453 边 / 85 条记忆，**0.04s**；抽取成本 0.04–0.16ms/条，可以忽略。
+- 删除会移除一个可用视图，并波及 v82/v90/v92/v93 四个级联测试（它们覆盖
+  硬删时 graph_entries/edges 的清理）。收益（省 1.8M 字符 ≈ 3.6MB，相对
+  140MB 向量可忽略）远小于风险。
+- `graph_entries_v2_content` 确实与 `engrams.content` 有重叠，但按「summary
+  优先、content 兜底」使用，且体量小，暂不动。
+
+### 为什么不动连接层
+
+线上 `journal_mode=wal`、`busy_timeout=10s`、48k 行日志 0 次 `database is locked`。
+每个 store 自持连接与锁是有意设计；合并连接要统一锁与事务边界，收益不可测，
+不属于「缺陷」。
+
+### 新不变量
+
+`tests/_smoke_v102.py`：
+
+1. 追踪 service 的**所有**连接（构造后懒建的也算），断言 `recall()` 与
+   `recall_dual_route()` 不执行任何涉及 `graph_nodes_v2` / `graph_edges_v2` /
+   `graph_entries_v2` / `graph_entry_nodes_v2` / `graph_edge_memories_v2` /
+   `graph_entries_v2_fts` 的语句——以后若有人把 graph_v2 接进召回，测试会红。
+2. 反向保证视图仍可用：`_index_graph_v2` 之后 `full_graph_snapshot_v2()` 返回
+   nodes / edges / memories，且节点里能读到实体。
+
+### 仍然 open
+
+- R8：`atoms` / `life_*` / `task_leases` 待重载后的真实流量观察；`triggers`
+  依赖 LLM 产出 topics，可能长期空。见 §11。
+
+## 13. v1.78.3（2026-10-29）：修复升级库上 atom 层静默失效
+
+### 症状
+
+- 线上 `atoms` 表恒为 0 行，`MemoryService.atom_store is None`，`_ensure_atom_layer()` 返回 `False`。
+- 写入 `store_summary` 的 relations 确实落到 `llm_relations` / `entities` / `relations`，但一条原子也不产生。
+- 测试全绿——因为测试每次都新建库，新库的 `atoms` 表自带全部列。
+
+### 根因
+
+`hippocampus/atom_store.py` 的 `_init_schema` 里，`CREATE INDEX idx_atoms_expires ON atoms(expires_at)`
+与 `CREATE TABLE` 在同一个 `executescript` 中，而给旧表补 `ttl_days` / `event_time` /
+`expires_at` 的 `ALTER TABLE` 在脚本**之后**才执行。线上 `atoms` 表建于 v1.76.5 之前，
+没有 `expires_at` → 建索引语句抛 `no such column: expires_at` → `AtomStore.__init__`
+抛异常 → `service._ensure_atom_layer` 的 `except Exception: self.atom_store = None`
+把它咽掉 → atom 层在这台机器上从未启用过。
+
+### 修法
+
+- `hippocampus/atom_store.py`：迁移顺序改为 **建表 → 补列 → 建索引**，四个索引各自独立
+  `executescript`，`idx_atoms_expires` 不再早于 `expires_at`。
+- `hippocampus/service.py` `_ensure_atom_layer`：`atom_store` / `graph_store` /
+  `atom_lifecycle` 三处构造失败各记一次 `_obs_note`，避免「能力被禁用」伪装成「没有数据」。
+- `tests/_smoke_v103.py`（12 检查）：用 v1.76.5 之前的 22 列 `atoms` DDL 建库，断言
+  `AtomStore` 能打开、补齐三列与 `idx_atoms_expires`、原子可写入并能 `by_triple` 命中；
+  再在同一旧库上走生产路径 `store_summary()`（带 `likes` 关系）断言恰好产出一条 preference 原子。
+
+### 验证
+
+- 线上库副本：修复前 `_ensure_atom_layer() -> False`、`atom_store is None`、写入后 `atoms=0`；
+  修复后同一份数据上 `store_summary()` 写入 2 条原子：
+  `('alice','likes','espresso','preference',0.9)`、`('alice','hates','loud cafes','preference',0.8)`。
+- 全量 93 个 smoke 全绿（v08~v103）。
+
+### 仍然 open
+
+- R8 的 `atoms` 一行现在可以真正观察了：重载到 1.78.3 后，等下一次带 relations 的摘要写入，
+  确认 `atoms` 从 0 开始增长（而不是再次停在 0）。
+- `life_*` / `task_leases` / `triggers` 仍是 §11 的状态。

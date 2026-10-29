@@ -4,6 +4,47 @@
 
 Nothing yet.
 
+## [1.78.3] - 2026-10-29
+
+修复 `atoms` 表在升级库上永远为空：`AtomStore` 在旧库上构造失败，而
+`_ensure_atom_layer` 把异常吞掉了，于是 atom 层被静默禁用（与有没有新记忆无关）。
+
+### 根因
+- `AtomStore._init_schema` 把 `CREATE INDEX idx_atoms_expires ON atoms(expires_at)`
+  写在 `CREATE TABLE` 同一个 `executescript` 里，而给旧表补 `expires_at` 的
+  `ALTER TABLE` 在脚本之后才执行。
+- v1.76.5 之前建的 `atoms` 表没有 `ttl_days` / `event_time` / `expires_at`
+  （线上正是如此），索引语句抛 `no such column: expires_at`，构造函数失败；
+  `_ensure_atom_layer` 的 `except Exception: self.atom_store = None` 把错误咽掉。
+- 结果：新库（测试）一切正常，升级库（线上）atom 层永远不可用，
+  `atoms` 恒为 0 行 —— 与 v1.77.0「接通 atoms」的判断相悖，真正原因是这个
+  迁移顺序 bug。
+
+### Fixed
+- `hippocampus/atom_store.py`：先建表，再补列，最后建索引。索引脚本独立于
+  建表脚本，`idx_atoms_expires` 不会再早于 `expires_at`。
+- `hippocampus/service.py` `_ensure_atom_layer`：`atom_store` / `graph_store` /
+  `atom_lifecycle` 构造失败时记 `_obs_note`，不再把「能力被禁用」伪装成
+  「没有数据」。
+- 新增 `tests/_smoke_v103.py`：用 v1.76.5 之前的 `atoms` schema 建库，断言
+  `AtomStore` 能打开、补齐三列与索引、原子可写入；再走生产路径
+  `store_summary()`（带 `likes` 关系）断言恰好产生一条 preference 原子。
+
+### 验证
+- 线上库副本：修复前 `_ensure_atom_layer() -> False`、`atom_store is None`；
+  修复后同样数据下 `store_summary()` 写入 2 条原子
+  （`alice likes espresso` / `alice hates loud cafes`）。
+- 全量 93 个 smoke 全绿。
+
+### R9（同批）：五套表示的边界写清并用测试钉住
+
+- 职责边界：`llm_relations` 是关系事实源；`entities/relations` 是派生图索引；
+  `graph_v2` 仅服务 WebUI「全量图谱」；`profile_facts` 按需物化；`life_*` 属跨插件域。
+  结论是**保留、不合并**（graph_v2 快照实测 0.04s，删除只会丢视图并波及 4 个级联测试）。
+- 新增 `tests/_smoke_v102.py`：追踪所有 SQLite 连接，断言 `recall()` /
+  `recall_dual_route()` 不读任何 `graph_*_v2` 表，同时验证全量图谱快照仍可用。
+  详见 `docs/TODO.md` §12 与 `docs/HANDOFF_2026-10-27.md` §10。
+
 ## [1.78.2] - 2026-10-29
 
 修复「WebUI 里点重载，插件仍在跑旧代码」——这是线上重载后版本横幅还停在

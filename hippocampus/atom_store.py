@@ -65,6 +65,25 @@ class AtomStore:
                     expires_at REAL NOT NULL DEFAULT 0.0,
                     UNIQUE(subject COLLATE NOCASE, predicate COLLATE NOCASE, object COLLATE NOCASE)
                 );
+                """
+            )
+            # v1.76.5: add temporal columns to existing atom tables.
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(atoms)")}
+            for col, decl in (("ttl_days", "REAL NOT NULL DEFAULT 30.0"),
+                              ("event_time", "REAL NOT NULL DEFAULT 0.0"),
+                              ("expires_at", "REAL NOT NULL DEFAULT 0.0")):
+                if col not in cols:
+                    self._conn.execute("ALTER TABLE atoms ADD COLUMN " + col + " " + decl)
+            # v1.78.3: indexes come AFTER the column migration. They used to
+            # live in the CREATE TABLE script above, which runs before the
+            # ALTERs -- so on a legacy atoms table (created before v1.76.5,
+            # no expires_at) "CREATE INDEX ... ON atoms(expires_at)" raised
+            # "no such column", the AtomStore constructor failed, and
+            # MemoryService._ensure_atom_layer swallowed the exception. Every
+            # upgraded install therefore ran with the atom layer silently
+            # disabled and the atoms table stayed at zero rows.
+            self._conn.executescript(
+                """
                 CREATE INDEX IF NOT EXISTS idx_atoms_status
                     ON atoms(status);
                 CREATE INDEX IF NOT EXISTS idx_atoms_kind
@@ -75,13 +94,6 @@ class AtomStore:
                     ON atoms(expires_at);
                 """
             )
-            # v1.76.5: add temporal columns to existing atom tables.
-            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(atoms)")}
-            for col, decl in (("ttl_days", "REAL NOT NULL DEFAULT 30.0"),
-                              ("event_time", "REAL NOT NULL DEFAULT 0.0"),
-                              ("expires_at", "REAL NOT NULL DEFAULT 0.0")):
-                if col not in cols:
-                    self._conn.execute("ALTER TABLE atoms ADD COLUMN " + col + " " + decl)
 
     def close(self) -> None:
         with self._lock:

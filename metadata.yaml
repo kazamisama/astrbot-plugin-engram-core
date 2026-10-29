@@ -1,6 +1,6 @@
 name: astrbot_plugin_engram_core
 display_name: Engram 海马体记忆
 author: shirley
-version: 1.78.2
+version: 1.78.3
 repo: https://github.com/kazamisama/astrbot-plugin-engram-core
-description: "类海马体长期记忆框架 (v1.78.2: 修复插件热重载不重新加载 hippocampus/handlers(重载后一直跑旧代码)、v1.78.1: 拆分 handlers/format.py(纯重组、行为不变)、v1.78.0 删除 similar-to 聚类链、MMR 改用向量余弦、双路召回统一 + 人格隔离 + memory scope + 会话总结/日记 + 原文重总结 + 记忆整合 + 时间化 atom + 可解释加权检索 + WebUI 图谱/统计/提示词/导入导出)"
+description: "类海马体长期记忆框架 (v1.78.3: 修复升级库上 atom 层静默失效(索引先于加列)、v1.78.2: 修复插件热重载不重新加载 hippocampus/handlers(重载后一直跑旧代码)、v1.78.1: 拆分 handlers/format.py(纯重组、行为不变)、v1.78.0 删除 similar-to 聚类链、MMR 改用向量余弦、双路召回统一 + 人格隔离 + memory scope + 会话总结/日记 + 原文重总结 + 记忆整合 + 时间化 atom + 可解释加权检索 + WebUI 图谱/统计/提示词/导入导出)"

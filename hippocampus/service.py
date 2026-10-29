@@ -189,6 +189,7 @@ class MemoryService:
                 self.atom_store = _AtomStore(self.cfg.sqlite_path)
             except Exception:
                 self.atom_store = None
+                _obs_note("service", "_ensure_atom_layer:atom_store")
         if self.graph_store is None and self.cfg.enable_graph_indexing:
             try:
                 from .graph_store import GraphStore as _GraphStore
@@ -198,12 +199,14 @@ class MemoryService:
                     self.activation._graph = self.graph_store
             except Exception:
                 self.graph_store = None
+                _obs_note("service", "_ensure_atom_layer:graph_store")
         if self.atom_lifecycle is None and self.atom_store is not None:
             try:
                 from .atom_lifecycle_manager import AtomLifecycleManager as _ALM
                 self.atom_lifecycle = _ALM(self.atom_store)
             except Exception:
                 self.atom_lifecycle = None
+                _obs_note("service", "_ensure_atom_layer:lifecycle")
         return (self.atom_store is not None) or (self.graph_store is not None)
 
     def _build_default_registry(self) -> ProviderRegistry:

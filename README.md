@@ -21,6 +21,8 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
 > 行为与导入面都不变。
 > v1.78.2: 修复插件热重载不重新加载 hippocampus/handlers(此前重载后仍跑旧代码);
 > 重载后横幅应显示 loaded: v1.78.2。
+> v1.78.3: 修复升级库上 atom 层静默失效(索引先于加列,AtomStore 构造失败被吞);
+> atoms 现在会随 LLM 关系真正写入。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -48,7 +50,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v100,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v103,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 
