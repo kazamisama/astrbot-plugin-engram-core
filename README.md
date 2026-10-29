@@ -17,6 +17,8 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
 > v1.78.0: 删除整条 similar-to 聚类链(`similar_to` / `cluster_id` / `profile_fact_id` /
 > `cluster_summaries` / 聚类摘要 / 情节→语义抽象 / 两条 cluster 命令);MMR 改用向量余弦;
 > 旧库打开时自动清掉这些列与表。详见 `CHANGELOG.md`。
+> v1.78.1: 拆分 `handlers/format.py`(860 行 -> 5 个职责模块 + re-export 门面),
+> 行为与导入面都不变。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 

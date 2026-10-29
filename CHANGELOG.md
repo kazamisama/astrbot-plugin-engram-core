@@ -4,6 +4,28 @@
 
 Nothing yet.
 
+## [1.78.1] - 2026-10-29
+
+纯重组，无行为变化：把 860 行的 `handlers/format.py` 按职责拆成五个模块，
+原模块只做 re-export 门面。所有公开名字（含测试直接引用的 `_extract` /
+`_bot_actor_id` / `_resolve_bot_name` / `_BOT_NAME_CACHE` / `DEFAULT_*`）保持
+可导入路径不变。
+
+### Changed
+- **拆分**：`format_core`（身份/文本助手、banner、search 参数解析）、
+  `format_stats`（`render_stats` + 默认模板）、`format_memory`（forget /
+  export / import）、`format_recall`（narrative / profile / activation /
+  graph / confidence / decaycurve）、`format_inspect`（debug / dual-route /
+  session / tier）。
+- `handlers/format.py` 保留为门面并声明 `__all__`；函数体逐字节未改（已用
+  AST 对比 22 个函数确认），`from handlers.format import X` 与 `main.py`
+  的兼容导出面不受影响。
+
+### Notes
+- 90 个 smoke 全绿；这是本轮三项遗留（R9 / R8 / format.py 拆分）中唯一
+  不需要产品决定的一项，先做掉。R9（同库多连接与表示层）与 R8（长期空表）
+  仍待定：前者要先定事实源与事务边界，后者删表等于删功能。
+
 ## [1.78.0] - 2026-10-29
 
 删除整条 similar-to 聚类链。它在默认摘要管线下没有写入者，产出（聚类 gist / profile fact）

@@ -413,5 +413,25 @@ docs/HANDOFF_2026-10-27.md 与 CHANGELOG.md 的 [1.77.0] 节。
 
 1. **R9**：同库多连接 + 五套表示（cluster 链删除后剩 entities/relations、llm_relations、graph_v2、profile_facts、life_*），需要先定事实源与事务边界。
 2. **R8 空表**：`cluster_summaries` 已删；剩余 `atoms`（观察增长）、`profile_facts`、`life_*` / `task_leases`（跨插件与产品决定）、`triggers`。
-3. **format.py 拆分**：纯可维护性。
+3. ~~**format.py 拆分**~~：✅ 已 ship（v1.78.1，见 §10）。
 
+## 10. v1.78.1（2026-10-29）：拆分 handlers/format.py
+
+### 已 ship
+
+| 项 | 内容 |
+| --- | --- |
+| format 拆分 | 860 行单文件 -> `format_core`（身份/文本助手、banner、search 参数）、`format_stats`（render_stats + 默认模板）、`format_memory`（forget/export/import）、`format_recall`（narrative/profile/activation/graph/confidence/decaycurve）、`format_inspect`（debug/dual-route/session/tier） |
+| 门面 | `handlers/format.py` 只做 re-export 并声明 `__all__`；`_extract` / `_bot_actor_id` / `_resolve_bot_name` / `_BOT_NAME_CACHE` / `DEFAULT_*` 等测试直接引用的名字全部保留 |
+| 验证 | AST 逐函数比对 22 个函数体与拆分前完全一致；全量 90 个 smoke 全绿 |
+
+### 为什么先做这一项
+
+R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事实源」，R8（长期空表）
+删表等于删功能，两项都需要产品决定；format.py 拆分只是移动代码，风险低、不改变行为，
+所以先收掉。
+
+### 仍然 open
+
+1. **R9**：同库 6–9 条连接 + 五套表示（entities/relations、llm_relations、graph_v2、profile_facts、life_*）。需要先定事实源与事务边界。
+2. **R8 空表**：`atoms`（v1.77.0 接通后观察增长）、`profile_facts`（现有 `remember_fact` 与 `build_from_relations` 两个写入方，线上仍 0 行）、`life_*` / `task_leases`（跨插件修复后待重载验证）、`triggers`（依赖 LLM 产出 topics）。删表需要产品决定。
