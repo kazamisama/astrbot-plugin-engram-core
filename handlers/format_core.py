@@ -180,7 +180,7 @@ def banner_text(service):
     except Exception:
         n_e = -1
     return ("[hippocampus] loaded: v" + HIPPO_VERSION
-              + ", embedding=" + service.current_embedding()
+              + ", embedding=" + service.embedding_label()
             + ", llm=" + service.current_llm()
             + ", engrams=" + str(n_e)
             + ", embeddings=" + str(service.registry.list_embeddings())

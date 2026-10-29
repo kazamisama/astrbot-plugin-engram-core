@@ -145,6 +145,26 @@ class VectorIndex:
             self.drop(k)
         return len(keys)
 
+    def retag(self, model: str) -> int:
+        """Rewrite the model slot of every meta tuple; rows changed.
+
+        v1.79.3: a data label change (the store used to record the bridge
+        registry name instead of the host model) never needs a re-embed --
+        the vectors are the same space -- but the in-memory filter compares
+        that slot, so it has to move with the column.
+        """
+        changed = 0
+        for key, meta in list(self._meta.items()):
+            if len(meta) < 6 or meta[5] == model:
+                continue
+            self._meta[key] = meta[:5] + (model,) + meta[6:]
+            changed += 1
+        return changed
+
+    def mismatched_keys(self, dim: int) -> list:
+        """Keys whose stored vector length differs from ``dim``."""
+        return [k for k, v in self._vecs.items() if len(v) != dim]
+
     def meta(self, key: str):
         return self._meta.get(key)
 

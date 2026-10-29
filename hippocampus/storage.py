@@ -542,6 +542,28 @@ class HippocampalStore:
                 if meta is not None:
                     idx.put(eid, meta, embedding)
 
+    def retag_embeddings(self, model: str) -> int:
+        """Rewrite ``embedding_model`` on every row that carries a vector.
+
+        v1.79.3: the column used to record the bridge registry name
+        ('astrmock') rather than the model behind the vectors. Relabelling is
+        metadata-only: the bytes stay identical and the cached index meta is
+        rewritten in place, so recall keeps seeing the same rows.
+        """
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE engrams SET embedding_model=? "
+                "WHERE (embedding_vec IS NOT NULL "
+                "       OR LENGTH(TRIM(COALESCE(embedding_json, ''))) > 4) "
+                "  AND COALESCE(embedding_model, '') <> ?",
+                (model, model))
+            n = int(cur.rowcount or 0)
+            if n:
+                idx = self._vindex
+                if idx is not None:
+                    idx.retag(model)
+        return n
+
 
     # ---------- v1.0 biology helpers ----------
     def iter_for_replay(self, k: int = 50) -> list:

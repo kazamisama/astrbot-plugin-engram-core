@@ -22,7 +22,8 @@ from hippocampus import (MemoryService,
                          BackupManager)
 from hippocampus.config_manager import ConfigManager
 from hippocampus.i18n_backend import init as i18n_init
-from .recall import emb_bridge_for_context, EMB_BRIDGE_TIMEOUT
+from .recall import (emb_bridge_for_context, embedding_provider_model,
+                      EMB_BRIDGE_TIMEOUT)
 from .format import banner_text
 from hippocampus.observability import note as _obs_note
 
@@ -220,7 +221,10 @@ class PluginInitializer:
             emb_ready = bool(
                 emb_provider is not None and getattr(emb_provider, "dim", 0) > 0)
             if emb_ready:
-                self.service.set_embedding("astrmock")
+                # v1.79.3: record the real model when the provider exposes it;
+                # otherwise the row label stays the registry key.
+                label = str(getattr(emb_provider, "model", "") or "astrmock")
+                self.service.set_embedding("astrmock", label=label)
                 # No space check here: this synchronous path only knows the
                 # provider's dimension, not a probe vector. The deferred path
                 # (_activate_embedding_loop) probes the provider and runs
@@ -435,9 +439,11 @@ class PluginInitializer:
             cfg.auto_rebuild_on_switch = False
             try:
                 old = svc.current_embedding()
-                svc.set_embedding("astrmock")
+                label = embedding_provider_model(self.context, pid) or "astrmock"
+                svc.set_embedding("astrmock", label=label)
                 print("[hippocampus] astrmock embedding activated on the host "
-                      "loop (" + str(len(vec)) + "-dim, was " + old + ")")
+                      "loop (" + str(len(vec)) + "-dim, was " + old
+                      + ", label " + label + ")")
                 # v1.77.1 / v1.79.1: one check for everything that can make
                 # stored vectors unusable -- a changed dimension or probe
                 # (full rebuild), rows left in the previous space, rows with
@@ -457,7 +463,7 @@ class PluginInitializer:
               + ". Vector recall will only see vectors in that space "
               "(keyword/FTS recall still covers everything).")
 
-    def _start_stale_reembed(self) -> None:
+    def _start_stale_reembed(self, dim: int = 0) -> None:
         """Re-embed rows that cannot be used in the active space.
 
         Selects by `embedding_model != current` OR an empty vector (see
@@ -486,6 +492,14 @@ class PluginInitializer:
                           "space")
             except Exception as e:
                 print("[hippocampus] stale re-embed failed: " + repr(e))
+            try:
+                m = svc.reembed_mismatched_chunks(dim)
+                if m:
+                    print("[hippocampus] re-embedded " + str(m)
+                          + " diary chunk(s) whose vector did not match the "
+                          "active dimension")
+            except Exception as e:
+                print("[hippocampus] chunk dim repair failed: " + repr(e))
 
         try:
             threading.Thread(target=_run, name="hippocampus-reembed",
@@ -504,13 +518,37 @@ class PluginInitializer:
             return
         try:
             svc.store.set_meta(self._FP_KEY, json.dumps({
-                "model": svc.current_embedding(),
+                "model": svc.embedding_label(),
                 "dim": len(probe),
                 "probe": list(probe),
                 "ts": time.time(),
             }))
         except Exception as e:
             print("[hippocampus] embedding fingerprint save failed: " + repr(e))
+
+    def _retag_embedding_label(self, fp) -> None:
+        """Update stored labels when the same space gets a better name.
+
+        v1.79.3: stored vectors were labelled with the bridge registry name
+        ('astrmock'), so the store claimed a model that never produced them.
+        A probe matching the fingerprint proves the SPACE did not change,
+        which makes relabelling safe and free: no provider calls, only the
+        metadata column and the cached index meta are rewritten.
+        """
+        svc = self.service
+        if svc is None or not isinstance(fp, dict):
+            return
+        old = str(fp.get("model") or "")
+        new = svc.embedding_label()
+        if not old or not new or old == new:
+            return
+        try:
+            n = svc.retag_embeddings(new)
+        except Exception as e:
+            print("[hippocampus] embedding relabel failed: " + repr(e))
+            return
+        print("[hippocampus] embedding label " + old + " -> " + new
+              + " (" + str(n) + " vector row(s) relabelled, no re-embed)")
 
     def _check_embedding_space(self, probe) -> None:
         """Detect a silent embedding-space swap and repair the store.
@@ -556,13 +594,14 @@ class PluginInitializer:
                   " vector recall is unreliable until it finishes.")
             self._start_full_reembed(probe)
         else:
+            self._retag_embedding_label(fp)
             self._save_fingerprint(probe)
         # v1.79.1: one unconditional pass replaces the old label/missing
         # counters. reembed_stale() selects by label OR an empty vector, so
         # it repairs both classes, and it is a no-op when the store is
         # already current. After a full rebuild it returns immediately via
         # the live-thread guard in _start_stale_reembed().
-        self._start_stale_reembed()
+        self._start_stale_reembed(len(probe))
 
     def _start_full_reembed(self, probe) -> None:
         """Re-embed engrams + diary chunks after a space change (daemon)."""

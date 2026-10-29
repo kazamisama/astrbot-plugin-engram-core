@@ -690,3 +690,42 @@ R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事
 
 - 线上库的实际转换要停一次 AstrBot（VACUUM 需要独占）；脚本已可在副本上完成全流程。
 - 不打算进一步压到 float16：4096 维下再省一半，但会动向量精度，收益不足以抵消风险。
+
+## 17. v1.79.3（2026-10-29）：嵌入标签记录真实模型名
+
+### 触发
+
+用户问「还有什么问题吗」。上一轮遗留的两条小瑕疵之一：线上 554 个 engram 的
+`embedding_model` 全是 `astrmock`，但 `embedding_json` 是 4096 维——实际由宿主的
+Qwen3-Embedding-8B 产生。`astrmock` 是桥的注册名，不是模型名。
+
+### 为什么这是一个真问题
+
+- 指纹（v1.77.1）能发现「空间变了」，但标签若永远是注册名，诊断、切换判断、导出/迁移都会
+  被误导；如果指纹丢失或首次升级，标签是唯一线索。
+- `reembed_stale()` 按标签选择旧行：标签不真实时，它无法区分「空间里的旧向量」与
+  「名字没更新的同空间向量」。
+
+### 已 ship
+
+| 项 | 做法 |
+| --- | --- |
+| 注册名/标签分离 | `current_embedding()` 返回注册名；新增 `embedding_label()`；`set_embedding(name, label=None)` |
+| 激活取真实模型名 | `handlers/recall.py:embedding_provider_model()` 读 provider 的 `model`（不联网） |
+| 指纹 | `model` 字段改用 `embedding_label()` |
+| 同空间重标签 | `_check_embedding_space()` → `retag_embeddings()`，只 UPDATE 元数据 + 同步内存索引，不重嵌 |
+| 维度残留 | `reembed_mismatched_chunks(dim)`：只重嵌维度不符的 chunk（线上 4 条 64 维） |
+| 展示 | `/mem model` 增加 `embedding.label`；stats/横幅显示标签 |
+
+### 不变量（v107 钉住）
+
+- `retag_embeddings()` 不调用 `embed()`，行标签改完后 `vector_search(embedding_model=新标签)` 仍命中。
+- 探针匹配（空间未变）+ 旧标签 → 只重标签、重写指纹、`_start_full_reembed` 不被调用。
+- 维度不符的 chunk 被重嵌，健康 chunk 的 embed 次数不变，文本保留。
+
+### 仍然 open
+
+- 线上要重载一次才会把 547 + 1112 行的标签改成真实模型名（重载后自动、无 embedding 调用）。
+- provider 没暴露 `.model` 时标签回退到注册名；宿主若只在 `provider_config` 里放 `embedding_model`，
+  已按该键回退。
+

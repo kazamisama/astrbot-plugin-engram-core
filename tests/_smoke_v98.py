@@ -78,7 +78,7 @@ def _init(svc):
     init.service = svc
     init._full_reembed_thread = None
     calls = []
-    init._start_stale_reembed = lambda: calls.append(("stale",))
+    init._start_stale_reembed = lambda dim=0: calls.append(("stale",))
     init._start_full_reembed = lambda probe: calls.append(("full", len(probe)))
     return init, calls
 
@@ -91,7 +91,7 @@ def test_fingerprint_saved_on_first_activation():
     raw = svc.store.get_meta(PluginInitializer._FP_KEY)
     fp = json.loads(raw)
     assert fp["dim"] == 3, fp
-    assert fp["model"] == svc.current_embedding(), fp
+    assert fp["model"] == svc.embedding_label(), fp
     assert len(fp["probe"]) == 3, fp
     # v1.79.1: the stale pass runs unconditionally; it is a no-op when
     # the store is already current.
@@ -105,7 +105,7 @@ def test_empty_vector_triggers_repair():
     svc = _svc(tempfile.mkdtemp())
     init, calls = _init(svc)
     svc.store.upsert(Engram(id="empty", content="no vector",
-                            embedding_model=svc.current_embedding()))
+                            embedding_model=svc.embedding_label()))
     assert svc.store.count_missing_vectors() == 1
     init._check_embedding_space([1.0, 0.0, 0.0])
     assert calls == [("stale",)], calls

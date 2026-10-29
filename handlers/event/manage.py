@@ -27,6 +27,7 @@ class ManageHandler:
         m = self.service
         yield event.plain_result(
             "embedding.current = " + m.current_embedding() + "\n"
+            "embedding.label = " + m.embedding_label() + "\n"
             "embedding.available = " + ", ".join(m.registry.list_embeddings()) + "\n"
             "llm.current = " + m.current_llm() + "\n"
             "llm.available = " + ", ".join(m.registry.list_llms())

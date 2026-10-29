@@ -4,6 +4,42 @@
 
 Nothing yet.
 
+## [1.79.3] - 2026-10-29
+
+让向量标签说真话：`engrams.embedding_model` / `diary_chunks.embedding_model` 此前记录的是桥的
+注册名 `astrmock`，而 4096 维向量实际来自宿主的 Qwen embedding provider。标签与嵌入空间指纹
+分工不同——指纹能发现「空间变了」，但标签若永远是注册名，诊断、切换判断和迁移都会被误导。
+
+### Changed
+- `MemoryService` 把「注册名」与「数据标签」拆开：`current_embedding()` 返回注册名（桥查找、
+  `== 'astrmock'` 的判断保持不变），新增 `embedding_label()` 返回写入向量的模型名；
+  `set_embedding(name, label=None)` 同时设置两者（不传 label 时仍等于 name）。
+- 激活 astrmock 时从宿主 provider 读取 `model`（新增 `handlers/recall.py` 的
+  `embedding_provider_model()`，解析顺序与 `emb_bridge_for_context()` 一致、不发请求），
+  写入标签；provider 没有暴露 model 时回退到注册名。
+- 指纹的 `model` 字段改用 `embedding_label()`；`_check_embedding_space()` 在探针匹配
+  （空间未变）而标签变化时调用 `retag_embeddings()` —— 只改元数据，不调用 embedding。
+- `/mem model` 增加 `embedding.label` 行；stats 与启动横幅显示标签而非注册名。
+
+### Added
+- `HippocampalStore.retag_embeddings()` / `DiaryStore.retag_embeddings()` 与
+  `VectorIndex.retag()`：按「有向量且标签不同」重写标签列并同步内存索引；幂等。
+- `VectorIndex.mismatched_keys()` / `DiaryStore.chunk_ids_mismatching()` 与
+  `MemoryService.reembed_mismatched_chunks(dim)`：只重嵌维度不符的 diary chunk
+  （旧 64 维 hash 残留），健康分块不动；由启动的 stale pass 顺带执行。
+
+### Tests
+- 新增 `tests/_smoke_v107.py`（4 组）：注册名/标签分离；retag 不触发 embed() 且召回
+  仍按新标签命中；同空间指纹失配走重标签（`calls == [('stale', 4)]`、指纹重写、0 次 embed）；
+  64 维 chunk 修复且正常 chunk 不受影响。
+- `tests/_smoke_v98.py` 跟进新签名（`_start_stale_reembed(dim)`、指纹 model 用 label）。
+- 全量 97 个 smoke（v08~v107）全绿。
+
+### Notes
+- 线上首次以 1.79.3 启动时：暖缓存完成后激活会打印
+  `embedding label astrmock -> <真实模型名> (N vector row(s) relabelled, no re-embed)`，
+  并顺带修复 4 条 64 维残留 chunk；不产生 embedding 调用。
+- 若换了 provider/模型，指纹余弦仍会先触发全量重建，标签只是跟随，不会掩盖空间变化。
 ## [1.79.2] - 2026-10-29
 
 embedding 改存 float32 BLOB：同一个 4096 维向量从约 92 KB 的 JSON 变成 16 KB。

@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
 
+from hippocampus.observability import note as _obs_note
+
 # v1.76.14 (2026-09-07 recurrence): AstrBot's embedding provider may have
 # no HTTP timeout of its own, and its coroutine may be bound to the
 # AstrBot event loop while we await it here on the bridge worker loop.
@@ -145,3 +147,51 @@ async def emb_bridge_for_context(context, text: str,
           "astrmock embedding returns empty (configure an embedding "
           "provider in AstrBot, or use the openai / hash provider)")
     return []
+
+
+def embedding_provider_model(context, provider_id: str = "") -> str:
+    """Name of the model behind the host embedding provider.
+
+    v1.79.3: stored vectors used to be labelled with the bridge registry key
+    ('astrmock'), which says nothing about the space they live in. The
+    provider already knows its model (AstrBot's openai_embedding sets
+    ``self.model`` from the provider config), so read it without issuing a
+    request: the resolution order matches emb_bridge_for_context(), and any
+    failure just returns "" so the caller keeps the registry name.
+    """
+    pid = (provider_id or "").strip()
+    cands: list = []
+    if pid:
+        try:
+            getter = getattr(context, "get_provider_by_id", None)
+            if getter is not None:
+                cands.append(getter(pid))
+        except Exception:
+            _obs_note("recall", "embedding_provider_model:by_id")
+    for name in ("get_all_embedding_providers", "get_using_embedding_provider",
+                 "get_using_provider"):
+        getter = getattr(context, name, None)
+        if not callable(getter):
+            continue
+        try:
+            val = getter()
+        except Exception:
+            _obs_note("recall", "embedding_provider_model:" + name)
+            continue
+        if isinstance(val, (list, tuple)):
+            cands.extend(val)
+        elif val is not None:
+            cands.append(val)
+    seen: set = set()
+    for prov in cands:
+        if prov is None or id(prov) in seen:
+            continue
+        seen.add(id(prov))
+        model = getattr(prov, "model", "") or ""
+        if not model:
+            pc = getattr(prov, "provider_config", None)
+            if isinstance(pc, dict):
+                model = pc.get("embedding_model") or pc.get("model") or ""
+        if model:
+            return str(model)
+    return ""

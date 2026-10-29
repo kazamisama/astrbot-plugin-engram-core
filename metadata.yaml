@@ -1,6 +1,6 @@
 name: astrbot_plugin_engram_core
 display_name: Engram 海马体记忆
 author: shirley
-version: 1.79.2
+version: 1.79.3
 repo: https://github.com/kazamisama/astrbot-plugin-engram-core
-description: "类海马体长期记忆框架 (v1.79.2: embedding 改存 float32 BLOB(旧 JSON 行仍可读,compact_embeddings.py 可一次性瘦库 186MB→56MB)；v1.79.1: 撤掉旧数据补丁(schema 升级单一 ensure_columns 路径、graph 反查索引单写者+一次性回填、删除全表扫描兜底)；v1.79.0: 按通用编码规则清理(配置读取单一事实源、幽灵键、死码、拆分超长方法)；v1.78.3: 修复升级库上 atom 层静默失效(索引先于加列)、v1.78.2: 修复插件热重载不重新加载 hippocampus/handlers(重载后一直跑旧代码)、v1.78.1: 拆分 handlers/format.py(纯重组、行为不变)、v1.78.0 删除 similar-to 聚类链、MMR 改用向量余弦、双路召回统一 + 人格隔离 + memory scope + 会话总结/日记 + 原文重总结 + 记忆整合 + 时间化 atom + 可解释加权检索 + WebUI 图谱/统计/提示词/导入导出)"
+description: "类海马体长期记忆框架 (v1.79.3: 嵌入标签记录真实模型名(注册名与数据标签分离、同空间只改标签不重嵌)、64 维残留 chunk 自动重嵌；v1.79.2: embedding 改存 float32 BLOB(旧 JSON 行仍可读,compact_embeddings.py 可一次性瘦库 186MB→56MB)；v1.79.1: 撤掉旧数据补丁(schema 升级单一 ensure_columns 路径、graph 反查索引单写者+一次性回填、删除全表扫描兜底)；v1.79.0: 按通用编码规则清理(配置读取单一事实源、幽灵键、死码、拆分超长方法)；v1.78.3: 修复升级库上 atom 层静默失效(索引先于加列)、v1.78.2: 修复插件热重载不重新加载 hippocampus/handlers(重载后一直跑旧代码)、v1.78.1: 拆分 handlers/format.py(纯重组、行为不变)、v1.78.0 删除 similar-to 聚类链、MMR 改用向量余弦、双路召回统一 + 人格隔离 + memory scope + 会话总结/日记 + 原文重总结 + 记忆整合 + 时间化 atom + 可解释加权检索 + WebUI 图谱/统计/提示词/导入导出)"

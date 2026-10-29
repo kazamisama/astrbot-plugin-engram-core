@@ -33,6 +33,8 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。另�
 > (线上 40 个 engram / 111 对)、删掉两处「命中为空就全表扫」的兜底。
 > v1.79.2: embedding 改存 float32 BLOB(`embedding_vec`),旧 JSON 行仍可读;根目录
 > `compact_embeddings.py` 做一次性转换 + VACUUM(实测 186 MB → 56 MB,冷启动预热 3.45s → 0.41s)。
+> v1.79.3: 向量的 `embedding_model` 标签记录真实模型名(此前写的是桥的注册名 `astrmock`);
+> 注册名与数据标签分离,同一嵌入空间只改标签、不重嵌;64 维 hash 残留 chunk 自动重嵌。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -60,7 +62,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v106,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v107,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 

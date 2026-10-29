@@ -31,7 +31,7 @@ def render_stats(service: MemoryService) -> str:
         entities=n_entity,
         pending=n_pending,
         fired=n_fired,
-        embedding=service.current_embedding(),
+        embedding=service.embedding_label(),
         llm=service.current_llm(),
         valence=service.store.valence_histogram(),
         stream=service.store.stream_breakdown(),

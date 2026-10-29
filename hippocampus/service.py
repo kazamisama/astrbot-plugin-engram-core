@@ -66,6 +66,14 @@ class MemoryService:
         self.embedder: EmbeddingProvider = self.registry.get_embedding(self.cfg.embedding_name)
         self.llm: LLMProvider = self.registry.get_llm(self.cfg.llm_name)
         self._current_embedding_name = self.cfg.embedding_name
+        # v1.79.3: the registry key and the data label are separate. The
+        # registry key is the name the bridge registers ('astrmock' /
+        # 'hash'); the label is what every stored vector records and what
+        # recall filters on, and it should name the model that actually
+        # produced the vectors. They were the same string until the live
+        # store was found claiming 'astrmock' for 4096-dim vectors that the
+        # host Qwen embedding provider had answered.
+        self._embedding_registry_name = self.cfg.embedding_name
         self._current_llm_name = self.cfg.llm_name
         self.store = HippocampalStore(
             self.cfg.sqlite_path, self.embedder,
@@ -215,12 +223,21 @@ class MemoryService:
         return (self.atom_store is not None) or (self.graph_store is not None)
 
     # ---------- model switch ----------
-    def set_embedding(self, name: str) -> str:
+    def set_embedding(self, name: str, label: str | None = None) -> str:
+        """Select the embedding provider and the label stored vectors get.
+
+        ``name`` is the registry key the bridge registers; ``label`` is the
+        model name recorded with each vector (v1.79.3). Passing a label does
+        not trigger a rebuild: the provider is the same one, only the metadata
+        describing it becomes truthful. ``rebuild`` still keys off the
+        registry name, so a real provider switch behaves as before.
+        """
         if not self.registry.has_embedding(name):
             raise KeyError(f"unknown embedding: {name} (available: {self.registry.list_embeddings()})")
-        old = self._current_embedding_name
+        old = self._embedding_registry_name
         self.embedder = self.registry.get_embedding(name)
-        self._current_embedding_name = name
+        self._embedding_registry_name = name
+        self._current_embedding_name = (label or name).strip() or name
         self.encoder.set_embedder(self.embedder)
         if self.cfg.auto_rebuild_on_switch and old != name:
             dirty = self.rebuild_embeddings()
@@ -261,6 +278,11 @@ class MemoryService:
         self.registry.register_llm(name, provider)
 
     def current_embedding(self) -> str:
+        """Registry key of the active embedding provider (bridge lookup)."""
+        return self._embedding_registry_name
+
+    def embedding_label(self) -> str:
+        """Data label stored with every vector (usually the host model)."""
         return self._current_embedding_name
 
     def current_llm(self) -> str:
@@ -383,6 +405,80 @@ class MemoryService:
             except Exception as ex:
                 print("[hippocampus] diary chunk rebuild write failed: " + repr(ex))
         return n
+
+    def retag_embeddings(self, label: str) -> int:
+        """Relabel stored vectors in place; returns rows changed.
+
+        v1.79.3: the label used to be the bridge registry name, so the whole
+        store claimed to hold 'astrmock' vectors while the host provider
+        answered with a different model. The fingerprint proves when the
+        SPACE is unchanged, which makes a string-only fix both safe and free;
+        re-embedding thousands of rows to correct a name would burn provider
+        calls and could block the injection path.
+        """
+        label = (label or "").strip()
+        if not label:
+            return 0
+        # The label may already be current while rows still carry the old
+        # one (activation sets the label before this runs), so the UPDATE is
+        # always executed; its WHERE clause makes it a no-op when rows agree.
+        self._current_embedding_name = label
+        n = 0
+        try:
+            n += self.store.retag_embeddings(label)
+        except Exception:
+            _obs_note("service", "retag_embeddings:store")
+        ds = self.diary_store
+        if ds is not None:
+            try:
+                n += ds.retag_embeddings(label)
+            except Exception:
+                _obs_note("service", "retag_embeddings:diary")
+        self._invalidate_search_cache()
+        return n
+
+    def reembed_mismatched_chunks(self, dim: int) -> int:
+        """Re-embed diary chunks whose vector is not ``dim``-dimensional.
+
+        v1.79.3: chunks written through the old 64-dim hash placeholder are
+        skipped by every cosine search (a dimension mismatch scores 0), so
+        their text stays in the store but is unreachable. The full rebuild
+        path rewrites everything after a space change; this repairs only the
+        stragglers, without provider calls for the healthy ones.
+        """
+        ds = self.diary_store
+        if ds is None or not dim:
+            return 0
+        try:
+            ids = set(ds.chunk_ids_mismatching(int(dim)))
+        except Exception:
+            _obs_note("service", "reembed_mismatched_chunks:select")
+            return 0
+        if not ids:
+            return 0
+        try:
+            chunks = [c for c in ds.all_chunks(limit=100000) if c.id in ids]
+        except Exception:
+            _obs_note("service", "reembed_mismatched_chunks:read")
+            return 0
+        out = []
+        for ch in chunks:
+            try:
+                vec = self.embedder.embed(ch.text or "")
+            except Exception:
+                _obs_note("service", "reembed_mismatched_chunks:embed")
+                continue
+            if not vec:
+                continue
+            ch.embedding = vec
+            ch.embedding_model = self._current_embedding_name
+            out.append(ch)
+        if out:
+            try:
+                ds.add_chunks(out)
+            except Exception as ex:
+                print("[hippocampus] chunk dim repair write failed: " + repr(ex))
+        return len(out)
 
     def _start_vector_warmup(self) -> None:
         """Build the engram + diary-chunk vector indexes off-thread.

@@ -517,6 +517,37 @@ class DiaryStore:
             "SELECT id, text FROM diary_chunks WHERE id IN ("
             + placeholders + ")", ids).fetchall()
         return {r["id"]: r["text"] for r in rows}
+
+    def retag_embeddings(self, model: str) -> int:
+        """Rewrite ``embedding_model`` on chunks that carry a vector.
+
+        v1.79.3: metadata-only relabel (see HippocampalStore.retag_embeddings).
+        The chunk index does not keep the model in its meta, so no cache
+        rewrite is needed here.
+        """
+        with self._chunk_lock:
+            c = self._ensure_conn()
+            cur = c.execute(
+                "UPDATE diary_chunks SET embedding_model=? "
+                "WHERE (embedding_vec IS NOT NULL "
+                "       OR (embedding IS NOT NULL AND embedding <> '')) "
+                "  AND COALESCE(embedding_model, '') <> ?",
+                (model, model))
+            n = int(cur.rowcount or 0)
+            c.commit()
+        return n
+
+    def chunk_ids_mismatching(self, dim: int) -> list:
+        """Chunk ids whose cached vector dimension is not ``dim``.
+
+        v1.79.3: vectors written through the old 64-dim hash placeholder are
+        skipped by every cosine search (a mismatch scores 0), so they are
+        invisible until re-embedded. Read from the cache -- no SQL scan.
+        """
+        with self._chunk_lock:
+            idx = self._chunk_index()
+            return idx.mismatched_keys(int(dim))
+
     def chunks_for_diary(self, diary_id: str) -> list:
         self.flush_now()  # BUG-7: pending buffer must be visible here
         c = self._ensure_conn()
