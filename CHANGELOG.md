@@ -4,6 +4,45 @@
 
 Nothing yet.
 
+## [1.79.2] - 2026-10-29
+
+embedding 改存 float32 BLOB：同一个 4096 维向量从约 92 KB 的 JSON 变成 16 KB。
+旧的 JSON 行仍然能读，所以升级不强制迁移；`compact_embeddings.py` 负责把旧库一次性转换瘦身。
+
+### 为什么
+- 线上库 186.3 MB 里 152.7 MB（86%）是 embedding 的 JSON 文本：
+  `engrams.embedding_json` 547 行 50.4 MB、`diary_chunks.embedding` 1112 行 102.2 MB。
+- 冷启动预热 3.45s 基本全花在 `json.loads` 上；向量值本身只有 27.2 MB。
+
+### Changed
+- `hippocampus/vecmath.py`：新增 `pack_vec()` / `unpack_vec()` / `decode_vec()`。
+  小端 float32；`decode_vec()` 先读 BLOB，再回退旧 JSON 文本。
+- schema：`engrams.embedding_vec BLOB`、`diary_chunks.embedding_vec BLOB`，由
+  `ensure_columns()` 补列，旧库无需重建。
+- 写路径：`HippocampalStore.upsert()` / `update_embedding()` / `DiaryStore.add_chunks()`
+  写 BLOB，并把对应文本列置空（不再双写）。
+- 读路径：`Engram.from_row()`、`_vector_index()`、`DiaryChunk.from_row()`、`_chunk_index()`、
+  `chunk_diary_ids()`、`count_missing_vectors()`、`reembed_stale()` 的选择条件——全部 BLOB
+  优先、JSON 回退。
+- 新增根目录 `compact_embeddings.py`：干跑打印计划；`--yes` 先做一致性备份，再逐行转换、
+  重建 FTS、`VACUUM`，最后校验行数/向量数/`quick_check`/FTS integrity。可重复执行。
+
+### Tests
+- 新增 `tests/_smoke_v106.py`（35 检查）：编码器边界；engram 与 diary chunk 的 BLOB 写入与
+  解码；纯 JSON 旧行仍可读、可搜索、下一次写入即迁移；迁移脚本转换后逐条比对向量值与行数、
+  二次执行幂等、转换后的库能正常建索引与检索。
+- `tests/_smoke_v89.py`：模拟空向量的 SQL 现在同时清空 `embedding_vec`；向量长度断言改用
+  `decode_vec()`。
+- 全量 96 个 smoke（v08~v106）全绿。
+
+### 实测（线上库副本）
+- 186.3 MB → 55.8 MB；转换 4.7s（含 FTS rebuild），`quick_check` ok，FTS integrity-check ok。
+- 行数与向量数不变：engrams 556 / 547 条向量，diary_chunks 1145 / 1112 条向量。
+- 冷启动预热：engrams 0.86s + diary 2.59s = 3.45s → 0.13s + 0.29s = 0.41s。
+
+### Notes
+- 不迁移也能正常工作（读路径兼容 JSON），迁移是体积与启动速度的优化。
+- `VACUUM` 需要独占访问，跑之前先停插件/AstrBot；脚本会自动备份到 `data/backups/`。
 ## [1.79.1] - 2026-10-29
 
 把「为旧数据打的补丁」从热路径上撤掉：schema 升级只剩一条 `ensure_columns()` 路径，

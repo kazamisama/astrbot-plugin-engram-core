@@ -24,14 +24,13 @@ because they flush first - callers need not know about the buffer.
 No AstrBot imports; pure SQLite + stdlib so it is unit-testable.
 """
 from __future__ import annotations
-import json
 import sqlite3
 import threading
 import time
 import uuid
 from hippocampus.observability import note as _obs_note
 from .sqlite_util import ensure_columns
-from .vecmath import VectorIndex
+from .vecmath import VectorIndex, decode_vec, pack_vec
 
 
 def _now() -> float:
@@ -109,13 +108,7 @@ class DiaryChunk:
     def from_row(cls, row) -> "DiaryChunk":
         import json
         d = dict(row)
-        emb = []
-        raw = d.get("embedding")
-        if raw:
-            try:
-                emb = json.loads(raw)
-            except Exception:
-                emb = []
+        emb = decode_vec(d.get("embedding_vec"), d.get("embedding"))
         return cls(
             id=d.get("id"), diary_id=d.get("diary_id", ""),
             channel_id=d.get("channel_id", ""), seq=d.get("seq", 0),
@@ -141,9 +134,10 @@ class DiaryStore:
         bs = self.DEFAULT_BATCH_SIZE if batch_size is None else int(batch_size)
         self._batch_size = max(1, bs)
         self._buffer_lock = threading.Lock()
-        # v1.77.1: cached chunk-vector index. Rebuilding it means parsing the
-        # 97MB of embedding JSON this table holds, so it is built once (startup
-        # warm-up) and kept in sync by add_chunks/delete_chunks_for_diary.
+        # v1.77.1: cached chunk-vector index. Rebuilding it used to mean
+        # parsing 97MB of embedding JSON; since v1.79.2 the vectors are float32
+        # blobs, and the index is still built once (startup warm-up) and kept
+        # in sync by add_chunks/delete_chunks_for_diary.
         self._chunk_lock = threading.RLock()
         self._chunk_idx = None
 
@@ -179,12 +173,14 @@ class DiaryStore:
         c.execute(
             "CREATE TABLE IF NOT EXISTS diary_chunks ("
             " id TEXT PRIMARY KEY, diary_id TEXT, channel_id TEXT, seq INTEGER,"
-            " text TEXT, embedding TEXT, embedding_model TEXT,"
+            " text TEXT, embedding TEXT, embedding_vec BLOB,"
+            " embedding_model TEXT,"
             " ts_start REAL, ts_end REAL, created_at REAL,"
             " persona_id TEXT DEFAULT '', scope_id TEXT DEFAULT '')")
         ensure_columns(c, "diary_chunks", (
             ("persona_id", "TEXT DEFAULT ''"),
             ("scope_id", "TEXT DEFAULT ''"),
+            ("embedding_vec", "BLOB"),
         ))
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_diary ON diary_chunks(diary_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_ch ON diary_chunks(channel_id)")
@@ -397,10 +393,11 @@ class DiaryStore:
         for ch in chunks:
             c.execute(
                 "INSERT OR REPLACE INTO diary_chunks(id,diary_id,channel_id,seq,"
-                "text,embedding,embedding_model,ts_start,ts_end,created_at,persona_id,scope_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "text,embedding,embedding_vec,embedding_model,ts_start,ts_end,"
+                "created_at,persona_id,scope_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ch.id, ch.diary_id, ch.channel_id, ch.seq, ch.text,
-                 json.dumps(ch.embedding) if ch.embedding else "",
+                 "", pack_vec(ch.embedding),
                  ch.embedding_model, ch.ts_start, ch.ts_end, ch.created_at,
                  getattr(ch, "persona_id", "") or "",
                  getattr(ch, "scope_id", "") or ""))
@@ -445,19 +442,16 @@ class DiaryStore:
             try:
                 c = self._ensure_conn()
                 rows = c.execute(
-                    "SELECT id, diary_id, persona_id, scope_id, embedding"
-                    " FROM diary_chunks"
-                    " WHERE embedding IS NOT NULL AND embedding <> ''"
+                    "SELECT id, diary_id, persona_id, scope_id,"
+                    " embedding, embedding_vec FROM diary_chunks"
+                    " WHERE embedding_vec IS NOT NULL"
+                    "    OR (embedding IS NOT NULL AND embedding <> '')"
                     " ORDER BY created_at DESC LIMIT ?", (int(limit),)).fetchall()
             except Exception:
                 rows = []
                 _obs_note("diary_store", "_chunk_index")
             for r in rows:
-                try:
-                    emb = json.loads(r["embedding"])
-                except Exception:
-                    _obs_note("diary_store", "_chunk_index:parse")
-                    continue
+                emb = decode_vec(r["embedding_vec"], r["embedding"])
                 if emb:
                     idx.put(r["id"], (r["diary_id"] or "",
                                       r["persona_id"] or "",
@@ -499,7 +493,8 @@ class DiaryStore:
         """Diary ids that own at least one embedded chunk (fallback guard)."""
         self.flush_now()
         c = self._ensure_conn()
-        where = ["embedding IS NOT NULL", "embedding <> ''"]
+        where = ["(embedding_vec IS NOT NULL"
+                 " OR (embedding IS NOT NULL AND embedding <> ''))"]
         params: list = []
         if persona_id is not None:
             where.append("COALESCE(persona_id, '')=?")

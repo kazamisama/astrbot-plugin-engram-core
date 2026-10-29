@@ -5,7 +5,7 @@ from .types import Engram
 from .embeddings import EmbeddingProvider
 from .sqlite_util import ensure_columns
 from hippocampus.observability import note as _obs_note
-from .vecmath import VectorIndex
+from .vecmath import VectorIndex, decode_vec, pack_vec
 
 def _cos(a, b) -> float:
     """Cosine similarity; 0.0 when either side is empty or dims differ.
@@ -74,6 +74,7 @@ _ENGRAM_COLUMNS: tuple[tuple[str, str], ...] = (
     ("reconsolidation_lock_until", "REAL"),
     ("supersedes", "TEXT"),
     ("embedding_json", "TEXT"),
+    ("embedding_vec", "BLOB"),
     ("memory_type", "TEXT"),
     ("promoted_at", "REAL"),
     ("embedding_model", "TEXT"),
@@ -338,7 +339,7 @@ class HippocampalStore:
             e.importance, e.strength, e.access_count, e.last_accessed,
             e.reconsolidation_lock_until,
             json.dumps(e.supersedes, ensure_ascii=False),
-            json.dumps(e.embedding, ensure_ascii=False),
+            "", pack_vec(e.embedding),
             e.memory_type, e.promoted_at,
             e.embedding_model,
             e.fts_text,
@@ -352,11 +353,11 @@ class HippocampalStore:
               persona_id,scope_id,
               content,summary,topics,entities,entity_refs,tags,
               importance,strength,access_count,last_accessed,
-              reconsolidation_lock_until,supersedes,embedding_json,
+              reconsolidation_lock_until,supersedes,embedding_json,embedding_vec,
               memory_type,promoted_at,embedding_model,fts_text,
               valence,intensity,temporal_bucket,stream,forgotten_at,
               confidence,tier)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               content=excluded.content,
               persona_id=excluded.persona_id,
@@ -367,6 +368,7 @@ class HippocampalStore:
               access_count=excluded.access_count, last_accessed=excluded.last_accessed,
               reconsolidation_lock_until=excluded.reconsolidation_lock_until,
               supersedes=excluded.supersedes, embedding_json=excluded.embedding_json,
+              embedding_vec=excluded.embedding_vec,
               memory_type=excluded.memory_type, promoted_at=excluded.promoted_at,
               embedding_model=excluded.embedding_model,
               fts_text=excluded.fts_text,
@@ -519,8 +521,9 @@ class HippocampalStore:
     def update_embedding(self, eid: str, embedding: list[float], model: str) -> None:
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE engrams SET embedding_json=?, embedding_model=? WHERE id=?",
-                (json.dumps(embedding, ensure_ascii=False), model, eid))
+                "UPDATE engrams SET embedding_vec=?, embedding_json='',"
+                " embedding_model=? WHERE id=?",
+                (pack_vec(embedding), model, eid))
             idx = self._vindex
             if idx is not None:
                 meta = idx.meta(eid)
@@ -860,8 +863,8 @@ class HippocampalStore:
         """Lightweight diary rows for the chunk-recall fallback (v1.77.1).
 
         ``list_active(memory_type='diary')`` re-parsed every diary's 4096-dim
-        embedding_json on each injection (~0.35s on the live store) just to
-        read the summary text. Only the text (and the filters) are needed.
+        embedding on each injection (~0.35s on the live store) just to read
+        the summary text. Only the text (and the filters) are needed.
         """
         where = ["memory_type = 'diary'", "COALESCE(forgotten_at, 0) = 0"]
         params: list = []
@@ -995,7 +998,8 @@ class HippocampalStore:
 
     def _vector_index(self):
         """Build the index once from the store; callers then never re-read
-        the 40+MB of embedding_json."""
+        the embedding columns (152 MB of JSON before v1.79.2, 27 MB of
+        float32 blobs after the migration)."""
         with self._lock:
             idx = self._vindex
             if idx is not None:
@@ -1003,15 +1007,10 @@ class HippocampalStore:
             idx = VectorIndex()
             cur = self._conn.execute(
                 "SELECT id, actor_id, channel_id, persona_id, scope_id, memory_type,"
-                " embedding_model, forgotten_at, embedding_json FROM engrams")
+                " embedding_model, forgotten_at, embedding_json, embedding_vec"
+                " FROM engrams")
             for r in cur.fetchall():
-                raw = r["embedding_json"]
-                if not raw:
-                    continue
-                try:
-                    emb = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    continue
+                emb = decode_vec(r["embedding_vec"], r["embedding_json"])
                 if emb:
                     idx.put(r["id"], self._row_vec_meta(r), emb)
             self._vindex = idx
@@ -1027,6 +1026,7 @@ class HippocampalStore:
             row = self._conn.execute(
                 "SELECT COUNT(*) AS c FROM engrams"
                 " WHERE COALESCE(forgotten_at, 0) = 0"
+                " AND COALESCE(LENGTH(embedding_vec), 0) = 0"
                 " AND LENGTH(COALESCE(embedding_json, '')) <= 4").fetchone()
         return int(row["c"])
 

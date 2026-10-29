@@ -319,8 +319,8 @@ class MemoryService:
                 rows = self.store._conn.execute(
                     "SELECT id FROM engrams "
                     "WHERE (COALESCE(embedding_model, '') != ? "
-                    "       OR embedding_json IS NULL "
-                    "       OR LENGTH(TRIM(COALESCE(embedding_json, ''))) <= 4) "
+                    "       OR (COALESCE(LENGTH(embedding_vec), 0) = 0 "
+                    "           AND LENGTH(TRIM(COALESCE(embedding_json, ''))) <= 4)) "
                     "  AND COALESCE(forgotten_at, 0.0) = 0.0 "
                     "LIMIT ?", (target, max(1, int(limit)))).fetchall()
         except Exception as ex:

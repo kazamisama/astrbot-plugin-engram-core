@@ -27,6 +27,7 @@ from hippocampus.config import MemoryConfig                      # noqa: E402
 from hippocampus.embeddings import EmbeddingProvider             # noqa: E402
 from hippocampus.service import MemoryService                    # noqa: E402
 from hippocampus.types import Engram                             # noqa: E402
+from hippocampus.vecmath import decode_vec                        # noqa: E402
 
 FAILURES = []
 
@@ -81,7 +82,9 @@ def test_selector_picks_vectorless_and_mismatched():
     bracket = Engram(content="empty list json", summary="empty list json", actor_id="u",
                      embedding=[], embedding_model=target, strength=1.0)
     svc.store.upsert(bracket)
-    svc.store._conn.execute("UPDATE engrams SET embedding_json='[]' WHERE id=?", (bracket.id,))
+    svc.store._conn.execute(
+        "UPDATE engrams SET embedding_vec=NULL, embedding_json='[]' WHERE id=?",
+        (bracket.id,))
     svc.store._conn.commit()
 
     wrong = Engram(content="old provider", summary="old provider", actor_id="u",
@@ -100,11 +103,9 @@ def test_selector_picks_vectorless_and_mismatched():
 
     def vec_len(eid):
         row = svc.store._conn.execute(
-            "SELECT embedding_json FROM engrams WHERE id=?", (eid,)).fetchone()
-        try:
-            return len(json.loads(row[0] or "[]"))
-        except Exception:
-            return -1
+            "SELECT embedding_vec, embedding_json FROM engrams WHERE id=?",
+            (eid,)).fetchone()
+        return len(decode_vec(row[0], row[1]))
 
     check(vec_len(empty.id) == 8, "empty-vector row now has a real vector")
     check(vec_len(bracket.id) == 8, "'[]' row now has a real vector")

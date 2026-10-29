@@ -643,3 +643,50 @@ R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事
 - 保留的两处兼容不是数据补丁：`inject.py` 的 `[近期对话]` / `[今日回顾]`（strip 契约）、
   `handlers/recall.py` 的 provider API 探测（宿主版本兼容）。要去掉它们得先改公开契约或
   提高宿主最低版本。
+
+## 16. v1.79.2（2026-10-29）：embedding 归档为 float32 BLOB + 一次性迁移
+
+### 触发
+
+用户问「本机旧库能改造迁移吗？」。检查结论：**结构已经迁完了**——线上库 `engrams` 正好
+32 列，与 `_ENGRAM_COLUMNS` 集合一致，`cluster_summaries` / `rebuild_state` /
+`graph_adjacency` 都不存在（v1.78.0 打开时清的），`quick_check` ok。剩下的「旧」是存储形态：
+86% 的体积是 embedding 的 JSON 文本。
+
+### 证据
+
+| 项 | 行数 | JSON | float32 BLOB |
+| --- | --- | --- | --- |
+| `engrams.embedding_json` | 547 | 50.4 MB | 8.96 MB |
+| `diary_chunks.embedding` | 1112 | 102.2 MB | 18.2 MB |
+| 合计 | 1659 | 152.7 MB | 27.2 MB |
+
+冷启动预热 3.45s（engrams 0.86s + diary 2.59s）几乎全是 `json.loads`。纯 VACUUM 只能回收
+1.7 MB freelist，不值得单独做。
+
+### 已 ship
+
+| 项 | 做法 |
+| --- | --- |
+| 编解码 | `vecmath.pack_vec()` / `unpack_vec()` / `decode_vec()`（小端 float32；blob 优先、JSON 回退） |
+| schema | `engrams.embedding_vec BLOB`、`diary_chunks.embedding_vec BLOB`，`ensure_columns()` 补列 |
+| 写路径 | `upsert()` / `update_embedding()` / `add_chunks()` 只写 BLOB，文本列置空 |
+| 读路径 | `Engram.from_row()` / `_vector_index()` / `DiaryChunk.from_row()` / `_chunk_index()` / `chunk_diary_ids()` / `count_missing_vectors()` / `reembed_stale()` |
+| 迁移脚本 | 根目录 `compact_embeddings.py`：干跑 / `--yes` / `--no-vacuum`；备份 → 转换 → FTS rebuild → VACUUM → 校验 |
+
+### 实测（线上库副本）
+
+- 186.3 MB → 55.8 MB；转换 4.7s；`quick_check` ok；FTS integrity-check ok。
+- 行数 / 向量数不变（556/547、1145/1112）。
+- 预热 3.45s → 0.41s。
+
+### 不变量（v106 钉住）
+
+- 新写入必须落在 `*_vec` 且文本列为空；`store.get()` / `all_chunks()` 能解码。
+- 只有 JSON 的旧行照常可读、可搜索；下一次写入即转成 BLOB。
+- 迁移脚本保持行数与向量值不变，重复执行是 no-op。
+
+### 仍然 open
+
+- 线上库的实际转换要停一次 AstrBot（VACUUM 需要独占）；脚本已可在副本上完成全流程。
+- 不打算进一步压到 float16：4096 维下再省一半，但会动向量精度，收益不足以抵消风险。

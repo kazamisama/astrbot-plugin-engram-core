@@ -12,7 +12,9 @@ similarities (see also ``storage._cos``).
 """
 from __future__ import annotations
 
+import json
 import math
+import struct
 from operator import mul
 
 try:  # numpy rides along with the AstrBot runtime but is never required
@@ -56,13 +58,60 @@ def pairwise_scores(query, vectors) -> list:
     return [float(sum(map(mul, query, v))) for v in vectors]
 
 
+def pack_vec(vec) -> bytes | None:
+    """Serialise a float vector to little-endian float32 bytes.
+
+    v1.79.2: embeddings used to be stored as JSON text -- a 4096-dim vector is
+    ~92 KB as JSON and 16 KB as float32, and the live store carried 152 MB of
+    that JSON, parsed in full on every cold start. The BLOB column is the
+    storage format now; decode_vec() still accepts the old JSON rows so a
+    database that has not been through the migration keeps working.
+    """
+    if not vec:
+        return None
+    try:
+        return struct.pack("<%df" % len(vec), *(float(x) for x in vec))
+    except (struct.error, TypeError, ValueError):
+        return None
+
+
+def unpack_vec(blob) -> list:
+    """Inverse of pack_vec(); [] when the bytes are not a float vector."""
+    if not blob:
+        return []
+    try:
+        raw = bytes(blob)
+    except (TypeError, ValueError):
+        return []
+    if len(raw) % 4:
+        return []
+    try:
+        return list(struct.unpack("<%df" % (len(raw) // 4), raw))
+    except struct.error:
+        return []
+
+
+def decode_vec(blob, raw_json) -> list:
+    """Embedding from the BLOB column, falling back to the legacy JSON text."""
+    out = unpack_vec(blob)
+    if out:
+        return out
+    if not raw_json:
+        return []
+    try:
+        val = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    return [float(x) for x in val] if isinstance(val, list) else []
+
+
 class VectorIndex:
     """In-memory ``key -> (meta, normalised vector)`` index.
 
     The owning store is responsible for threading: every mutator takes the
     store lock. ``meta`` is an opaque tuple; ``predicate(meta)`` decides which
     rows a query may see (filters that used to live in SQL now run here so the
-    expensive ``SELECT ... embedding_json`` never repeats).
+    expensive ``SELECT ... embedding`` never repeats).
     """
 
     def __init__(self) -> None:

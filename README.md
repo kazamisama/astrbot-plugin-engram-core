@@ -31,6 +31,8 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。另�
 > v1.79.1: 撤掉为旧数据打的补丁 —— schema 升级统一到 `ensure_columns`(`db_migration.py` 删除、
 > 打开旧库不再 DROP 废弃表/列)、graph 的两份表示改由 `_link_engram_refs` 同写并一次性回填
 > (线上 40 个 engram / 111 对)、删掉两处「命中为空就全表扫」的兜底。
+> v1.79.2: embedding 改存 float32 BLOB(`embedding_vec`),旧 JSON 行仍可读;根目录
+> `compact_embeddings.py` 做一次性转换 + VACUUM(实测 186 MB → 56 MB,冷启动预热 3.45s → 0.41s)。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -58,7 +60,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v105,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v106,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 
@@ -319,6 +321,16 @@ v1.1 在 v1.0 的 SWR / DG / two-stream / valence 基座上,接出语义图的�
 ### 迁移
 
 v1.0 数据库可平滑升级:`HippocampalStore._init_schema` 以 `_ENGRAM_COLUMNS` 为唯一 schema 事实源——建表与升级都从它生成,旧库缺什么列就补什么列(索引/FTS/触发器都在补列之后创建)。v1.79.1 起**不再做减法**:已废弃的 `cluster_summaries` 表与 `similar_to` / `cluster_id` / `profile_fact_id` 列留在旧库里不读不写,不再每次打开都 DROP。删除一个无人读取的列换不来收益,却要让迁移补丁永久驻留在启动路径上。
+
+v1.79.2 起 embedding 以 float32 BLOB 存储(`engrams.embedding_vec`、`diary_chunks.embedding_vec`),JSON 文本行仍然能读,所以升级不强制迁移。想让旧库真正瘦下来就跑一次根目录脚本:
+
+```bash
+python compact_embeddings.py                  # 干跑,只打印计划
+python compact_embeddings.py --yes            # 备份 → JSON→BLOB → FTS rebuild → VACUUM
+python compact_embeddings.py --yes --no-vacuum
+```
+
+脚本可重复执行(已转换的行会跳过),转换不改变任何向量值。跑 VACUUM 时建议先停插件/AstrBot(WAL 下需要独占访问)。实测线上库 186 MB → 56 MB,冷启动预热 3.45s → 0.41s。
 
 ### v1.1 烟测
 

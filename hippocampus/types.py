@@ -3,6 +3,8 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Literal
 import time, uuid, json
 
+from .vecmath import decode_vec
+
 MemoryType = Literal["episodic", "semantic", "prospective"]
 TriggerStatus = Literal["pending", "fired", "cancelled"]
 
@@ -55,10 +57,13 @@ class Engram:
             v = d.get(k)
             if isinstance(v, str):
                 d[k] = json.loads(v) if v else []
-        if d.get("embedding_json"):
-            d["embedding"] = json.loads(d.pop("embedding_json"))
+        blob = d.pop("embedding_vec", None)
+        raw = d.pop("embedding_json", None)
+        vec = decode_vec(blob, raw)
+        if vec:
+            d["embedding"] = vec
         else:
-            d.pop("embedding", None); d.pop("embedding_json", None)
+            d.pop("embedding", None)
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 @dataclass
