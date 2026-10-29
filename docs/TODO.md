@@ -387,3 +387,31 @@ docs/HANDOFF_2026-10-27.md 与 CHANGELOG.md 的 [1.77.0] 节。
 1. **cluster 链（D4-g）**：需要产品决定（建簇并接注入消费方 vs 删链）。见 §7 open #1。
 2. **R9**：见 §6，五套表示（`graph_adjacency` 已删）。
 3. **format.py 拆分**：纯移动，风险低。
+
+## 9. v1.78.0（2026-10-29）：删除 similar-to 聚类链
+
+### 已 ship
+
+| 项 | 内容 |
+| --- | --- |
+| D4-g | `Engram.similar_to` / `cluster_id` / `profile_fact_id` 三字段与 engrams 三列删除；`cluster_summaries` 表删除；旧库打开时 DROP TABLE + ALTER DROP COLUMN |
+| D4-g | `PatternSeparator.apply_link` / `expand_cluster` 删除，`resolve()` 只返回 merge / new |
+| D4-g | `ReplayConsolidator` 删除聚类 gist 与情节→语义抽象；`maintenance()` 只做 promotion + SWR replay |
+| D4-g | dual-route 的簇扩展、激活图的 similar_to 边、MMR 的距离代理全部移除；MMR 改用 embedding 余弦 |
+| D4-g | `/mem cluster`、`/mem cluster-list` 与 8 个配置键删除；`_conf_schema.json` 167 -> 159 项 |
+| test | 新增 `_smoke_v100.py`；v09/v10/v11/v13/v23/v26/v58/v66 更新。全量 90 个 smoke 全绿 |
+| 清理 | 删除失效的一次性脚本 `build_handlers.py`（行号范围早已与 main.py 对不上） |
+
+### 为什么删而不是修
+
+唯一写入点是 `observe()`，线上 `summary_mode_enabled=true` 时消息走 `store_summary()`，从不进入；
+唯一独特产出 profile fact 不需要簇（`ProfileStore.build_from_relations` 直接铸），线上实测 267 条
+里 266 条是 `resides_in` 句子碎片；簇结果没有任何注入消费方；死链的周期成本是每 30 分钟维护
+里 2-3 次全表扫描。保留 merge 去重、干扰抑制、promotion、SWR replay、decay。
+
+### 仍然 open
+
+1. **R9**：同库多连接 + 五套表示（cluster 链删除后剩 entities/relations、llm_relations、graph_v2、profile_facts、life_*），需要先定事实源与事务边界。
+2. **R8 空表**：`cluster_summaries` 已删；剩余 `atoms`（观察增长）、`profile_facts`、`life_*` / `task_leases`（跨插件与产品决定）、`triggers`。
+3. **format.py 拆分**：纯可维护性。
+

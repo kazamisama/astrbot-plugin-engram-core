@@ -88,66 +88,6 @@ def test_tip_of_tongue_helper():
     print("  tip-of-tongue: OK")
 
 
-def test_episodic_to_semantic_consolidation():
-    banner("epi->sem: a recurring cluster is abstracted into a profile fact")
-    with tempfile.TemporaryDirectory() as td:
-        svc = _svc(td, consolidation_cluster_min_members=2,
-                   consolidation_cluster_min_access=0,
-                   pattern_similar_threshold=0.5)
-        es = []
-        for t in ["I like coffee", "I really like coffee", "I like coffee a lot"]:
-            es.append(svc.observe(session_id="s1", actor_id="u1", platform="qq",
-                                  channel_id="g1", content=t))
-        # simulate a real LLM having extracted actor --likes--> coffee
-        actor = svc.semantic.upsert_entity(Entity(name="u1", type="person"))
-        coffee = svc.semantic.upsert_entity(Entity(name="coffee", type="object"))
-        for e in es:
-            svc.semantic.add_relation(Relation(
-                subject_id=actor.id, predicate="likes", object_id=coffee.id,
-                source_engram_id=e.id, confidence=0.8))
-            e.entity_refs = [actor.id, coffee.id]
-            svc.store.upsert(e)
-        res = svc.force_consolidate()
-        assert res.get("abstracted", 0) >= 1, res
-        facts = svc.profile_facts("u1")
-        assert any(f.predicate == "likes" and f.value == "coffee" for f in facts), facts
-        # engrams should be back-linked to the minted fact
-        linked = [e for e in svc.store.all() if e.profile_fact_id]
-        assert len(linked) >= 2
-        svc.close()
-        del svc
-        import gc as _gc; _gc.collect()
-        print("  episodic->semantic: OK ->",
-              [(f.predicate, f.value) for f in facts])
-
-
-def test_episodic_semantic_disabled():
-    banner("epi->sem: disabling the flag mints nothing")
-    with tempfile.TemporaryDirectory() as td:
-        svc = _svc(td, enable_episodic_semantic=False,
-                   consolidation_cluster_min_members=2,
-                   consolidation_cluster_min_access=0,
-                   pattern_similar_threshold=0.5)
-        es = []
-        for t in ["I like tea", "I really like tea"]:
-            es.append(svc.observe(session_id="s1", actor_id="u2", platform="qq",
-                                  channel_id="g1", content=t))
-        actor = svc.semantic.upsert_entity(Entity(name="u2", type="person"))
-        tea = svc.semantic.upsert_entity(Entity(name="tea", type="object"))
-        for e in es:
-            svc.semantic.add_relation(Relation(
-                subject_id=actor.id, predicate="likes", object_id=tea.id,
-                source_engram_id=e.id, confidence=0.8))
-            e.entity_refs = [actor.id, tea.id]
-            svc.store.upsert(e)
-        res = svc.force_consolidate()
-        assert res.get("abstracted", 0) == 0, res
-        svc.close()
-        del svc
-        import gc as _gc; _gc.collect()
-        print("  epi->sem disabled: OK")
-
-
 def test_decaycurve_render():
     banner("forgetting curve: render for all + single id")
     with tempfile.TemporaryDirectory() as td:
@@ -192,10 +132,8 @@ def test_v11_regression():
                          channel_id="g1", content="I love Americano coffee")
         a2 = svc.observe(session_id="s1", actor_id=actor, platform="qq",
                          channel_id="g1", content="I love Americano coffee very much")
-        engrams = svc.store.list_active(limit=100)
-        assert len([e for e in engrams if e.similar_to]) >= 2, "v0.9 DG regressed"
         res = svc.force_consolidate()
-        assert "replayed" in res and "abstracted" in res
+        assert "replayed" in res and "abstracted" not in res
         # spreading activation API still callable
         acts = svc.spread_activation(["coffee"])
         assert isinstance(acts, dict)
@@ -210,8 +148,6 @@ if __name__ == "__main__":
     test_recall_confidence_present_and_aligned()
     test_metamemory_disabled()
     test_tip_of_tongue_helper()
-    test_episodic_to_semantic_consolidation()
-    test_episodic_semantic_disabled()
     test_decaycurve_render()
     test_main_helpers_and_stats()
     test_v11_regression()

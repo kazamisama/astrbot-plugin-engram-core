@@ -79,7 +79,6 @@ def test_legacy_14_field_dict_flows_through():
         "enable_prospective": False,
         "enable_promotion": True,
         "metamemory_enabled": False,
-        "enable_episodic_semantic": True,
     }
     cm = ConfigManager(raw)
     cfg = cm.memory_config
@@ -93,7 +92,6 @@ def test_legacy_14_field_dict_flows_through():
     assert cfg.enable_prospective is False
     assert cfg.enable_promotion is True
     assert cfg.metamemory_enabled is False
-    assert cfg.enable_episodic_semantic is True
     # fields the user did NOT set still at MemoryConfig defaults
     assert cfg.pattern_separation_threshold == 0.92
     assert cfg.working_memory_capacity == 32

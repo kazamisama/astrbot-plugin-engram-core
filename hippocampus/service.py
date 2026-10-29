@@ -95,7 +95,7 @@ class MemoryService:
         self.separator = PatternSeparator(self.cfg)
         self.working = WorkingMemory(self.cfg)
         self.reconsolidator = Reconsolidator(self.store, self.cfg)
-        self.consolidator = ReplayConsolidator(self.store, self.cfg, llm=self.llm)
+        self.consolidator = ReplayConsolidator(self.store, self.cfg)
         # v1.76.5: optional LLM consolidation manager (lazy import).
         self.consolidation_manager = None
         self.semantic = SemanticStore(self.cfg.sqlite_path) if self.cfg.enable_semantic else None
@@ -486,16 +486,6 @@ class MemoryService:
             self.store.upsert(target)
             self._post_ingest(target)
             return target
-        if action == "link" and target is not None:
-            self.separator.apply_link(e, target, self.cfg.separation_max_links)
-            drop = self.cfg.interference_strength_drop
-            target.strength = max(0.0, target.strength - drop)
-            self.working.add(e)
-            if e.importance >= self.cfg.importance_floor_for_long_term:
-                self.store.upsert(e)
-            self.store.upsert(target)
-            self._post_ingest(e)
-            return e
         self.working.add(e)
         if e.importance >= self.cfg.importance_floor_for_long_term:
             self.store.upsert(e)
@@ -2273,9 +2263,9 @@ class MemoryService:
             print("[hippocampus] profile decay error: " + repr(ex))
         # v1.77.0: the deterministic replay pass runs on EVERY sweep, not
         # only when the opt-in LLM manager is enabled. maintenance() is the
-        # cheap subset (promote / SWR replay / cluster summaries /
-        # episodic->semantic); the O(n*k) pairwise dedupe merge stays on
-        # /mem replay, where its cosine scan is paid deliberately.
+        # cheap subset (promotion / SWR replay); the O(n*k) pairwise dedupe
+        # merge stays on /mem replay, where its cosine scan is paid
+        # deliberately.
         try:
             out["consolidation"] = self.consolidator.maintenance()
         except Exception as ex:

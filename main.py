@@ -62,7 +62,6 @@ from handlers import (
     export_engrams,
     find_and_forget,
     format_activation,
-    format_cluster,
     format_confidence,
     format_decaycurve,
     format_dual_route,
@@ -538,20 +537,6 @@ class HippocampusStar(Star):
         await self._stamp_persona(event)
         async for r in self._dispatch_command(
                 "mem remember", event, (), {"arg": arg}):
-            yield r
-
-    @filter.command("mem cluster")
-    async def cmd_mem_cluster(self, event: AstrMessageEvent, eid: str):
-        await self._stamp_persona(event)
-        async for r in self._dispatch_command(
-                "mem cluster", event, (eid,), {}):
-            yield r
-
-    @filter.command("mem cluster-list")
-    async def cmd_mem_cluster_list(self, event: AstrMessageEvent):
-        await self._stamp_persona(event)
-        async for r in self._dispatch_command(
-                "mem cluster-list", event, (), {}):
             yield r
 
     @filter.command("mem confidence")

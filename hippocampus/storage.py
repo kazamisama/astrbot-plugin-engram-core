@@ -84,7 +84,7 @@ class HippocampalStore:
               persona_id TEXT DEFAULT '',
               scope_id TEXT DEFAULT '',
               content TEXT, summary TEXT,
-              topics TEXT, entities TEXT, entity_refs TEXT, tags TEXT, similar_to TEXT,
+              topics TEXT, entities TEXT, entity_refs TEXT, tags TEXT,
               importance REAL, strength REAL,
               access_count INTEGER, last_accessed REAL,
               reconsolidation_lock_until REAL,
@@ -92,9 +92,7 @@ class HippocampalStore:
               memory_type TEXT, promoted_at REAL,
               embedding_model TEXT,
               fts_text TEXT,
-              cluster_id TEXT DEFAULT '',
-              profile_fact_id TEXT DEFAULT ''
-              ,confidence REAL DEFAULT 0.5
+              confidence REAL DEFAULT 0.5
               ,tier TEXT DEFAULT 'hot'
             );
             CREATE INDEX IF NOT EXISTS idx_session ON engrams(session_id);
@@ -125,7 +123,7 @@ class HippocampalStore:
               VALUES (new.rowid, COALESCE(new.fts_text, ''));
             END;
 
-            -- v1.1: user self-model (neocortex analog) + cluster gists
+            -- v1.1: user self-model (neocortex analog)
             CREATE TABLE IF NOT EXISTS profile_facts (
               id TEXT PRIMARY KEY,
               actor_id TEXT,
@@ -143,13 +141,7 @@ class HippocampalStore:
             CREATE INDEX IF NOT EXISTS idx_profile_actor ON profile_facts(actor_id);
             CREATE INDEX IF NOT EXISTS idx_profile_pred ON profile_facts(actor_id, predicate);
 
-            CREATE TABLE IF NOT EXISTS cluster_summaries (
-              cluster_id TEXT PRIMARY KEY,
-              gist TEXT,
-              member_count INTEGER,
-              last_refreshed REAL,
-              source TEXT
-            );
+            -- v1.78.0: cluster_summaries is gone (see the DROP below).
 
             -- v1.77.0: rebuild_state is gone. The embedding-rebuild
             -- checkpoint was never written (the reindex command that would
@@ -182,6 +174,33 @@ class HippocampalStore:
                 self._conn.execute("DROP TABLE IF EXISTS rebuild_state")
         except Exception as _rb:
             print("[hippocampus] rebuild_state drop skipped: " + repr(_rb))
+        # v1.78.0: the similar-to cluster chain is gone. Drop its table and the
+        # three columns it wrote on engrams. ALTER TABLE ... DROP COLUMN needs
+        # SQLite >= 3.35; on an older build the columns stay behind (harmless:
+        # Engram.from_row ignores unknown keys) and the warning names them.
+        try:
+            with self._lock, self._conn:
+                self._conn.execute("DROP TABLE IF EXISTS cluster_summaries")
+        except Exception as _cs:
+            print("[hippocampus] cluster_summaries drop skipped: " + repr(_cs))
+        try:
+            with self._lock:
+                _have = {r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(engrams)")}
+        except Exception:
+            _have = set()
+        for _col in ("similar_to", "cluster_id", "profile_fact_id"):
+            if _col not in _have:
+                continue
+            try:
+                with self._lock, self._conn:
+                    self._conn.execute(
+                        "ALTER TABLE engrams DROP COLUMN " + _col)
+            except sqlite3.OperationalError:
+                pass  # SQLite < 3.35 cannot drop columns; they stay unread
+            except Exception as _dc:
+                print("[hippocampus] engram column drop skipped: "
+                      + _col + ": " + repr(_dc))
         # v1.36: index on persona_id, created after the column-append
         # migration guarantees the column exists (old DBs included).
         try:
@@ -315,7 +334,6 @@ class HippocampalStore:
             json.dumps(e.entities, ensure_ascii=False),
             json.dumps(e.entity_refs, ensure_ascii=False),
             json.dumps(e.tags, ensure_ascii=False),
-            json.dumps(e.similar_to, ensure_ascii=False),
             e.importance, e.strength, e.access_count, e.last_accessed,
             e.reconsolidation_lock_until,
             json.dumps(e.supersedes, ensure_ascii=False),
@@ -324,7 +342,6 @@ class HippocampalStore:
             e.embedding_model,
             e.fts_text,
             e.valence, e.intensity, e.temporal_bucket, e.stream, e.forgotten_at,
-            e.cluster_id, e.profile_fact_id,
             e.confidence,
             e.tier,
         )
@@ -332,23 +349,22 @@ class HippocampalStore:
             self._conn.execute("""
             INSERT INTO engrams(id,created_at,session_id,actor_id,platform,channel_id,
               persona_id,scope_id,
-              content,summary,topics,entities,entity_refs,tags,similar_to,
+              content,summary,topics,entities,entity_refs,tags,
               importance,strength,access_count,last_accessed,
               reconsolidation_lock_until,supersedes,embedding_json,
               memory_type,promoted_at,embedding_model,fts_text,
               valence,intensity,temporal_bucket,stream,forgotten_at,
-              cluster_id,profile_fact_id,confidence,tier)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              confidence,tier)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               content=excluded.content,
               persona_id=excluded.persona_id,
               scope_id=excluded.scope_id,
               summary=excluded.summary, topics=excluded.topics, entities=excluded.entities,
-              entity_refs=excluded.entity_refs, tags=excluded.tags, similar_to=excluded.similar_to,
+              entity_refs=excluded.entity_refs, tags=excluded.tags,
               importance=excluded.importance, strength=excluded.strength,
               access_count=excluded.access_count, last_accessed=excluded.last_accessed,
               reconsolidation_lock_until=excluded.reconsolidation_lock_until,
-              cluster_id=excluded.cluster_id, profile_fact_id=excluded.profile_fact_id,
               supersedes=excluded.supersedes, embedding_json=excluded.embedding_json,
               memory_type=excluded.memory_type, promoted_at=excluded.promoted_at,
               embedding_model=excluded.embedding_model,
@@ -1244,40 +1260,6 @@ class HippocampalStore:
                     "DELETE FROM memory_sources WHERE memory_id=?", (memory_id,))
         except sqlite3.OperationalError:
             _obs_note("storage", "delete_memory_source")
-
-    # ---------- v1.1: cluster_summaries CRUD ----------
-    def get_cluster_summary(self, cluster_id: str):
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "SELECT * FROM cluster_summaries WHERE cluster_id=? LIMIT 1",
-                (cluster_id,))
-            row = cur.fetchone()
-        if row is None:
-            return None
-        return {"cluster_id": row["cluster_id"], "gist": row["gist"],
-                "member_count": row["member_count"],
-                "last_refreshed": row["last_refreshed"],
-                "source": row["source"]}
-
-    def upsert_cluster_summary(self, cluster_id: str, gist: str,
-                                member_count: int, source: str = "auto") -> None:
-        import time
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO cluster_summaries"
-                "(cluster_id, gist, member_count, last_refreshed, source)"
-                " VALUES(?,?,?,?,?)",
-                (cluster_id, gist, member_count, time.time(), source))
-
-    def list_cluster_summaries(self, limit: int = 200):
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "SELECT * FROM cluster_summaries ORDER BY last_refreshed DESC LIMIT ?",
-                (limit,))
-            return [{"cluster_id": r["cluster_id"], "gist": r["gist"],
-                     "member_count": r["member_count"],
-                     "last_refreshed": r["last_refreshed"],
-                     "source": r["source"]} for r in cur.fetchall()]
 
     def start_write_op(self, op_type: str, payload: dict | None = None,
                         memory_id: str | None = None) -> int | None:

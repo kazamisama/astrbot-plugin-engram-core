@@ -10,7 +10,6 @@ Two graph views are used:
   entity (e:<id>) --predicate--> entity: relations table, weight = relation.confidence
   entity (e:<id>) --> engram: engrams.entity_refs contains the entity id, weight 1.0
   engram (n:<id>) --> entity: same source, weight 1.0
-  engram (n:<id>) --> engram: engrams.similar_to, weight 0.6
 """
 from __future__ import annotations
 from typing import Iterable
@@ -30,7 +29,6 @@ W_RELATION = 1.0          # multiplier base; actual edge weight is relation.conf
 W_RELATION_REVERSE = 0.4  # walking object->subject is weaker
 W_ENTITY_TO_ENGRAM = 1.0
 W_ENGRAM_TO_ENTITY = 1.0
-W_ENGRAM_SIMILAR = 0.6
 
 
 class SpreadingActivation:
@@ -293,9 +291,6 @@ class SpreadingActivation:
             return out
         for ref in (e.entity_refs or []):
             out.append((E_PREFIX + ref, W_ENGRAM_TO_ENTITY))
-        for sib in (e.similar_to or []):
-            if sib and sib != eid:
-                out.append((N_PREFIX + sib, W_ENGRAM_SIMILAR))
         return out
 
     def _label(self, key: str) -> tuple[str, str]:

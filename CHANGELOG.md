@@ -4,6 +4,54 @@
 
 Nothing yet.
 
+## [1.78.0] - 2026-10-29
+
+删除整条 similar-to 聚类链。它在默认摘要管线下没有写入者，产出（聚类 gist / profile fact）
+既不被召回注入消费、也不能作为可观测信号使用，却让每个维护周期都白跑一遍
+`store.all()` 扫描。
+
+### Removed
+- **Engram 三字段**：`similar_to` / `cluster_id` / `profile_fact_id`。旧库打开时
+  `DROP TABLE IF EXISTS cluster_summaries`，并对 `engrams` 执行
+  `ALTER TABLE ... DROP COLUMN`（SQLite < 3.35 无法删列时保留，`Engram.from_row` 本就
+  忽略未知列，读写路径已全部移除）。`db_migration` 里的 v1.1 列添加同步删除。
+- **PatternSeparator**：`apply_link()` / `expand_cluster()`；`resolve()` 只返回
+  `merge` / `new`（中间带不再 link，直接作为独立记忆保存）。
+- **ReplayConsolidator**：`_refresh_cluster_summaries` / `_llm_gist` /
+  `_fallback_gist` / `_consolidate_episodic_semantic` / `_abstract`；构造签名回到
+  `(store, cfg)`；`step()` 返回 `merged/promoted/archived/replayed`，
+  `maintenance()` 只做 promotion + SWR replay。
+- **召回/激活**：dual-route 的 DG 簇扩展、激活图里的 `similar_to` 边、
+  MMR 的 `similar_to` 距离代理。
+- **命令与展示**：`/mem cluster`、`/mem cluster-list`、`format_cluster`、
+  `/mem stats` 的 cluster/epi_sem/consolidated 三行、narrative 的 linked 标记、
+  WebUI 的 `cluster_id` 字段标签。
+- **8 个配置键**：`separation_max_links`、`enable_cluster_summarization`、
+  `cluster_summary_min_size`、`cluster_summary_max_members`、
+  `enable_episodic_semantic`、`consolidation_cluster_min_members`、
+  `consolidation_cluster_min_access`、`consolidation_fact_confidence`；
+  `_conf_schema.json` 同步（167 -> 159 项）。
+- **`build_handlers.py`**：一次性拆分脚本，行号范围早已和 `main.py` 对不上，
+  帮助文本现在由命令注册表生成；留着只会在有人运行时毁掉入口文件。
+
+### Changed
+- **MMR 改用向量余弦**：多样性惩罚 = `(1-lambda) * max(cosine to selected)`；
+  没有向量的 engram 不罚分（`lambda=1.0` 退化为纯相关性）。
+- **`pattern_similar_threshold` 保留**，语义变为 merge 时对相似兄弟记忆施加干扰
+  惩罚的判定线。
+
+### Notes
+- 为什么删而不是修：唯一写入点是 `observe()`，而线上 `summary_mode_enabled=true`
+  时消息走 `store_summary()`，从不进入 `observe()`；唯一独特产出 profile fact
+  并不需要簇（`ProfileStore.build_from_relations` 直接铸），线上实测 267 条里
+  266 条是 `resides_in` 句子碎片，证据数被同一关系反复引用放大；簇结果没有任何
+  注入消费方；而死链的周期成本是每 30 分钟维护里 2-3 次全表扫描。
+- 保留：merge 去重、干扰抑制、promotion、SWR replay、decay；`ProfileStore`
+  与簇解耦后继续服务 `/mem profile` 与 `/mem remember`（不参与注入）。
+- 测试：v09 重写为 merge-only；v10/v11/v13/v23/v26/v58/v66 更新；新增
+  `tests/_smoke_v100.py`（字段/表/旧库清理/consolidator 契约/stats/help）。
+  全量 90 个 smoke 全绿。
+
 ## [1.77.2] - 2026-10-28
 
 移除 `graph_adjacency` 这层「从未被写入」的冗余图，并切断删除路径上的整图重建。

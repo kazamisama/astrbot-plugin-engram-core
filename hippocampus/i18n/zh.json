@@ -17,8 +17,6 @@
       "mem persona": "/mem persona [actor]",
       "mem activate": "/mem activate <seed1> [seed2 ...]",
       "mem remember": "/mem remember <predicate> <value> [actor]",
-      "mem cluster": "/mem cluster <id>",
-      "mem cluster-list": "/mem cluster-list",
       "mem confidence": "/mem confidence <query>",
       "mem decaycurve": "/mem decaycurve [id|all]",
       "mem consolidate": "/mem consolidate",
@@ -49,11 +47,9 @@
       "mem persona": "查看 persona 画像",
       "mem activate": "扩散激活网络",
       "mem remember": "手工写入一条自我模型事实",
-      "mem cluster": "查看 engram 的 similar_to 聚类",
-      "mem cluster-list": "列出聚类摘要",
       "mem confidence": "检索并显示元记忆置信度",
       "mem decaycurve": "遗忘曲线可视化",
-      "mem consolidate": "手动触发巩固（去重合并/晋升/聚类摘要/情景→语义）",
+      "mem consolidate": "运行巩固（去重 / 晋升 / SWR 重放）",
       "mem diary": "手动生成昨日日记（调试/补写）",
       "mem forget": "删除 engram（支持 id 前缀）",
       "mem export": "导出为 JSON",
@@ -78,7 +74,6 @@
   "forget": {
     "usage": "usage: /mem forget <id>"
   },
-  "cluster": {},
   "valence": {},
   "stream": {},
   "replay": {},
@@ -116,7 +111,7 @@
       "ok": "已遗忘 {id8}：{summary}"
     },
     "stats": {
-      "body": "## 统计\n记忆(engrams)：  {engrams}\nFTS 索引：       {fts}\n实体：           {entities}\n触发器待触发：   {pending}\n触发器已触发：   {fired}\n嵌入模型：       {embedding}\nLLM：            {llm}\n--- v1.0 ---\n效价分布：       {valence}\n流(stream)：     {stream}\n软遗忘：         {forgotten}\n--- v1.1 ---\n画像事实：       {profile}\n聚类摘要：       {cluster}\n--- v1.2 ---\n元记忆：         {metamemory}\n情景→语义：      {epi_sem}\n已整合事实：     {consolidated}\n"
+      "body": "## 统计\n记忆(engrams)：  {engrams}\nFTS 索引：       {fts}\n实体：           {entities}\n触发器待触发：   {pending}\n触发器已触发：   {fired}\n嵌入模型：       {embedding}\nLLM：            {llm}\n--- v1.0 ---\n效价分布：       {valence}\n流(stream)：     {stream}\n软遗忘：         {forgotten}\n--- v1.1 ---\n画像事实：       {profile}\n--- v1.2 ---\n元记忆：         {metamemory}\n"
     },
     "export": {
       "usage": "用法：/mem export <路径>",
@@ -127,22 +122,11 @@
       "done": "已导入：记忆={engrams} 实体={entities} 关系={relations} 触发器={triggers}；请运行 /mem rebuild 重建嵌入{fmt_warn}",
       "fmt_warn": " [警告：导出格式 v{fmt} != 当前 v{cur}]"
     },
-    "cluster": {
-      "usage": "用法：/mem cluster <id>",
-      "header": "## {title} 的集群",
-      "root": "根节点：{id8}",
-      "no_links": "（没有 similar_to 关联）",
-      "similar": "similar_to：{n} 个兄弟节点",
-      "via": "经由 {id8}",
-      "orphan": "（孤立根）",
-      "sibling": "  - {id8}：{title}  [{tag}]"
-    },
     "narrative": {
       "usage": "用法：/mem narrative <主题>",
       "none": "没有找到与主题相关的记忆：{topic}",
       "header": "## 叙事：{topic}",
-      "seeds": "种子记忆：{n} 条，扩展后：{m} 条",
-      "linked": "关联:{n}"
+      "seeds": "种子记忆：{n} 条，展示：{m} 条"
     },
     "profile": {
       "disabled": "画像层未启用（cfg.enable_profile=False）",

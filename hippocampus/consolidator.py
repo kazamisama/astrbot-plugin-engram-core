@@ -4,6 +4,7 @@ from .types import Engram
 from .config import MemoryConfig
 from .storage import HippocampalStore, _cos
 
+
 class DecayScheduler:
     def __init__(self, cfg: MemoryConfig) -> None: self._cfg = cfg
 
@@ -18,50 +19,45 @@ class DecayScheduler:
                 alive.append(e)
         return alive
 
+
 class ReplayConsolidator:
-    """One pass: dedupe-merge + promote (episodic -> semantic) + decay."""
-    def __init__(self, store: HippocampalStore, cfg: MemoryConfig,
-                 llm=None, semantic=None, profile=None) -> None:
-        self._store = store; self._cfg = cfg
-        self._llm = llm
-        self._semantic = semantic
-        self._profile = profile
+    """One pass: dedupe-merge + promote (episodic -> semantic) + SWR replay + decay.
+
+    v1.78.0: the similar-to cluster chain (cluster gists and the
+    episodic->semantic profile-fact abstraction that fed on it) was removed
+    together with Engram.similar_to. Under the default summary pipeline
+    nothing ever wrote those links, and no recall path consumed them.
+    """
+
+    def __init__(self, store: HippocampalStore, cfg: MemoryConfig) -> None:
+        self._store = store
+        self._cfg = cfg
 
     def step(self) -> dict:
-        """Full consolidation pass -- the manual / replay path.
+        """Full consolidation pass -- the manual /mem consolidate path.
 
         Dedupe-merge is an O(n * consolidation_max_pairs) cosine scan, so it
         is NOT part of the background sweep; maintenance() is the cheap
         recurring subset (see service._run_maintenance).
         """
         engrams = self._store.all(limit=10_000)
-        if self._cfg.enable_cluster_summarization:
-            self._refresh_cluster_summaries(engrams)
         merged = self._merge_duplicates(engrams)
         promoted = self._promote()
         replayed = self._swr_replay()
         archived = self._decay()
-        abstracted = self._abstract()
         return {"merged": merged, "promoted": promoted, "archived": archived,
-                "replayed": replayed, "abstracted": abstracted}
+                "replayed": replayed}
 
     def maintenance(self) -> dict:
         """Cheap recurring subset, run by the background maintenance sweep.
 
         v1.77.0: the sweep used to call ONLY the LLM consolidation manager,
-        which is disabled by default -- so promotion, SWR replay, cluster
-        summaries and episodic->semantic abstraction never ran at all, and
-        cluster_summaries / profile_facts / promoted_at stayed empty on the
-        live store for months. These four are cheap; the pairwise dedupe
-        merge stays on the manual/replay path, where its O(n*k) cosine scan
-        is paid deliberately.
+        which is disabled by default -- so promotion and SWR replay never ran
+        at all and promoted_at stayed empty on the live store for months.
+        Both are cheap; the pairwise dedupe merge stays on the manual/replay
+        path, where its O(n*k) cosine scan is paid deliberately.
         """
-        engrams = self._store.all(limit=10_000)
-        if self._cfg.enable_cluster_summarization:
-            self._refresh_cluster_summaries(engrams)
-        return {"promoted": self._promote(),
-                "replayed": self._swr_replay(),
-                "abstracted": self._abstract()}
+        return {"promoted": self._promote(), "replayed": self._swr_replay()}
 
     def _merge_duplicates(self, engrams) -> int:
         merged = 0
@@ -114,172 +110,3 @@ class ReplayConsolidator:
                 self._store.delete(e.id)
                 archived += 1
         return archived
-
-    def _abstract(self) -> int:
-        if (not self._cfg.enable_episodic_semantic
-                or self._semantic is None or self._profile is None):
-            return 0
-        try:
-            return self._consolidate_episodic_semantic()
-        except Exception as e:
-            print("[hippocampus] episodic->semantic consolidation error: " + repr(e))
-            return 0
-
-    # ---------- v1.1: cluster auto-summarization ----------
-    def _refresh_cluster_summaries(self, engrams) -> None:
-        """Group engrams by similar_to clique; for groups with enough members,
-        generate a one-line gist (LLM with deterministic fallback) and store it
-        in the cluster_summaries table (managed by HippocampalStore)."""
-        min_size = max(2, int(self._cfg.cluster_summary_min_size))
-        max_members = max(min_size, int(self._cfg.cluster_summary_max_members))
-        # Pass 1: build (cluster_id -> members) and remember the assignment on the engram
-        groups: dict[str, list] = {}
-        for e in engrams:
-            if e.forgotten_at > 0:
-                continue
-            if not e.similar_to:
-                continue
-            members_ids = {e.id, *e.similar_to}
-            cluster_id = min(members_ids)
-            groups.setdefault(cluster_id, []).append(e)
-        for cid, members in groups.items():
-            if len(members) < min_size:
-                continue
-            # Persist cluster_id on every member so other modules can recover the clique
-            for e in members:
-                if e.cluster_id != cid:
-                    e.cluster_id = cid
-                    self._store.upsert(e)
-            # Skip if we already have a fresh gist
-            existing = self._store.get_cluster_summary(cid)
-            if existing is not None:
-                continue
-            top = sorted(members, key=lambda x: x.importance, reverse=True)[:max_members]
-            gist = self._llm_gist(top) or self._fallback_gist(top)
-            if gist:
-                self._store.upsert_cluster_summary(cid, gist, len(members), source="auto")
-
-    def _llm_gist(self, members) -> str | None:
-        if self._llm is None:
-            return None
-        try:
-            from .llm import RuleLLMProvider
-            if isinstance(self._llm, RuleLLMProvider):
-                return None
-        except Exception:
-            return None
-        texts = "\n".join("- " + (e.summary or e.content)[:120] for e in members)
-        prompt = ("Given these related memories of the same user, produce a single-line gist"
-                  " (max 80 chars, no quotes, English or Chinese OK):\n" + texts + "\n\nGist:")
-        try:
-            out = self._llm.chat(
-                ("memory gist generator for an AI assistant\'s"
-                 " long-term memory. One-line summary, 80 char cap."),
-                prompt, temperature=0.2, max_tokens=80)
-        except Exception:
-            return None
-        if not out:
-            return None
-        line = out.strip().splitlines()[0] if out.strip() else ""
-        return line[:80] or None
-
-    @staticmethod
-    def _fallback_gist(members) -> str:
-        if not members:
-            return ""
-        sorted_m = sorted(members, key=lambda x: x.importance, reverse=True)
-        if len(sorted_m) == 1:
-            return (sorted_m[0].summary or sorted_m[0].content)[:80]
-        parts = [(e.summary or e.content)[:30] for e in sorted_m[:3]]
-        return " | ".join(parts)[:80]
-
-    # ---------- v1.2: episodic -> semantic consolidation ----------
-    def _consolidate_episodic_semantic(self) -> int:
-        """Abstract recurring clusters into stable profile facts.
-
-        A cluster (engrams sharing a cluster_id) that has come back enough times
-        (enough members AND enough total retrievals) is treated as something the
-        system now "knows" rather than merely "experienced". We mine the most
-        confident (predicate, object) relation shared across the cluster's
-        entities and mint a profile fact from it, then back-link the engrams to
-        that fact via profile_fact_id. This is the hippocampus -> neocortex
-        systems-consolidation step.
-        """
-        from .profile import ProfileFact, _PROFILE_PREDICATES
-        min_members = max(2, int(self._cfg.consolidation_cluster_min_members))
-        min_access = max(0, int(self._cfg.consolidation_cluster_min_access))
-        conf = float(self._cfg.consolidation_fact_confidence)
-
-        # Group active engrams into clusters. Prefer the persisted cluster_id,
-        # but fall back to connected components over the similar_to graph so we
-        # do not depend on cluster summarization having run first.
-        active = [e for e in self._store.all(limit=10_000) if e.forgotten_at <= 0]
-        by_id = {e.id: e for e in active}
-        parent: dict[str, str] = {e.id: e.id for e in active}
-
-        def find(x: str) -> str:
-            while parent.get(x, x) != x:
-                parent[x] = parent.get(parent[x], parent[x])
-                x = parent[x]
-            return x
-
-        def union(a: str, b: str) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        for e in active:
-            for sib in (e.similar_to or []):
-                if sib in parent:
-                    union(e.id, sib)
-        clusters: dict[str, list] = {}
-        for e in active:
-            root = e.cluster_id if (e.cluster_id and e.cluster_id in by_id) else find(e.id)
-            clusters.setdefault(root, []).append(e)
-
-        minted = 0
-        for cid, members in clusters.items():
-            if len(members) < min_members:
-                continue
-            if sum(int(m.access_count or 0) for m in members) < min_access:
-                continue
-            actor_id = members[0].actor_id or "anonymous"
-            # collect candidate (predicate, object_name) -> [conf, eids, relids]
-            best: dict[tuple[str, str], tuple[float, set, set]] = {}
-            for e in members:
-                for ref in (e.entity_refs or []):
-                    ent = self._semantic.get_entity(ref)
-                    if ent is None:
-                        continue
-                    for rel in self._semantic.relations_of(ent.id):
-                        if rel.predicate not in _PROFILE_PREDICATES:
-                            continue
-                        if rel.subject_id != ent.id:
-                            continue
-                        obj = self._semantic.get_entity(rel.object_id)
-                        if obj is None:
-                            continue
-                        key = (rel.predicate, obj.name)
-                        c0, eids, relids = best.get(key, (0.0, set(), set()))
-                        best[key] = (max(c0, float(rel.confidence)),
-                                     eids | {e.id}, relids | {rel.id})
-            if not best:
-                continue
-            # pick the single strongest, most-supported triple for this cluster
-            (pred, objname), (relconf, eids, relids) = max(
-                best.items(), key=lambda kv: (len(kv[1][1]), kv[1][0]))
-            if len(eids) < 2:
-                continue
-            fact = ProfileFact(
-                actor_id=actor_id, predicate=pred, value=objname,
-                confidence=max(conf, relconf), evidence_count=len(eids),
-                source_relation_ids=list(relids), source_engram_ids=list(eids),
-            )
-            stored = self._profile.upsert_fact(fact)
-            minted += 1
-            # back-link members to the minted fact
-            for e in members:
-                if e.id in eids and e.profile_fact_id != stored.id:
-                    e.profile_fact_id = stored.id
-                    self._store.upsert(e)
-        return minted

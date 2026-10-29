@@ -13,7 +13,10 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
 > v1.77.1: 向量索引缓存(注入的数据路径 5.3s -> 0.2s)、嵌入空间指纹 + 空向量自动修复、
 > 注入锁有界等待、LLM 关系也产原子。
 > v1.77.2: 移除从未写入的 `graph_adjacency` 邻接层与 N 跳游走,graph route 改为纯
-> 实体→engram 反查;硬删不再触发整图重建。详见 `CHANGELOG.md`。
+> 实体→engram 反查;硬删不再触发整图重建。
+> v1.78.0: 删除整条 similar-to 聚类链(`similar_to` / `cluster_id` / `profile_fact_id` /
+> `cluster_summaries` / 聚类摘要 / 情节→语义抽象 / 两条 cluster 命令);MMR 改用向量余弦;
+> 旧库打开时自动清掉这些列与表。详见 `CHANGELOG.md`。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -41,7 +44,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v99,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v100,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 
@@ -165,14 +168,13 @@ v1.44 改的是仓库名 / 部署目录名，plugin ID 没动。直接 `git pull
 | `/mem export <path>` | 把当前库导出为 JSON 文件 |
 | `/mem import <path>` | 从 JSON 导入 engram/entity/relation/trigger(embedding 占位,需 `/mem rebuild`) |
 | `/mem graph <entity>` | 围绕某个实体拉出 entity + relations + 来源 engram |
-| `/mem cluster <id>` | 查 engram 的 similar_to 簇(双向, DG 模式分离) |
 | `/mem narrative <topic>` | 按 entity/topic 串成自传式叙事 |
 | `/mem replay` | 手动触发 SWR 复现(带 decay/GC/promote) |
 | `/mem valence` | 情绪价分布直方图 |
 | `/mem streams` | what / where_when 两流拆分 |
 | `/mem confidence <query>` | 召回并显示每条记忆的元记忆置信度(v1.2) |
 | `/mem decaycurve [id\|all]` | 用 Ebbinghaus 模型画 strength 衰减曲线(v1.2) |
-| `/mem consolidate` | 手动触发巩固,含情节→语义抽象(v1.2) |
+| `/mem consolidate` | 手动触发巩固(去重合并 / 晋升 / SWR 重放) |
 
 ### `/mem search` 模式说明
 
@@ -227,17 +229,15 @@ self.service.register_embedding(
 DG (dentate gyrus) 仿生:每条 observe 进入时,计算与当前 session 缓存里记忆的余弦相似度:
 
 - `≥ pattern_separation_threshold` (0.92) → **merge**。新记忆合并到原来的,embedding / strength 同步到新。
-- `≥ pattern_similar_threshold` (0.75) → **link**。双向加入 `similar_to` 链,单侧上限 `separation_max_links` (5)。
-- 低于阈值 → **new**。
+- 低于阈值 → **new**,作为独立记忆保存。
 
-Recall 时,任一条 top-k 命中会顺便拉出它的 1-hop `similar_to` 同胞,以 0.95× 该根记忆分返回。深度限 1 是避免联合爆炸。
+v1.78.0 之前还有一个夹在中间的 **link** 动作(`similar_to` 双向链),生产摘要管线从不触发、召回也没有消费方,已随整条聚类链删除。
 
 调节参数都在 `config.py`:
 
 - `enable_separation: bool = True` — 全局杀开关
-- `separation_max_links: int = 5` — 单侧链长上限
 - `pattern_separation_threshold: float = 0.92` — merge 阈值
-- `pattern_similar_threshold: float = 0.75` — link 阈值
+- `pattern_similar_threshold: float = 0.75` — 干扰惩罚判定线(merge 时对相似兄弟记忆扣 strength)
 
 ## v1.0 生物学增强
 
@@ -247,18 +247,17 @@ v1.0 上了一整套海马体环路:
 - **Two-stream tagging**—`what`(身份/偏好/事实)与 `where_when`(时间/地点/计划)。对应腹侧/背侧海马体两流。
 - **Temporal context**—离散时间桶(temporal_bucket),默认 1 小时一档。`cfg.temporal_bucket_seconds` 可调。
 - **Schema bias**—新观察命中已知高频 entity(提及≥3 次)时,importance 被提升。反映 Bartlett 的 schema-driven 编码。
-- **Proactive interference**—link/merge 时相邻 engram 被扣 `interference_strength_drop`(默认 0.05)。越类似越干扰。
+- **Proactive interference**—merge 时相邻 engram 被扣 `interference_strength_drop`(默认 0.05)。越类似越干扰。
 - **Reconsolidation update window**—recall 后进入 lock 窗口, 如果同 session 内新观察与被 recall 的 engram 相似,则覆盖原 engram 的 content/summary/valence(Bartlett 重构式回忆)。`reconsolidation_update_enabled` 可关。
 - **SWR replay boost**—定期 consolidate 会抽 top-64 高强度 engram 加强度、+1 access_count, 模仿睡眠 NREM 阶段的 sharp-wave ripple。`consolidator.step()` 现在返回 `replayed` 计数。
 - **Soft forget + ghost trace**—`store.soft_forget(id)` 不删除, 仅标 `forgotten_at`, 语义图 / 结构查询仍可参考。`gc_pass(floor, min_age)` 才是硬删。
 - **Ebbinghaus decay sweep**—`store.decay_pass(tau_base, floor)` 一次性对所有活跃 engram 应用 `strength *= exp(-dt/(tau*(1+4*importance)))`。
 - **Active forgetting (GC)**—`store.gc_pass(floor, min_age)` 删除 strength < floor 且 access_count == 0 且 存活超过 24h 的。
-- **Autobiographical narrative**—`/mem narrative <topic>` 按 entity/topic 拼出时序链, 带 valence/stream/link 标记。
+- **Autobiographical narrative**—`/mem narrative <topic>` 按 entity/topic 拼出时序链, 带 valence/stream 标记。
 
 调节参数(都在 `config.py`):
 
 - `enable_separation: bool = True` — DG 全局开关
-- `separation_max_links: int = 5` — similar_to 链长上限
 - `temporal_bucket_seconds: int = 3600` — 时间桶尺度
 - `interference_strength_drop: float = 0.05` — 主动干扰成本
 - `reconsolidation_update_enabled: bool = True` — 重固化更新开关
@@ -268,14 +267,13 @@ v1.0 上了一整套海马体环路:
 
 本目录的 `hippocampus/` 就是核心包本体(已随插件自包含)。直接修改本目录下的 `hippocampus/` 即可,无需从其它位置覆盖。
 
-## v1.1 联想激活网络 + 自我模型 + 心境一致性 + 聚类摘要
+## v1.1 联想激活网络 + 自我模型 + 心境一致性
 
 v1.1 在 v1.0 的 SWR / DG / two-stream / valence 基座上,接出语义图的真正"可激活"层:
 
 - **Spreading activation** — Collins & Loftus 1975 风格,在 entity-relation-engram 图上做深度受限的激活传播。从 `SpreadingActivation.activate(seeds, depth, decay, floor)` 起步,支持 entity 名 / engram id 作为 seed。
 - **User self-model (neocortex analog)** — `ProfileStore` 是一张 `profile_facts(actor_id, predicate, value, confidence, evidence_count, source_*)` 表。从 relations 自动抽取稳定事实,evidence 与 confidence 走加权平均;手动 `service.remember_fact(...)` 可直接落盘。
 - **Mood-congruent recall** — Bower 1981:`Cue.valence_hint` 非空时,engram 召回分被一个 `(1 - |hint - engram.valence|)` 的小项加权。`cfg.mood_congruence_weight` 控制强度。
-- **Cluster auto-summarization (REM/dream synthesis)** — `ReplayConsolidator._refresh_cluster_summaries` 在 SWR pass 开头按 similar_to clique 聚合,LLM 优先产出 80 字内 gist,无 LLM 时回退到 top-3 summary 拼接。`cluster_id` 反写回 engram 行,方便后续模块按聚类定位。
 - **recall_with_activation** — `MemoryService.recall_with_activation(cue, seeds=[...])` 把激活图作为 `Cue.activation` 传进重排,带权加到 base score。
 
 ### 调节参数 (`config.py` v1.1)
@@ -286,9 +284,6 @@ v1.1 在 v1.0 的 SWR / DG / two-stream / valence 基座上,接出语义图的�
 - `activation_score_weight: float = 0.18` — 激活在 recall 重排里的权重
 - `mood_congruence_enabled: bool = True` — 心境一致性总开关
 - `mood_congruence_weight: float = 0.10` — 心境匹配分加成
-- `enable_cluster_summarization: bool = True` — 聚类摘要总开关
-- `cluster_summary_min_size: int = 2` — 至少 N 个成员才生成 gist
-- `cluster_summary_max_members: int = 8` — 喂给 LLM 的成员数上限
 - `enable_profile: bool = True` — 用户自我模型总开关
 - `profile_min_evidence: int = 2` — 至少被多少 engram 支撑才晋升
 - `profile_min_confidence: float = 0.6` — 平均关系置信度阈值
@@ -301,7 +296,6 @@ v1.1 在 v1.0 的 SWR / DG / two-stream / valence 基座上,接出语义图的�
 | `/mem profile [actor]` | 查看/构建用户自我画像(没事实时会先 `build_profile`) |
 | `/mem activate <seed1> [seed2 ...]` | 从 seed entity / engram 展开联想激活网络 |
 | `/mem remember <predicate> <value> [actor]` | 手动写入一条画像事实 |
-| `/mem cluster-list` | 列出所有已生成的聚类 gist |
 
 ### 新增模块
 
@@ -310,11 +304,11 @@ v1.1 在 v1.0 的 SWR / DG / two-stream / valence 基座上,接出语义图的�
 
 ### 迁移
 
-v1.0 数据库可平滑升级:`HippocampalStore._migrate_v11` 会幂等添加 `engrams.cluster_id` / `engrams.profile_fact_id` 两列,并在 `_init_schema` 中 `CREATE TABLE IF NOT EXISTS` 出 `profile_facts` / `cluster_summaries`。
+v1.0 数据库可平滑升级:`HippocampalStore._init_schema` 幂等补齐 `profile_facts` 等表。v1.78.0 起打开旧库会 **DROP** 已废弃的 `cluster_summaries` 表以及 `engrams.similar_to` / `cluster_id` / `profile_fact_id` 三列(SQLite < 3.35 时列会保留但不再读写)。
 
 ### v1.1 烟测
 
-`tests/_smoke_v11.py` 覆盖 profile upsert / build / spreading activation / recall_with_activation / mood-congruence / cluster gist / profile decay / main.py helpers / v0.9+v1.0 回归。独立运行,只 mock `astrbot.api`。
+`tests/_smoke_v11.py` 覆盖 profile upsert / build / spreading activation / recall_with_activation / mood-congruence / profile decay / main.py helpers / v0.9+v1.0 回归。独立运行,只 mock `astrbot.api`。
 
 ```bash
 python tests/_smoke_v11.py
@@ -338,12 +332,11 @@ python tests/_smoke_v11.py
 python tests/_smoke_v12.py
 ```
 
-## v1.2 元记忆 + 情节→语义巩固 + 遗忘曲线
+## v1.2 元记忆 + 遗忘曲线
 
 v1.2 在 v1.1 的激活网络 / 自我模型 / 心境一致性基座上,补上"我对这条记忆有多确定"的元层,以及把反复出现的情节抽象成稳定语义的巩固步骤。
 
 - **元记忆置信度 (feeling-of-knowing)** — 每条召回结果带一个 [0,1] 的置信度,由 `存储置信度 / strength / 本次检索相对分 / recency / access` 加权得到(`hippocampus/metamemory.py`)。`RecallResult.confidences` 与 `engrams` 对齐;工作记忆命中项置信度恒为 1.0。低置信 + 非零命中 = tip-of-tongue(似曾相识但说不准)。
-- **情节→语义巩固 (systems consolidation)** — `ReplayConsolidator` 在每次 SWR pass 末尾,把"反复回来"的 cluster(成员数 + 总 access 达阈值)里最稳的 `(predicate, object)` 关系抽象成一条 profile fact,并把来源 engram 的 `profile_fact_id` 反写回去。cluster 通过 `similar_to` 连通分量现算,不依赖聚类摘要先跑。`step()` 返回值新增 `abstracted` 计数。
 - **遗忘曲线可视化** — `/mem decaycurve [id|all]` 用与 `DecayScheduler` 完全相同的 `strength * exp(-dt/(tau*(1+4*importance)))` 公式把未来 strength 投影成 ASCII 曲线,直接把抽象的衰减参数变成肉眼可见。
 
 ### 调节参数 (`config.py` v1.2)
@@ -352,10 +345,6 @@ v1.2 在 v1.1 的激活网络 / 自我模型 / 心境一致性基座上,补上"�
 - `metamemory_high_threshold: float = 0.66` — ≥ 此值标 high
 - `metamemory_low_threshold: float = 0.33` — < 此值标 low / tip-of-tongue
 - `metamemory_weights: dict` — FOK 五项权重(stored/strength/retrieval/recency/access)
-- `enable_episodic_semantic: bool = True` — 情节→语义巩固总开关
-- `consolidation_cluster_min_members: int = 3` — cluster 至少 N 个成员才抽象
-- `consolidation_cluster_min_access: int = 2` — 且总 access_count ≥ N(确实反复回来)
-- `consolidation_fact_confidence: float = 0.7` — 巩固铸出事实的置信度下限
 - `decaycurve_buckets: int = 12` / `decaycurve_width: int = 32` — 曲线采样点 / 条宽
 
 ### 新增模块 / 命令
@@ -369,7 +358,7 @@ v1.2 在 v1.1 的激活网络 / 自我模型 / 心境一致性基座上,补上"�
 
 ### v1.2 烟测
 
-`tests/_smoke_v13.py` 覆盖 confidence 列往返 + 迁移幂等、recall 置信度对齐、metamemory 开关、tip-of-tongue、情节→语义巩固 + 反链 + 开关、遗忘曲线渲染、main.py helpers/stats、v1.1 回归。独立运行,只 mock `astrbot.api`。
+`tests/_smoke_v13.py` 覆盖 confidence 列往返 + 迁移幂等、recall 置信度对齐、metamemory 开关、tip-of-tongue、遗忘曲线渲染、main.py helpers/stats、v1.1 回归。独立运行,只 mock `astrbot.api`。
 
 ```bash
 python tests/_smoke_v13.py

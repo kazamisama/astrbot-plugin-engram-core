@@ -94,7 +94,6 @@
     updated_at: "更新时间",
     forgotten_at: "遗忘时间",
     entity_refs: "关联实体",
-    cluster_id: "聚类 ID",
     valence: "情绪价",
     intensity: "情绪强度",
     score: "相关度",

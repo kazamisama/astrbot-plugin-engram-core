@@ -107,7 +107,6 @@ _FIELDS: dict[str, _FieldSpec] = {
     "cold_archive_min_age_days": _FieldSpec(float, (0.0, 3650.0), label_zh="冷层归档最小天龄", label_en="Cold archive min age days"),
     # v0.9
     "enable_separation": _FieldSpec(bool, label_zh="启用 DG 模式分离", label_en="Enable DG separation"),
-    "separation_max_links": _FieldSpec(int, (0, 100), label_zh="分离链长度上限", label_en="Separation max links"),
     # v1.0
     "temporal_bucket_seconds": _FieldSpec(int, (60, 86400 * 30), label_zh="时间桶秒数", label_en="Temporal bucket seconds"),
     "interference_strength_drop": _FieldSpec(float, (0.0, 1.0), label_zh="干扰强度惩罚", label_en="Interference strength drop"),
@@ -121,9 +120,6 @@ _FIELDS: dict[str, _FieldSpec] = {
     "frequency_recall_weight": _FieldSpec(float, (0.0, 10.0), label_zh="频次召回权重", label_en="Frequency recall weight"),
     "mood_congruence_enabled": _FieldSpec(bool, label_zh="启用心境一致性", label_en="Mood congruence enabled"),
     "mood_congruence_weight": _FieldSpec(float, (0.0, 10.0), label_zh="心境权重", label_en="Mood congruence weight"),
-    "enable_cluster_summarization": _FieldSpec(bool, label_zh="启用聚类摘要", label_en="Enable cluster summarization"),
-    "cluster_summary_min_size": _FieldSpec(int, (1, 1000), label_zh="聚类最小成员", label_en="Cluster summary min size"),
-    "cluster_summary_max_members": _FieldSpec(int, (1, 1000), label_zh="聚类最大成员", label_en="Cluster summary max members"),
     "enable_profile": _FieldSpec(bool, label_zh="启用用户模型", label_en="Enable profile"),
     "profile_min_evidence": _FieldSpec(int, (1, 1000), label_zh="用户事实最小证据", label_en="Profile min evidence"),
     "profile_min_confidence": _FieldSpec(float, (0.0, 1.0), label_zh="用户事实最小置信", label_en="Profile min confidence"),
@@ -133,10 +129,6 @@ _FIELDS: dict[str, _FieldSpec] = {
     "metamemory_high_threshold": _FieldSpec(float, (0.0, 1.0), label_zh="元记忆高置信阈值", label_en="Metamemory high threshold"),
     "metamemory_low_threshold": _FieldSpec(float, (0.0, 1.0), label_zh="元记忆低置信阈值", label_en="Metamemory low threshold"),
     "metamemory_weights": _FieldSpec(dict, label_zh="元记忆权重", label_en="Metamemory weights"),
-    "enable_episodic_semantic": _FieldSpec(bool, label_zh="启用情节→语义巩固", label_en="Enable episodic semantic"),
-    "consolidation_cluster_min_members": _FieldSpec(int, (1, 1000), label_zh="巩固聚类最小成员", label_en="Consolidation cluster min members"),
-    "consolidation_cluster_min_access": _FieldSpec(int, (1, 10000), label_zh="巩固聚类最小访问", label_en="Consolidation cluster min access"),
-    "consolidation_fact_confidence": _FieldSpec(float, (0.0, 1.0), label_zh="巩固事实置信", label_en="Consolidation fact confidence"),
     "decaycurve_buckets": _FieldSpec(int, (1, 200), label_zh="衰减曲线采样数", label_en="Decay curve buckets"),
     "decaycurve_width": _FieldSpec(int, (8, 200), label_zh="衰减曲线宽度", label_en="Decay curve width"),
     "extra": _FieldSpec(dict, label_zh="扩展字段", label_en="Extra fields"),

@@ -1,6 +1,6 @@
 """Smoke v1.0: valence + intensity + stream + temporal_bucket + schema bias + interference
-+ reconsolidation update window + SWR replay boost + soft forget + GC + narrative + cluster
-+ DG roundtrip regression on v0.9 surface."""
++ reconsolidation update window + SWR replay boost + soft forget + GC + narrative
++ DG roundtrip regression on the v0.9 surface (merge, v1.78.0: no link action)."""
 
 import os, tempfile, sys, types, asyncio, time, json
 
@@ -13,7 +13,7 @@ import main
 from hippocampus import MemoryService, MemoryConfig, Cue
 from hippocampus.valence import ValenceScorer
 from hippocampus.consolidator import ReplayConsolidator
-from main import render_stats, format_narrative, format_cluster
+from main import render_stats, format_narrative
 
 
 def banner(t): print(chr(10) + "=== " + t + " ===")
@@ -148,23 +148,26 @@ def test_schema_bias():
 
 
 def test_interference():
-    banner("interference: link drops target strength")
+    banner("interference: merge drops sibling strength")
     with tempfile.TemporaryDirectory() as td:
         cfg = MemoryConfig(sqlite_path=os.path.join(td, "h.db"), embedding_dim=64,
-                          interference_strength_drop=0.10)
+                          interference_strength_drop=0.10, dedup_enabled=False)
         svc = MemoryService(cfg)
         sid = "s1"; actor = "u1"
         a1 = svc.observe(session_id=sid, actor_id=actor, platform="qq", channel_id="g1",
                          content="I love Americano coffee")
-        a1_str_before = a1.strength
-        # Very similar -> should link
+        # Near-similar sibling stays separate (v1.78.0: no link action), but it is
+        # still a separation candidate, so a merge of a1 must penalise it.
         a2 = svc.observe(session_id=sid, actor_id=actor, platform="qq", channel_id="g1",
                          content="I love Americano coffee very much")
-        # The target (a1) should have been re-fetched and its strength dropped
-        a1_after = svc.store.get(a1.id)
-        print(f"  a1.strength: {a1_str_before:.3f} -> {a1_after.strength:.3f} (drop={a1_str_before - a1_after.strength:.3f})")
-        assert a1_after.strength < a1_str_before, "interference should drop a1's strength"
-        assert a1_str_before - a1_after.strength >= 0.05, "drop should be at least ~interference_strength_drop"
+        a2_str_before = svc.store.get(a2.id).strength
+        # Exact duplicate of a1 -> merge into a1, dropping the other sibling
+        svc.observe(session_id=sid, actor_id=actor, platform="qq", channel_id="g1",
+                    content="I love Americano coffee")
+        a2_after = svc.store.get(a2.id)
+        print(f"  a2.strength: {a2_str_before:.3f} -> {a2_after.strength:.3f} (drop={a2_str_before - a2_after.strength:.3f})")
+        assert a2_after.strength < a2_str_before, "interference should drop the sibling's strength"
+        assert a2_str_before - a2_after.strength >= 0.05, "drop should be at least ~interference_strength_drop"
         try: svc.close()
         except Exception: pass
         del svc
@@ -336,21 +339,20 @@ def test_narrative():
 
 
 def test_dg_regression():
-    banner("DG regression: v0.9 link + cluster still works")
+    banner("DG regression: merge path still works (no link action since v1.78.0)")
     with tempfile.TemporaryDirectory() as td:
-        cfg = MemoryConfig(sqlite_path=os.path.join(td, "h.db"), embedding_dim=64)
+        cfg = MemoryConfig(sqlite_path=os.path.join(td, "h.db"), embedding_dim=64,
+                           dedup_enabled=False)
         svc = MemoryService(cfg)
         sid = "s1"; actor = "u1"
         a1 = svc.observe(session_id=sid, actor_id=actor, platform="qq", channel_id="g1",
                          content="I love Americano coffee")
         a2 = svc.observe(session_id=sid, actor_id=actor, platform="qq", channel_id="g1",
-                         content="I love Americano coffee very much")
-        assert a2.id in a1.similar_to
-        assert a1.id in a2.similar_to
-        # cluster expansion
+                         content="I love Americano coffee")
+        assert a1.id == a2.id, "identical content must merge into the same engram"
+        assert len(svc.store.all(limit=100)) == 1, "merge must leave exactly one engram"
         result = svc.recall(Cue(text="Americano", actor_id=actor, channel_id="g1", k=3))
         assert a1.id in [e.id for e in result.engrams]
-        assert a2.id in [e.id for e in result.engrams]
         try: svc.close()
         except Exception: pass
         del svc

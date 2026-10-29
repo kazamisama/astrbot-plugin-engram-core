@@ -17,8 +17,6 @@
       "mem persona": "/mem persona [actor]",
       "mem activate": "/mem activate <seed1> [seed2 ...]",
       "mem remember": "/mem remember <predicate> <value> [actor]",
-      "mem cluster": "/mem cluster <id>",
-      "mem cluster-list": "/mem cluster-list",
       "mem confidence": "/mem confidence <query>",
       "mem decaycurve": "/mem decaycurve [id|all]",
       "mem consolidate": "/mem consolidate",
@@ -49,11 +47,9 @@
       "mem persona": "view the persona profile",
       "mem activate": "spreading-activation network",
       "mem remember": "write a self-model fact by hand",
-      "mem cluster": "show an engram's similar_to cluster",
-      "mem cluster-list": "list cluster summaries",
       "mem confidence": "recall with metamemory confidence",
       "mem decaycurve": "forgetting-curve visualisation",
-      "mem consolidate": "run consolidation (dedupe/promote/cluster/episodic->semantic)",
+      "mem consolidate": "run consolidation (dedupe / promote / SWR replay)",
       "mem diary": "build yesterday's diary (debug / backfill)",
       "mem forget": "delete an engram (id prefix match)",
       "mem export": "export the store to JSON",
@@ -78,7 +74,6 @@
   "forget": {
     "usage": "usage: /mem forget <id>"
   },
-  "cluster": {},
   "valence": {},
   "stream": {},
   "replay": {},
@@ -116,7 +111,7 @@
       "ok": "forgot engram {id8}: {summary}"
     },
     "stats": {
-      "body": "## stats\nengrams:        {engrams}\nfts indexed:    {fts}\nentities:       {entities}\ntriggers pending: {pending}\ntriggers fired:   {fired}\nembedding:      {embedding}\nllm:            {llm}\n--- v1.0 ---\nvalence:        {valence}\nstream:         {stream}\nsoft-forgotten: {forgotten}\n--- v1.1 ---\nprofile facts:  {profile}\ncluster gists:  {cluster}\n--- v1.2 ---\nmetamemory:     {metamemory}\nepi->sem:       {epi_sem}\nconsolidated facts: {consolidated}\n"
+      "body": "## stats\nengrams:        {engrams}\nfts indexed:    {fts}\nentities:       {entities}\ntriggers pending: {pending}\ntriggers fired:   {fired}\nembedding:      {embedding}\nllm:            {llm}\n--- v1.0 ---\nvalence:        {valence}\nstream:         {stream}\nsoft-forgotten: {forgotten}\n--- v1.1 ---\nprofile facts:  {profile}\n--- v1.2 ---\nmetamemory:     {metamemory}\n"
     },
     "export": {
       "usage": "usage: /mem export <path>",
@@ -127,22 +122,11 @@
       "done": "imported: engrams={engrams} entities={entities} relations={relations} triggers={triggers}; run /mem rebuild to regenerate embeddings{fmt_warn}",
       "fmt_warn": " [warn: export format v{fmt} != current v{cur}]"
     },
-    "cluster": {
-      "usage": "usage: /mem cluster <id>",
-      "header": "## cluster for: {title}",
-      "root": "root: {id8}",
-      "no_links": "(no similar_to links)",
-      "similar": "similar_to: {n} sibling(s)",
-      "via": "via {id8}",
-      "orphan": "(orphan root)",
-      "sibling": "  - {id8}: {title}  [{tag}]"
-    },
     "narrative": {
       "usage": "usage: /mem narrative <topic>",
       "none": "no engrams found for topic: {topic}",
       "header": "## narrative: {topic}",
-      "seeds": "seed engrams: {n}, expanded to: {m}",
-      "linked": "linked:{n}"
+      "seeds": "seed engrams: {n}, showing: {m}"
     },
     "profile": {
       "disabled": "profile layer not initialized (cfg.enable_profile=False)",

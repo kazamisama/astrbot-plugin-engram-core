@@ -217,10 +217,7 @@ def render_stats(service: MemoryService) -> str:
         stream=service.store.stream_breakdown(),
         forgotten=len([e for e in service.store.all(limit=10_000_000) if e.forgotten_at > 0]),
         profile=(len(service.profile.all_facts()) if service.profile is not None else 0),
-        cluster=len(service.store.list_cluster_summaries(limit=10_000)),
         metamemory=(on if service.cfg.metamemory_enabled else off),
-        epi_sem=(on if service.cfg.enable_episodic_semantic else off),
-        consolidated=len([e for e in service.store.all(limit=10_000_000) if e.profile_fact_id]),
     )
 
 
@@ -239,11 +236,8 @@ DEFAULT_STATS = (
     "soft-forgotten: {forgotten}\n"
     "--- v1.1 ---\n"
     "profile facts:  {profile}\n"
-    "cluster gists:  {cluster}\n"
     "--- v1.2 ---\n"
     "metamemory:     {metamemory}\n"
-    "epi->sem:       {epi_sem}\n"
-    "consolidated facts: {consolidated}\n"
 )
 
 def find_and_forget(service: MemoryService, eid: str) -> str:
@@ -376,44 +370,6 @@ DEFAULT_IMPORT_DONE = ("imported: engrams={engrams} entities={entities} "
 DEFAULT_FMT_WARN = " [warn: export format v{fmt} != current v{cur}]"
 
 
-def format_cluster(service, eid):
-    if service is None:
-        return t("cmd.service_down")
-    eid = (eid or "").strip()
-    if not eid:
-        return t_or("cmd.cluster.usage", "usage: /mem cluster <id>")
-    e = service.store.get(eid)
-    if e is None:
-        all_e = service.store.all(limit=10_000_000)
-        matches = [x for x in all_e if x.id.startswith(eid)]
-        if len(matches) == 1:
-            e = matches[0]
-        elif len(matches) > 1:
-            preview = ", ".join(m.id[:8] for m in matches[:5])
-            return t_or("cmd.ambiguous", DEFAULT_AMBIGUOUS).format(
-                n=len(matches), preview=preview)
-        else:
-            return t_or("cmd.not_found", DEFAULT_NOT_FOUND).format(id=eid)
-    from hippocampus.separation import PatternSeparator
-    cluster = PatternSeparator.expand_cluster(
-        [e], fetch=service.store.get, max_total=20)
-    lines = [t_or("cmd.cluster.header", "## cluster for: {title}").format(
-        title=(e.summary or e.content)[:60])]
-    lines.append(t_or("cmd.cluster.root", "root: {id8}").format(id8=e.id[:8]))
-    sibs = cluster[1:]
-    if not sibs:
-        lines.append(t_or("cmd.cluster.no_links", "(no similar_to links)"))
-    else:
-        lines.append(t_or("cmd.cluster.similar", "similar_to: {n} sibling(s)").format(n=len(sibs)))
-        for sib, _s, origin in sibs:
-            if origin:
-                tag = t_or("cmd.cluster.via", "via {id8}").format(id8=origin[:8])
-            else:
-                tag = t_or("cmd.cluster.orphan", "(orphan root)")
-            lines.append(t_or("cmd.cluster.sibling", "  - {id8}: {title}  [{tag}]").format(
-                id8=sib.id[:8], title=(sib.summary or sib.content)[:60], tag=tag))
-    return chr(10).join(lines)
-
 def format_narrative(service, topic, k=8, *, persona_id=None, scope_id=None):
     """Chain engrams that share entities/topics with topic and present
     them as an autobiographical narrative in temporal order."""
@@ -440,10 +396,7 @@ def format_narrative(service, topic, k=8, *, persona_id=None, scope_id=None):
     if not seeds:
         return t_or("cmd.narrative.none", "no engrams found for topic: {topic}").format(topic=topic)
     seeds.sort(key=lambda e: e.created_at)
-    head = seeds[:k]
-    from hippocampus.separation import PatternSeparator
-    cluster = PatternSeparator.expand_cluster(head, fetch=service.store.get, max_total=k * 2)
-    items = [e for e, _s, _o in cluster]
+    items = seeds[:k]
     items.sort(key=lambda e: e.created_at)
     lines = [t_or("cmd.narrative.header", "## narrative: {topic}").format(topic=topic),
              t_or("cmd.narrative.seeds", "seed engrams: {n}, expanded to: {m}").format(
@@ -456,8 +409,6 @@ def format_narrative(service, topic, k=8, *, persona_id=None, scope_id=None):
         elif e.valence < -0.2: v_tag = " [-]"
         s_tag = "" if not e.stream else " (" + e.stream + ")"
         line = "- " + ts + v_tag + s_tag + "  " + (e.summary or e.content)[:80]
-        if e.similar_to:
-            line += "  [" + t_or("cmd.narrative.linked", "linked:{n}").format(n=len(e.similar_to)) + "]"
         lines.append(line)
     return chr(10).join(lines)
 

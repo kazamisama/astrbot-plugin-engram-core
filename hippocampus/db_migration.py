@@ -30,10 +30,8 @@ _COMPAT_MIGRATIONS: List[tuple] = [
         ("stream", "TEXT DEFAULT ''"),
         ("forgotten_at", "REAL DEFAULT 0.0"),
     ]),
-    ("v1.1", [
-        ("cluster_id", "TEXT DEFAULT ''"),
-        ("profile_fact_id", "TEXT DEFAULT ''"),
-    ]),
+    # v1.78.0: the v1.1 cluster_id / profile_fact_id columns are gone. Do not
+    # re-add them here; HippocampalStore._init_schema drops them from old DBs.
     ("v1.2", [
         ("confidence", "REAL DEFAULT 0.5"),
     ]),

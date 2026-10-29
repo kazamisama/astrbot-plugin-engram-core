@@ -20,8 +20,6 @@ COMMAND_TABLE: dict[str, str] = {
     "mem profile":             "recall.cmd_mem_profile",
     "mem persona":             "recall.cmd_mem_persona",
     "mem activate":            "recall.cmd_mem_activate",
-    "mem cluster":             "recall.cmd_mem_cluster",
-    "mem cluster-list":        "recall.cmd_mem_cluster_list",
     "mem confidence":          "recall.cmd_mem_confidence",
     "mem decaycurve":          "recall.cmd_mem_decaycurve",
     "mem narrative":           "recall.cmd_mem_narrative",

@@ -156,35 +156,6 @@ def test_mood_congruence():
         print("  mood-congruence: OK")
 
 
-def test_cluster_summarization():
-    banner("cluster summarization: SWR pass produces gists with cluster_id on engrams")
-    with tempfile.TemporaryDirectory() as td:
-        cfg = MemoryConfig(sqlite_path=os.path.join(td, "h.db"), embedding_dim=64,
-                           cluster_summary_min_size=2)
-        svc = MemoryService(cfg)
-        actor = "u1"
-        for m in [
-            "I am Alice, I love Americano coffee",
-            "I am Alice, I love Americano coffee in the morning",
-            "I am Alice, I really love Americano coffee a lot",
-        ]:
-            svc.observe(session_id="s1", actor_id=actor, platform="qq", channel_id="g1", content=m)
-        res = svc.force_consolidate()
-        gists = svc.store.list_cluster_summaries()
-        print("  consolidate:", res)
-        print("  gists:", len(gists))
-        for g in gists:
-            print("    " + g["cluster_id"][:8] + " (n=" + str(g["member_count"]) + ")  " + g["gist"][:60])
-        assert len(gists) >= 1, "expected at least one cluster gist"
-        # The engrams should have cluster_id assigned
-        any_clustered = any(e.cluster_id for e in svc.store.all(limit=1000))
-        assert any_clustered, "expected at least one engram to be assigned a cluster_id"
-        svc.close()
-        del svc
-        import gc as _gc; _gc.collect()
-        print("  cluster summarization: OK")
-
-
 def test_profile_decay():
     banner("profile decay: old facts lose confidence")
     with tempfile.TemporaryDirectory() as td:
@@ -243,9 +214,10 @@ def test_main_format_helpers():
 
 
 def test_v09_v10_regress():
-    banner("regression: v0.9 link + v1.0 SWR + decay still work on top of v1.1")
+    banner("regression: v0.9 merge + v1.0 SWR + decay still work on top of v1.1")
     with tempfile.TemporaryDirectory() as td:
-        cfg = MemoryConfig(sqlite_path=os.path.join(td, "h.db"), embedding_dim=64)
+        cfg = MemoryConfig(sqlite_path=os.path.join(td, "h.db"), embedding_dim=64,
+                           dedup_enabled=False)
         svc = MemoryService(cfg)
         actor = "u1"
         for m in [
@@ -254,15 +226,12 @@ def test_v09_v10_regress():
             "I am Alice, I really love Americano coffee",
         ]:
             svc.observe(session_id="s1", actor_id=actor, platform="qq", channel_id="g1", content=m)
-        # DG link
+        # DG merge: identical text collapses into one engram
         a1 = svc.observe(session_id="s1", actor_id=actor, platform="qq", channel_id="g1",
                          content="I love Americano coffee")
         a2 = svc.observe(session_id="s1", actor_id=actor, platform="qq", channel_id="g1",
-                         content="I love Americano coffee very much")
-        # After several similar observes, similar_to should be non-empty
-        engrams = svc.store.list_active(limit=100)
-        cluster_engrams = [e for e in engrams if e.similar_to]
-        assert len(cluster_engrams) >= 2, "v0.9 DG linking regressed"
+                         content="I love Americano coffee")
+        assert a1.id == a2.id, "v0.9 DG merge regressed"
         # SWR replay produces a positive replayed count
         res = svc.force_consolidate()
         assert res.get("replayed", 0) >= 0
@@ -281,7 +250,6 @@ if __name__ == "__main__":
     test_spreading_activation()
     test_recall_with_activation()
     test_mood_congruence()
-    test_cluster_summarization()
     test_profile_decay()
     test_main_format_helpers()
     test_v09_v10_regress()

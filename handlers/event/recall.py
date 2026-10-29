@@ -2,7 +2,7 @@
 
 Split from main.py at v1.4.x B6. Owns the 8 command handlers in
 the "read" family: /recall, /mem search, /mem profile, /mem activate,
-/mem cluster, /mem cluster-list, /mem confidence, /mem decaycurve,
+/mem confidence, /mem decaycurve,
 /mem narrative. Decorators stay on HippocampusStar in main.py; this
 class holds business logic only.
 """
@@ -121,27 +121,6 @@ class RecallHandler:
         persona_scope = (meta.get("persona_id") or "") if iso else None
         scope_scope = (meta.get("scope_id") or "") if iso else None
         yield event.plain_result(format_activation(self.service, seeds, persona_id=persona_scope, scope_id=scope_scope))
-
-    async def cmd_mem_cluster(self, event, eid: str):
-        from ..format import format_cluster
-        if self.service is None:
-            yield event.plain_result("Memory service not initialized.")
-            return
-        yield event.plain_result(format_cluster(self.service, eid.strip()))
-
-    async def cmd_mem_cluster_list(self, event):
-        if self.service is None:
-            yield event.plain_result("Memory service not initialized.")
-            return
-        rows = self.service.store.list_cluster_summaries(limit=50)
-        if not rows:
-            yield event.plain_result("(no cluster summaries yet - try /mem replay)")
-            return
-        lines = ["## cluster summaries (" + str(len(rows)) + ")"]
-        for r in rows:
-            lines.append("- " + r["cluster_id"][:8]
-                         + " (n=" + str(r["member_count"]) + ")  " + r["gist"])
-        yield event.plain_result("\n".join(lines))
 
     async def cmd_mem_confidence(self, event, query: str = ""):
         from ..format import format_confidence

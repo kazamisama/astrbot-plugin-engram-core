@@ -95,11 +95,10 @@ class MemoryConfig:
     cold_archive_min_age_days: float = 60.0  # only archive cold engrams older than this
     # --- v0.9: 模式分离 (DG) ---
     enable_separation: bool = True
-    separation_max_links: int = 5  # per engram,双向 similar_to 链总长度上限
     # --- v1.0: temporal context ---
     temporal_bucket_seconds: int = 3600  # 1 hour buckets; 60 = minutes, 86400 = days
     # --- v1.0: proactive interference cost ---
-    interference_strength_drop: float = 0.05  # strength penalty when a similar engram links/merges
+    interference_strength_drop: float = 0.05  # strength penalty applied to similar siblings when two engrams merge
     # --- v1.0: reconsolidation update ---
     reconsolidation_update_enabled: bool = True  # allow new observations to update recalled engrams in lock window
     # --- v1.0: SWR replay ---
@@ -114,10 +113,6 @@ class MemoryConfig:
     # --- v1.1: mood-congruent recall (Bower 1981) ---
     mood_congruence_enabled: bool = True
     mood_congruence_weight: float = 0.10  # bonus when |cue_valence - engram_valence| is small
-    # --- v1.1: cluster auto-summarization (REM / dream synthesis step) ---
-    enable_cluster_summarization: bool = True
-    cluster_summary_min_size: int = 2   # need at least N siblings to bother summarizing
-    cluster_summary_max_members: int = 8  # cap how many we feed into the summarizer
     # --- v1.1: user self-model (neocortex analog) ---
     enable_profile: bool = True
     profile_min_evidence: int = 2       # relation must back a fact >= N times to promote
@@ -132,11 +127,6 @@ class MemoryConfig:
         "stored": 0.20, "strength": 0.30, "retrieval": 0.30,
         "recency": 0.10, "access": 0.10,
     })
-    # --- v1.2: episodic -> semantic consolidation (cluster abstraction) ---
-    enable_episodic_semantic: bool = True
-    consolidation_cluster_min_members: int = 3   # cluster must have >= N members to abstract
-    consolidation_cluster_min_access: int = 2    # and total access_count >= N (it kept coming back)
-    consolidation_fact_confidence: float = 0.7   # confidence of facts minted by consolidation
     # --- v1.2: forgetting-curve visualization ---
     decaycurve_buckets: int = 12   # how many time points to sample on the curve
     decaycurve_width: int = 32     # ASCII bar width

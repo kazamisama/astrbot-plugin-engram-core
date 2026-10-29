@@ -89,6 +89,10 @@ def test_old_db_migration_and_index():
     try:
         old = svc.store.get("old1")
         assert old is not None and old.persona_id == "", old
+        # v1.78.0: opening a legacy DB drops the dead similar-to cluster columns
+        cols = {r[1] for r in svc.store._conn.execute("PRAGMA table_info(engrams)")}
+        for gone in ("similar_to", "cluster_id", "profile_fact_id"):
+            assert gone not in cols, ("legacy column survived", gone, cols)
         idx = {r[1] for r in svc.store._conn.execute("PRAGMA index_list(engrams)").fetchall()}
         assert "idx_persona" in idx, idx
         svc.observe(session_id="s", actor_id="a", platform="qq", channel_id="c",

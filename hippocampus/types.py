@@ -32,7 +32,6 @@ class Engram:
     reconsolidation_lock_until: float = 0.0
     supersedes: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
-    similar_to: list[str] = field(default_factory=list)
     memory_type: str = "episodic"   # episodic | semantic | prospective
     promoted_at: float = 0.0        # 升级为 semantic 的时间
     embedding_model: str = ""      # 标识用哪个 embedding provider,recall 时按此过滤
@@ -42,9 +41,6 @@ class Engram:
     temporal_bucket: int = 0        # 离散时间桶 id
     stream: str = ""               # "what" | "where_when" | ""
     forgotten_at: float = 0.0       # 软忘记时间戳
-    # --- v1.1: cluster identity + profile binding ---
-    cluster_id: str = ""              # 相似链构建的组 id(互相链接的 similar_to 一个 clique)
-    profile_fact_id: str = ""         # 如果是表型支撑出来的知识, 链接到 profile_facts.id
     # --- v1.2: metamemory (feeling-of-knowing / confidence) ---
     confidence: float = 0.5           # 元记忆:对这条记忆的主观确定度, [0, 1]
     # --- v1.13: hot/warm/cold tier cache (derived; see hippocampus.tiering) ---
@@ -55,7 +51,7 @@ class Engram:
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "Engram":
         d = dict(row)
-        for k in ("topics", "entities", "entity_refs", "supersedes", "tags", "similar_to", "source_relation_ids", "source_engram_ids"):
+        for k in ("topics", "entities", "entity_refs", "supersedes", "tags", "source_relation_ids", "source_engram_ids"):
             v = d.get(k)
             if isinstance(v, str):
                 d[k] = json.loads(v) if v else []

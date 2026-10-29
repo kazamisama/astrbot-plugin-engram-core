@@ -68,8 +68,6 @@ def test_migration_idempotent_on_fresh_v14():
                 temporal_bucket INTEGER DEFAULT 0,
                 stream TEXT DEFAULT '',
                 forgotten_at REAL DEFAULT 0.0,
-                cluster_id TEXT DEFAULT '',
-                profile_fact_id TEXT DEFAULT '',
                 confidence REAL DEFAULT 0.5,
                 tier TEXT DEFAULT 'hot',
                 persona_id TEXT DEFAULT ''
@@ -102,14 +100,12 @@ def test_migration_adds_missing_columns():
         """)
         from hippocampus.db_migration import run_migrations
         ran = run_migrations(conn)
-        # All 3 versions should have been applied
+        # v1.0 / v1.2 and later migrations should have been applied
         assert "v1.0" in ran, ran
-        assert "v1.1" in ran, ran
         assert "v1.2" in ran, ran
         cols = {r[1] for r in conn.execute("PRAGMA table_info(engrams)")}
         for c in ["valence", "intensity", "temporal_bucket", "stream",
-                  "forgotten_at", "cluster_id", "profile_fact_id",
-                  "confidence"]:
+                  "forgotten_at", "confidence"]:
             assert c in cols, "missing column " + c + " in " + str(cols)
         # Re-run is idempotent
         ran2 = run_migrations(conn)

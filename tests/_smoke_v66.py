@@ -3,7 +3,7 @@
 Covers:
 - Cue.session_id passed through to activate_with_context -> build_context_seeds
 - HippocampalStore.recent_for_session() returns session-scoped engrams
-- MMR rerank penalizes similar engrams (similar_to links)
+- MMR rerank penalizes near-duplicate engrams (embedding cosine, v1.78.0)
 - MMR disabled via config skips rerank entirely
 - Regression: v64-v65 still pass
 """
@@ -57,19 +57,27 @@ def main():
         assert len(result.engrams) > 0
         print(f"[OK] session_id on Cue: {len(result.engrams)} results")
 
-        # ---- test 4: MMR rerank reduces cluster redundancy ----
-        # Create 3 similar engrams via similar_to links
-        for eid in (e1.id, e2.id, e3.id):
-            obj = svc.store.get(eid)
-            obj.similar_to = [x for x in (e1.id, e2.id, e3.id) if x != eid]
-            svc.store.upsert(obj)
+        # ---- test 4: MMR rerank demotes an embedding near-duplicate ----
+        from hippocampus.retrieval.dual_route import _ScoredCandidate
+        from hippocampus.types import Engram
+
+        def _cand(eid, emb, score):
+            return _ScoredCandidate(
+                item=Engram(id=eid, content=eid, embedding=emb),
+                score=score, breakdown={})
+
+        a = _cand("cand-a", [1.0, 0.0], 0.90)
+        b = _cand("cand-b", [1.0, 0.0], 0.89)   # near-duplicate of a
+        c = _cand("cand-c", [0.0, 1.0], 0.80)   # diverse
         cfg = DualRouteConfig(mmr_enabled=True, mmr_lambda=0.7)
         dr = DualRouteRetriever(svc, cfg)
-        cue2 = Cue(text="cats", k=5)
-        result2 = dr.search(cue2)
-        # Check no consecutive duplicates in the similar cluster
+        ranked = dr._mmr_rerank_ranked([a, b, c], 2)
+        order = [x.item.id for x in ranked]
+        assert order[0] == "cand-a", order
+        assert order[1] == "cand-c", ("near-duplicate should be demoted", order)
+        result2 = dr.search(Cue(text="cats", k=5))
         found_ids = [e.id for e in result2.engrams]
-        print(f"[OK] MMR rerank: {len(result2.engrams)} results, ids={[x[:6] for x in found_ids]}")
+        print(f"[OK] MMR rerank: order={order} search_ids={[x[:6] for x in found_ids]}")
 
         # ---- test 5: MMR disabled ----
         cfg3 = DualRouteConfig(mmr_enabled=False)

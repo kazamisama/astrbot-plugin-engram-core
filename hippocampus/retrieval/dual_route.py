@@ -43,6 +43,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Callable
 
 from ..types import Cue, Engram, RecallResult
+from ..storage import _cos
 from .rrf import RRFFusion, RankedCandidate, FusedCandidate
 from hippocampus.observability import note as _obs_note
 
@@ -70,8 +71,8 @@ class DualRouteConfig:
     # v1.63: MMR diversity rerank. After RRF fusion, apply Maximal
     # Marginal Relevance to reduce redundancy in the top-k.
     # lambda=1.0 = pure relevance, lambda=0.0 = pure diversity.
-    # Uses similar_to links as the diversity distance metric
-    # (lightweight; no embedding load required).
+    # v1.78.0: the diversity metric is embedding cosine (the similar_to
+    # link graph is gone); an engram without a vector simply costs nothing.
     mmr_enabled: bool = True
     mmr_lambda: float = 0.75
     # v1.62: spreading-activation route (pre-excitation + context spread).
@@ -287,9 +288,10 @@ class DualRouteRetriever:
         """Run all routes, apply weighted scoring + MMR, return top-k.
 
         v1.77.0: this is THE retrieval path now (service.recall delegates
-        here). DG cluster expansion and metamemory confidences were ported
-        from the retired PatternCompleter so unifying the two pipelines did
-        not silently drop them.
+        here). The metamemory confidences were ported from the retired
+        PatternCompleter so unifying the two pipelines did not silently drop
+        them. v1.78.0 removed the DG cluster expansion (its similar_to links
+        had no writer under the default summary pipeline).
         """
         import time as _time
         ranked = self._rank(cue, embedding_model=embedding_model)
@@ -305,22 +307,6 @@ class DualRouteRetriever:
             _obs_note("dual_route", "search")
         cfg = self._service.cfg
         now = _time.time()
-        if bool(getattr(cfg, "enable_separation", False)) and engrams:
-            try:
-                from ..separation import PatternSeparator
-                score_by_id = {e.id: s for e, s in zip(engrams, scores)}
-                expanded = PatternSeparator.expand_cluster(
-                    list(engrams), fetch=self._service.store.get,
-                    max_total=max(cue.k * 2, cue.k + 4))
-                new_engrams: list[Engram] = []
-                new_scores: list[float] = []
-                for e, factor, origin in expanded:
-                    new_engrams.append(e)
-                    base = score_by_id.get(e.id, score_by_id.get(origin, 0.0))
-                    new_scores.append(base * factor)
-                engrams, scores = new_engrams, new_scores
-            except Exception as ex:
-                print("[hippocampus] separation expansion failed: " + repr(ex))
         confidences = None
         if bool(getattr(cfg, "metamemory_enabled", False)) and engrams:
             try:
@@ -335,28 +321,28 @@ class DualRouteRetriever:
         return RecallResult(engrams=engrams, scores=scores, confidences=confidences)
 
     def _mmr_rerank_ranked(self, candidates: list[_ScoredCandidate], k: int) -> list[_ScoredCandidate]:
-        """MMR over final weighted scores using similar_to as distance proxy."""
+        """MMR over final weighted scores using embedding cosine for redundancy.
+
+        v1.78.0: the similar_to link graph is gone, so the diversity term now
+        subtracts the highest cosine similarity to an already-selected engram.
+        An engram without a vector scores 0.0 against everything (no penalty),
+        and lambda=1.0 degenerates to pure relevance.
+        """
         if len(candidates) <= max(1, k):
             return list(candidates)
         lamb = float(self.cfg.mmr_lambda)
         selected: list[_ScoredCandidate] = []
         remaining = list(candidates)
-        sim_index = {}
-        for c in remaining:
-            eid = getattr(c.item, "id", None) or str(id(c.item))
-            sim_index[eid] = set(getattr(c.item, "similar_to", None) or [])
         for _ in range(max(1, k)):
             best = None; best_score = -999.0
             for c in remaining:
-                div_penalty = 0.0
-                cid = getattr(c.item, "id", "")
+                max_sim = 0.0
                 for sel in selected:
-                    sid = getattr(sel.item, "id", "")
-                    if cid in sim_index.get(sid, set()):
-                        div_penalty += 0.5
-                    if sid in sim_index.get(cid, set()):
-                        div_penalty += 0.5
-                mmr = lamb * c.score - (1.0 - lamb) * div_penalty
+                    sim = _cos(getattr(c.item, "embedding", None) or [],
+                               getattr(sel.item, "embedding", None) or [])
+                    if sim > max_sim:
+                        max_sim = sim
+                mmr = lamb * c.score - (1.0 - lamb) * max_sim
                 if mmr > best_score:
                     best_score = mmr; best = c
             if best is None:

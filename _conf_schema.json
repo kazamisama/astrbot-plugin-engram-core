@@ -77,12 +77,6 @@
         "description": "启用元记忆",
         "hint": "追踪记忆的置信度与来源等元信息。"
       },
-      "enable_episodic_semantic": {
-        "type": "bool",
-        "default": true,
-        "description": "启用情景到语义的固化",
-        "hint": "重放时将情景记忆固化为语义知识。"
-      },
       "auto_inject_enabled": {
         "type": "bool",
         "default": true,
@@ -532,7 +526,7 @@
         "type": "float",
         "default": 0.75,
         "description": "相似判定阈值",
-        "hint": "相似度达到该值（但未到模式分离阈值）时建立 similar_to 双向关联，召回时可一并带出。默认 0.75。"
+        "hint": "合并路径对同批相似记忆施加干扰强度惩罚的判定线。默认 0.75。"
       },
       "recall_candidate_k": {
         "type": "int",
@@ -622,13 +616,7 @@
         "type": "bool",
         "default": true,
         "description": "启用模式分离（DG）",
-        "hint": "召回时把相似但不同的记忆一起带出并标注，避免张冠李戴。默认开启。"
-      },
-      "separation_max_links": {
-        "type": "int",
-        "default": 5,
-        "description": "相似链长度上限",
-        "hint": "单条记忆最多关联多少个相似记忆（similar_to 链总长度上限）。默认 5。"
+        "hint": "写入时相似度达到合并阈值即合并，否则作为新记忆单独保存（DG 模式分离）。默认开启。"
       },
       "activation_decay": {
         "type": "float",
@@ -665,24 +653,6 @@
         "default": 0.1,
         "description": "心境一致权重",
         "hint": "情绪相近记忆的加分权重，0 表示不加分。默认 0.1。"
-      },
-      "enable_cluster_summarization": {
-        "type": "bool",
-        "default": true,
-        "description": "启用聚类摘要",
-        "hint": "把相似记忆簇总结成一条更高层的记忆（REM 合成）。默认开启。"
-      },
-      "cluster_summary_min_size": {
-        "type": "int",
-        "default": 2,
-        "description": "聚类最小成员数",
-        "hint": "一个簇至少有几条成员才值得生成摘要。默认 2。"
-      },
-      "cluster_summary_max_members": {
-        "type": "int",
-        "default": 8,
-        "description": "聚类最大成员数",
-        "hint": "生成簇摘要时最多把多少条成员喂给 LLM。默认 8。"
       },
       "enable_profile": {
         "type": "bool",
@@ -756,24 +726,6 @@
             "hint": "被召回次数的权重。"
           }
         }
-      },
-      "consolidation_cluster_min_members": {
-        "type": "int",
-        "default": 3,
-        "description": "巩固聚类最小成员数",
-        "hint": "聚类抽象至少需要多少条成员记忆。默认 3。"
-      },
-      "consolidation_cluster_min_access": {
-        "type": "int",
-        "default": 2,
-        "description": "巩固聚类最小访问数",
-        "hint": "簇内成员总召回次数达到该值才做抽象（说明它反复被想起）。默认 2。"
-      },
-      "consolidation_fact_confidence": {
-        "type": "float",
-        "default": 0.7,
-        "description": "巩固新事实置信度",
-        "hint": "由整合/抽象新造事实的初始置信度。默认 0.7。"
       },
       "decaycurve_buckets": {
         "type": "int",

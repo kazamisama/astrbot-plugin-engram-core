@@ -117,15 +117,13 @@ class ManageHandler:
             yield event.plain_result("Memory service not initialized.")
             return
         try:
-            # v1.77.0: use the service's consolidator -- it carries the llm /
-            # semantic / profile handles. Building a bare one here silently
-            # dropped cluster summaries and episodic->semantic abstraction.
+            # v1.77.0: use the service's consolidator, not a locally built one
+            # (the bare instance silently diverged from the service wiring).
             res = self.service.consolidator.step()
             msg = ("replay: merged=" + str(res.get("merged", 0))
                    + " promoted=" + str(res.get("promoted", 0))
                    + " archived=" + str(res.get("archived", 0))
-                   + " replayed=" + str(res.get("replayed", 0))
-                   + " abstracted=" + str(res.get("abstracted", 0)))
+                   + " replayed=" + str(res.get("replayed", 0)))
             yield event.plain_result(msg)
         except Exception as e:
             yield event.plain_result("ERR: " + repr(e))
