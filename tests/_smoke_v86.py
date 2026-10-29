@@ -844,10 +844,10 @@ def test_reembed_stale_repairs_mismatched_vectors():
         svc.store.upsert(ok)
         svc.store.upsert(stale)
 
-        assert svc.store.count_by_embedding_model("astrmock") == 1
+        assert svc.store.get(stale.id).embedding_model == "astrmock"
         n = svc.reembed_stale(limit=10)
         assert n == 1, f"expected 1 re-embedded row, got {n}"
-        assert svc.store.count_by_embedding_model("astrmock") == 0, \
+        assert svc.store.get(stale.id).embedding_model == "hash", \
             "the stale row must be relabelled to the active provider"
         got = svc.store.get(ok.id)
         assert (got.embedding_model or "") == "hash", \

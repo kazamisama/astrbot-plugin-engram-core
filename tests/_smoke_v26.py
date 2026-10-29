@@ -1,10 +1,9 @@
-"""Smoke v1.4.x: B10 - BackupManager + db_migration.
+"""Smoke v1.4.x: B10 - BackupManager + schema upgrade.
 
 Scope:
-- hippocampus.db_migration.run_migrations is idempotent across
-  v1.0/v1.1/v1.2 column-append migrations; v1.3/v1.4 are
-  CREATE-TABLE-IF-NOT-EXISTS in their own store files (atom_store,
-  graph_store) and are not part of this module.
+- hippocampus.sqlite_util.ensure_columns is the single upgrade path
+  (v1.79.1): every store declares the columns current code needs and an
+  older database gets them appended before indexes/triggers reference them.
 - hippocampus.managers.backup_manager.BackupManager does raw .db
   copies + .json sidecar metadata + retention policy.
 - PluginInitializer wires backup_manager + a daemon thread scheduler
@@ -17,8 +16,8 @@ Scope:
   backup_keep_weekly / backup_keep_monthly).
 
 Tests:
-- run_migrations is a no-op on a fresh v1.4 schema
-- run_migrations adds missing v1.0/v1.1/v1.2 columns to a pre-v1.0 db
+- opening a pre-v1 engrams table upgrades it in place and stays usable
+- ensure_columns adds once, is idempotent, and tolerates a missing table
 - BackupManager.create + .db + .json sidecar with metadata
 - BackupManager.list_backups returns newest first with full record
 - BackupManager.restore overwrites source, restore preserves data
@@ -52,69 +51,65 @@ def _new_db():
     return db
 
 
-def test_migration_idempotent_on_fresh_v14():
-    banner("db_migration.run_migrations no-op on fresh v1.4 schema")
+def test_schema_upgrade_adds_missing_columns():
+    banner("opening a pre-v1 engrams table upgrades it in place")
     import sqlite3
+    from hippocampus.embeddings import HashEmbeddingProvider
+    from hippocampus.storage import HippocampalStore
     db = _new_db()
     try:
         conn = sqlite3.connect(db)
-        # Mimic v1.4 final schema (already has confidence column)
+        # A table from before the current schema: id + content only.
         conn.executescript("""
-            CREATE TABLE engrams (
-                id TEXT PRIMARY KEY,
-                content TEXT,
-                valence REAL DEFAULT 0.0,
-                intensity REAL DEFAULT 0.0,
-                temporal_bucket INTEGER DEFAULT 0,
-                stream TEXT DEFAULT '',
-                forgotten_at REAL DEFAULT 0.0,
-                confidence REAL DEFAULT 0.5,
-                tier TEXT DEFAULT 'hot',
-                persona_id TEXT DEFAULT ''
-            );
+            CREATE TABLE engrams (id TEXT PRIMARY KEY, content TEXT);
+            INSERT INTO engrams(id, content) VALUES ('old1', 'legacy memory');
         """)
-        from hippocampus.db_migration import run_migrations
-        ran = run_migrations(conn)
-        assert ran == ["v1.76.6"], "expected scope migration on legacy db, got " + str(ran)
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(engrams)")}
-        assert "scope_id" in cols
+        conn.commit()
+        conn.close()
+        st = HippocampalStore(db, HashEmbeddingProvider(64))
+        try:
+            cols = {r[1] for r in st._conn.execute(
+                "PRAGMA table_info(engrams)")}
+            for need in ("persona_id", "scope_id", "forgotten_at", "tier",
+                         "confidence", "fts_text", "embedding_model",
+                         "valence", "entity_refs"):
+                assert need in cols, "missing column " + need
+            idx = {r[1] for r in st._conn.execute("PRAGMA index_list(engrams)")}
+            assert {"idx_persona", "idx_scope"} <= idx, idx
+            got = st.get("old1")
+            assert got is not None and got.content == "legacy memory"
+            # a write through the full column list proves the upgrade is usable
+            from hippocampus.types import Engram
+            st.upsert(Engram(content="new row", summary="new row"))
+            assert len(st.all(limit=10)) == 2
+        finally:
+            st.close()
+    finally:
+        try: os.unlink(db)
+        except Exception: pass
+    print("  pre-v1 table upgraded, old row readable, write works: OK")
+
+
+def test_ensure_columns_is_idempotent():
+    banner("ensure_columns: adds once, then reports nothing")
+    import sqlite3
+    from hippocampus.sqlite_util import ensure_columns
+    db = _new_db()
+    try:
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY)")
+        spec = (("a", "TEXT DEFAULT ''"), ("b", "REAL DEFAULT 0.0"))
+        assert ensure_columns(conn, "t", spec) == ["a", "b"]
+        assert ensure_columns(conn, "t", spec) == []
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(t)")}
+        assert {"a", "b"} <= cols
+        # A table that does not exist yet is not an error.
+        assert ensure_columns(conn, "nope", spec) == []
         conn.close()
     finally:
         try: os.unlink(db)
         except Exception: pass
-    print("  no-op on fresh v1.4: OK")
-
-
-def test_migration_adds_missing_columns():
-    banner("db_migration.run_migrations backfills v1.0/v1.1/v1.2 columns")
-    import sqlite3
-    db = _new_db()
-    try:
-        conn = sqlite3.connect(db)
-        # Pre-v1.0 schema: no valence, no intensity, ..., no confidence
-        conn.executescript("""
-            CREATE TABLE engrams (
-                id TEXT PRIMARY KEY,
-                content TEXT
-            );
-        """)
-        from hippocampus.db_migration import run_migrations
-        ran = run_migrations(conn)
-        # v1.0 / v1.2 and later migrations should have been applied
-        assert "v1.0" in ran, ran
-        assert "v1.2" in ran, ran
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(engrams)")}
-        for c in ["valence", "intensity", "temporal_bucket", "stream",
-                  "forgotten_at", "confidence"]:
-            assert c in cols, "missing column " + c + " in " + str(cols)
-        # Re-run is idempotent
-        ran2 = run_migrations(conn)
-        assert ran2 == [], "expected idempotent, got " + str(ran2)
-        conn.close()
-    finally:
-        try: os.unlink(db)
-        except Exception: pass
-    print("  v1.0 + v1.1 + v1.2 backfill, idempotent: OK")
+    print("  adds once, then no-op: OK")
 
 
 def test_backup_create_list_restore():
@@ -334,8 +329,8 @@ def test_plugin_initializer_backup_manager_attr():
 
 
 def main():
-    test_migration_idempotent_on_fresh_v14()
-    test_migration_adds_missing_columns()
+    test_schema_upgrade_adds_missing_columns()
+    test_ensure_columns_is_idempotent()
     test_backup_create_list_restore()
     test_backup_cleanup_keeps_recent()
     test_memory_config_has_5_backup_fields()

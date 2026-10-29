@@ -16,6 +16,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from hippocampus.observability import note as _obs_note
+from .sqlite_util import ensure_columns
 
 
 def _now() -> float:
@@ -91,13 +92,9 @@ class PersonaStore:
             );
             """
         )
-        # Back-compat: add tags column to pre-v1.9 personas tables.
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(personas)")}
-        if "tags" not in cols:
-            try:
-                conn.execute("ALTER TABLE personas ADD COLUMN tags TEXT")
-            except Exception:
-                _obs_note("persona", "_init_schema")
+        # v1.9: `tags` is part of the current schema; an older personas table
+        # gets it through the shared upgrade path instead of a local ALTER.
+        ensure_columns(conn, "personas", (("tags", "TEXT"),))
         conn.commit()
 
     def close(self) -> None:

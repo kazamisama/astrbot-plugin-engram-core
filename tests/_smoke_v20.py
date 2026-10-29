@@ -12,15 +12,15 @@ Scope of B4: data layer + retrieval. Does NOT replace semantic.py.
 
 Tests:
 - GraphStore reverse index: add / lookup / remove / stats
-- GraphStore drops a legacy graph_adjacency table on open
+- GraphStore ignores (does not drop) a legacy graph_adjacency table
 - GraphStore.engrams_for reverse index
 - GraphKeywordRetriever exact / partial / alias matches
 - GraphVectorRetriever cosine ordering
 - GraphRetriever fusion: top keyword anchor + top vector anchor
 - GraphRetriever.search produces RankedCandidate list ready for RRF
 - DualRouteRetriever end-to-end still works (text -> graph -> engrams)
-- Legacy fallback: when graph_engram_refs is empty but engram.entity_refs
-  is populated, GraphRetriever.search still returns hits (v1.3 path)
+- No fallback: refs and graph_engram_refs are written by one helper;
+  a graph route miss no longer scans every engram (v1.79.1)
 """
 import os, sys, types, tempfile
 
@@ -78,8 +78,8 @@ def test_graphstore_engram_refs():
         except Exception: pass
 
 
-def test_graphstore_drops_legacy_adjacency():
-    banner("GraphStore drops a legacy graph_adjacency table on open")
+def test_graphstore_ignores_legacy_adjacency():
+    banner("GraphStore ignores a legacy graph_adjacency table on open")
     db = _new_db()
     try:
         import sqlite3
@@ -92,9 +92,12 @@ def test_graphstore_drops_legacy_adjacency():
         gs = GraphStore(db)
         names = {r[0] for r in gs._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "graph_adjacency" not in names, names
+        # v1.79.1: old tables are left alone; the current code never reads
+        # them, so removing them on open was a permanent migration patch.
+        assert "graph_adjacency" in names, names
+        assert gs.stats() == {"engram_refs": 0}, gs.stats()
         gs.close()
-        print("  legacy table dropped: OK")
+        print("  legacy table ignored, current surface intact: OK")
     finally:
         import gc; gc.collect()
         try: os.unlink(db)
@@ -212,24 +215,24 @@ def test_graph_retriever_fusion_via_service():
                                             object_id="ent_am", confidence=0.9))
         e1 = svc.observe(session_id="s1", actor_id="u1", platform="mock",
                          channel_id="c1", content="Alice loves Americano coffee")
-        # Mirror the legacy entity_refs path (this is what v17 tests do too).
-        e1.entity_refs = ["ent_alice", "ent_am"]
+        # v1.79.1: refs and the reverse index are written by ONE helper; the
+        # dataclass alone is no longer enough (no scan fallback).
+        svc._link_engram_refs(e1, ["ent_alice", "ent_am"])
         svc.store.upsert(e1)
-        # Trigger dual route; graph route should hit Alice via fallback.
+        # Trigger dual route; the graph route hits Alice via the index.
         dr = DualRouteRetriever(svc, DualRouteConfig())
         res = dr.search(Cue(text="tell me about Alice", k=5))
         assert len(res.engrams) >= 1
         # _matched_entity must be set on at least one graph hit
         hits = dr.explain(Cue(text="tell me about Alice", k=5))
         assert any(h.route.value == "graph" for h in hits), \
-            "graph route should still find Alice via entity_refs fallback"
+            "graph route should find Alice through the reverse index"
         # Direct GraphRetriever invocation
         gr = GraphRetriever(svc)
         rcs = gr.search(Cue(text="Alice Americano", k=5))
-        # Empty graph_engram_refs, but fallback returns at least the e1
-        assert rcs, "GraphRetriever should fall back to entity_refs path"
+        assert rcs, "GraphRetriever should hit the indexed refs"
         assert any(getattr(rc, "_matched_entity", "") for rc in rcs)
-        print("  GraphRetriever fallback: OK")
+        print("  GraphRetriever indexed refs: OK")
     finally:
         import gc; del svc; gc.collect()
         try: os.unlink(db)
@@ -278,7 +281,7 @@ def test_public_exports():
 
 def main():
     test_graphstore_engram_refs()
-    test_graphstore_drops_legacy_adjacency()
+    test_graphstore_ignores_legacy_adjacency()
     test_keyword_retriever_scoring()
     test_vector_retriever_ordering()
     test_graph_retriever_fusion_via_service()

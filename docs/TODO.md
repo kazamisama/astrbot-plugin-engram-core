@@ -587,3 +587,59 @@ R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事
 - 宽泛 except 仍有 228+ 处（v1.77.0 已把 92 处纯 `pass` 改为 `_obs_note`）；进一步收敛
   需要按模块逐个判断哪些异常是契约的一部分，不是静态规则能回答的。
 - `format.py` 拆分后的 5 个模块仍可再按需细化（当前最大函数已 ≤ 80 行，见 §10）。
+
+## 15. v1.79.1（2026-10-29）：撤掉为旧数据打的补丁
+
+### 触发
+
+用户：「再检查一遍，注意我们要把目光放长远，不一定需要为了旧数据而打补丁」。
+原则落成一句话：current code 需要的列必须保证存在；但「为了少几个废弃列/表而在启动或
+召回路径上永久保留补丁」不划算——补丁会腐烂，废弃结构本身不花钱。
+
+### 证据（哪些是补丁）
+
+| 位置 | 补丁 | 为什么不该留 |
+| --- | --- | --- |
+| `hippocampus/retrieval/graph_retriever.py` | 反查为空时 `store.all(limit=10_000)` | 每次未命中都全表扫；掩盖了写路径的 bug |
+| `hippocampus/activation.py` | `_neighbors_entity` 的 `store.all(limit=10_000_000)` | 更极端；graph 懒建时生产会走到 |
+| `hippocampus/db_migration.py` | 6 条按版本 ALTER，每次打开都 PRAGMA | 新增列要改两处；PRAGMA 常驻启动路径 |
+| `hippocampus/storage.py` / `graph_store.py` | 打开旧库就 DROP `rebuild_state` / `cluster_summaries` / 三列 / `graph_adjacency` | 删除无人读取的结构换不来收益 |
+| `handlers/init.py` | `count_by_embedding_model(old)` 两处计数驱动 stale re-embed | v1.77.1 的指纹 + 空向量检查已覆盖，计数分支是死路 |
+
+根因（graph 两份表示）：`_mirror_relation_to_semantic()` 在 engram 落库后修改 dataclass，
+既没持久化也没写反查索引。线上：556 engram、437 带 `entity_refs`、397 已索引、
+**40 个缺失（111 对）**、`graph_engram_refs` 992 行。
+
+### 已 ship
+
+| 项 | 做法 | 影响面 |
+| --- | --- | --- |
+| 升级路径统一 | `sqlite_util.ensure_columns()`：缺列就 ALTER，只加不删 | storage / atom_store / diary_store / relation_store / persona |
+| schema 单一事实源 | `_ENGRAM_COLUMNS`（32 列）生成 CREATE 与升级；索引/FTS/触发器在补列后建 | `hippocampus/storage.py` |
+| graph refs 单写者 | `_link_engram_refs()` 同时写 `entity_refs` 与反查索引；`store_summary()` 变化才重存 | `hippocampus/service.py` |
+| 一次性回填 | `_mirror_missing_refs()` 在 graph store 首次建立时幂等补写（线上 111 对） | `hippocampus/service.py` |
+| 删扫描兜底 | graph route 直接返回；activation 无 graph 时只走 entity-entity 边 | graph_retriever / activation |
+| 激活前置建图 | `spread_activation` / `recall_with_activation` 先 `_ensure_atom_layer()` | `hippocampus/service.py` |
+| stale 重嵌简化 | 去掉 legacy 计数，`_check_embedding_space()` 末尾无条件执行 | `handlers/init.py` |
+| 删除迁移模块 | `hippocampus/db_migration.py` | 每次启动少 6 次 PRAGMA |
+| 不再做减法 | 废弃列/表保留但不读不写 | storage / graph_store |
+
+### 不变量（v105 钉住）
+
+- `store_summary()` 带 relations 时：`entity_refs` 随行持久化，且反查索引恰好 2 行。
+- 只有 `entity_refs` 的旧行在 graph store 建立时被回填；第二次回填不新增行。
+- graph route 未命中时 `store.all()` 调用 0 次（回归到全表扫会立刻红）。
+
+### 验证
+
+- 手工（temp DB）：store_summary → 2 refs；清空后重建 → `backfilled 2 graph reference(s)`；
+  `spread_activation(['Alice'])` 3 节点、store.all 0 次。
+- 全量 95 个 smoke（v08~v105）全绿。
+
+### 仍然 open
+
+- 旧库是否彻底不支持（删废弃列/表、不再兼容 v1.x schema）——需要用户决定；当前策略是「保留但
+  不读不写」，代价为零。
+- 保留的两处兼容不是数据补丁：`inject.py` 的 `[近期对话]` / `[今日回顾]`（strip 契约）、
+  `handlers/recall.py` 的 provider API 探测（宿主版本兼容）。要去掉它们得先改公开契约或
+  提高宿主最低版本。

@@ -11,7 +11,7 @@ What changed:
 Tests:
 1. GraphStore API surface: no adjacency methods; fresh DB has no
    graph_adjacency table; stats() reports only engram_refs.
-2. Legacy graph_adjacency table is dropped when GraphStore opens the DB.
+2. A legacy graph_adjacency table is ignored (not dropped) on open.
 3. Deleting an engram removes its reverse-index rows and does NOT rebuild
    an adjacency table (a sentinel row survives).
 4. DualRouteConfig has no graph_relation_hops; GraphRetriever has no
@@ -66,8 +66,8 @@ def test_graphstore_surface():
         except Exception: pass
 
 
-def test_legacy_table_dropped():
-    banner("GraphStore drops a legacy graph_adjacency table on open")
+def test_legacy_table_ignored():
+    banner("GraphStore ignores a legacy graph_adjacency table on open")
     db = _new_db()
     try:
         import sqlite3
@@ -78,9 +78,10 @@ def test_legacy_table_dropped():
             "INSERT INTO graph_adjacency VALUES ('a','b','p',1.0);")
         conn.commit(); conn.close()
         gs = GraphStore(db)
-        assert "graph_adjacency" not in _tables(gs._conn)
+        # v1.79.1: obsolete tables are not dropped on open any more.
+        assert "graph_adjacency" in _tables(gs._conn)
         gs.close()
-        print("  legacy drop: OK")
+        print("  legacy table ignored: OK")
     finally:
         import gc; gc.collect()
         try: os.unlink(db)
@@ -169,7 +170,7 @@ def test_retriever_reverse_index_path():
 
 def main():
     test_graphstore_surface()
-    test_legacy_table_dropped()
+    test_legacy_table_ignored()
     test_delete_cascade_does_not_rebuild_adjacency()
     test_retriever_reverse_index_path()
     print("\nALL OK")

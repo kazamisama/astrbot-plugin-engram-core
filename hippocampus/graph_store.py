@@ -45,9 +45,9 @@ class GraphStore:
         with self._lock, self._conn:
             self._conn.executescript(
                 """
-                -- v1.77.2: the dead adjacency mirror is dropped on open so
-                -- upgraded installs do not carry an empty table forever.
-                DROP TABLE IF EXISTS graph_adjacency;
+                -- v1.77.2 removed the adjacency mirror. A database from that
+                -- era may still carry an empty graph_adjacency table; it is
+                -- left alone (unread) instead of being dropped on every open.
 
                 CREATE TABLE IF NOT EXISTS graph_engram_refs (
                     entity_id  TEXT NOT NULL,

@@ -3,8 +3,8 @@
 Design (B10 Q1-Q3):
 - Format: SQLite .db backup + .json sidecar with metadata (created_at,
   reason, hippocampus __version__, EXPORT_FORMAT_VERSION, schema hash,
-  engram_count). Cross-version restore just runs run_migrations on the
-  copy.
+  engram_count). Cross-version restore just lets each store apply its
+  schema upgrade on open (ensure_columns).
 - Schedule: caller-driven (PluginInitializer background thread; interval
   comes from MemoryConfig.backup_interval_hours, 0 disables).
 - Retention: keep_last + keep_weekly + keep_monthly, evaluated on every

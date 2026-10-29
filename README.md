@@ -28,6 +28,9 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。另�
 > v1.79.0: 按通用编码规则清理 —— 68 处配置读取去掉与 dataclass 重复的兜底、5 个幽灵键
 > 成为真实配置项、33 处 `getattr(self, ...)` 改为直接属性访问、两个 200 行方法拆分、
 > 删除死码；numpy 在文档里明确为可选加速而非依赖。
+> v1.79.1: 撤掉为旧数据打的补丁 —— schema 升级统一到 `ensure_columns`(`db_migration.py` 删除、
+> 打开旧库不再 DROP 废弃表/列)、graph 的两份表示改由 `_link_engram_refs` 同写并一次性回填
+> (线上 40 个 engram / 111 对)、删掉两处「命中为空就全表扫」的兜底。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -55,7 +58,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v104,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v105,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 
@@ -315,7 +318,7 @@ v1.1 在 v1.0 的 SWR / DG / two-stream / valence 基座上,接出语义图的�
 
 ### 迁移
 
-v1.0 数据库可平滑升级:`HippocampalStore._init_schema` 幂等补齐 `profile_facts` 等表。v1.78.0 起打开旧库会 **DROP** 已废弃的 `cluster_summaries` 表以及 `engrams.similar_to` / `cluster_id` / `profile_fact_id` 三列(SQLite < 3.35 时列会保留但不再读写)。
+v1.0 数据库可平滑升级:`HippocampalStore._init_schema` 以 `_ENGRAM_COLUMNS` 为唯一 schema 事实源——建表与升级都从它生成,旧库缺什么列就补什么列(索引/FTS/触发器都在补列之后创建)。v1.79.1 起**不再做减法**:已废弃的 `cluster_summaries` 表与 `similar_to` / `cluster_id` / `profile_fact_id` 列留在旧库里不读不写,不再每次打开都 DROP。删除一个无人读取的列换不来收益,却要让迁移补丁永久驻留在启动路径上。
 
 ### v1.1 烟测
 

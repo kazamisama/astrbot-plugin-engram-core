@@ -35,3 +35,37 @@ def apply_pragmas(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA wal_autocheckpoint=1000")
     except Exception as e:
         print("[hippocampus] PRAGMA wal_autocheckpoint skipped: " + repr(e))
+
+
+def ensure_columns(conn: sqlite3.Connection, table: str, spec) -> list[str]:
+    """Append columns declared in `spec` that `table` does not have yet.
+
+    This is the single schema-upgrade path in the package: each store
+    declares the columns current code needs, and a database created by an
+    older version gets the missing ones appended on open. Idempotent -- a
+    current database pays one PRAGMA and nothing else.
+
+    It deliberately does NOT drop or rewrite anything. Obsolete columns and
+    tables are left in place: the current schema does not read them, and
+    removing them on every open would keep a migration patch alive forever.
+    `table`, `col` and `decl` come from module constants, never from input.
+    """
+    try:
+        have = {row[1] for row in conn.execute(
+            "PRAGMA table_info(" + table + ")").fetchall()}
+    except sqlite3.Error:
+        return []
+    if not have:
+        return []          # table is created later; nothing to upgrade yet
+    added: list[str] = []
+    for col, decl in spec:
+        if col in have:
+            continue
+        try:
+            conn.execute("ALTER TABLE " + table + " ADD COLUMN "
+                         + col + " " + decl)
+            added.append(col)
+        except sqlite3.Error as exc:
+            print("[hippocampus] schema upgrade skipped: " + table
+                  + "." + col + ": " + repr(exc))
+    return added

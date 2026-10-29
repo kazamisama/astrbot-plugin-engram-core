@@ -87,7 +87,7 @@ def test_fresh_schema():
 
 
 def test_legacy_db_cleanup():
-    banner("legacy DB: cluster table + columns dropped on open")
+    banner("legacy DB: obsolete columns/tables are left alone, data reads")
     with tempfile.TemporaryDirectory() as td:
         db = os.path.join(td, "legacy.db")
         conn = sqlite3.connect(db)
@@ -96,12 +96,13 @@ def test_legacy_db_cleanup():
         svc = _svc(td, "legacy.db")
         try:
             st = svc.store
+            # v1.79.1: the upgrade path only ADDS columns. Obsolete columns
+            # and tables are left in place -- an unused column costs nothing,
+            # while dropping it on every open is a migration patch that would
+            # have to live in the codebase forever.
             cols = {r[1] for r in st._conn.execute("PRAGMA table_info(engrams)")}
-            for gone in ("similar_to", "cluster_id", "profile_fact_id"):
-                assert gone not in cols, ("column survived", gone)
-            tables = {r[0] for r in st._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-            assert "cluster_summaries" not in tables, tables
+            for old in ("similar_to", "cluster_id", "profile_fact_id"):
+                assert old in cols, ("obsolete column disappeared", old)
             kept = st.get("legacy1")
             assert kept is not None and kept.content == "old memory"
         finally:

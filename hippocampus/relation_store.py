@@ -18,6 +18,7 @@ import sqlite3
 import time
 import uuid
 from hippocampus.observability import note as _obs_note
+from .sqlite_util import ensure_columns
 
 
 def _now() -> float:
@@ -105,13 +106,11 @@ class RelationStore:
             " created_at REAL, updated_at REAL,"
             " superseded_by TEXT, forgotten_at REAL,"
             " rkey TEXT, subject_type TEXT, object_type TEXT)")
-        cols = [row[1] for row in conn.execute("PRAGMA table_info(llm_relations)").fetchall()]
-        if "rkey" not in cols:
-            conn.execute("ALTER TABLE llm_relations ADD COLUMN rkey TEXT")
-        if "subject_type" not in cols:
-            conn.execute("ALTER TABLE llm_relations ADD COLUMN subject_type TEXT")
-        if "object_type" not in cols:
-            conn.execute("ALTER TABLE llm_relations ADD COLUMN object_type TEXT")
+        ensure_columns(conn, "llm_relations", (
+            ("rkey", "TEXT"),
+            ("subject_type", "TEXT"),
+            ("object_type", "TEXT"),
+        ))
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lrel_rkey ON llm_relations(rkey)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lrel_subject ON llm_relations(subject)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lrel_active ON llm_relations(superseded_by, forgotten_at)")

@@ -38,9 +38,8 @@ class SpreadingActivation:
         self._store = store
         self._cfg = cfg
         # v1.42: optional GraphStore for batch entity->engram lookups.
-        # Falls back to the legacy O(N) scan when None so old callers
-        # keep working. New code (service.recall path) should pass it
-        # or assign it after lazy graph_store initialization.
+        # v1.79.1: without it, activation returns entity-entity edges only;
+        # there is no full-table scan fallback (see _neighbors_entity).
         self._graph = graph_store
 
     # ---------- public ----------
@@ -267,21 +266,18 @@ class SpreadingActivation:
         # The legacy O(N) loop lived here and scanned every engram on
         # every neighbor lookup; on a 10k+ store this is the difference
         # between sub-millisecond and seconds per recall.
-        if self._graph is not None:
-            try:
-                batch = self._graph.engrams_for_batch([eid], limit_per_entity=128)
-                for eid_ref, w in batch.get(eid, []):
-                    out.append((N_PREFIX + eid_ref, W_ENTITY_TO_ENGRAM * float(w)))
-                return out
-            except Exception:
-                # Fall through to the legacy path if the index is missing.
-                _obs_note("activation", "_neighbors_entity")
-        # Legacy fallback: full-table scan, filters out forgotten engrams.
-        for e in self._store.all(limit=10_000_000):
-            if e.forgotten_at > 0:
-                continue
-            if eid in (e.entity_refs or []):
-                out.append((N_PREFIX + e.id, W_ENTITY_TO_ENGRAM))
+        # v1.79.1: no O(N) scan fallback. Service.recall_with_activation()
+        # and spread_activation() build the graph store before calling in,
+        # so a missing index means the caller bypassed the service -- in
+        # which case returning entity edges only is the honest answer.
+        if self._graph is None:
+            return out
+        try:
+            batch = self._graph.engrams_for_batch([eid], limit_per_entity=128)
+            for eid_ref, w in batch.get(eid, []):
+                out.append((N_PREFIX + eid_ref, W_ENTITY_TO_ENGRAM * float(w)))
+        except Exception:
+            _obs_note("activation", "_neighbors_entity")
         return out
 
     def _neighbors_engram(self, eid: str) -> list[tuple[str, float]]:

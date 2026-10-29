@@ -9,7 +9,16 @@ import threading
 import time
 from typing import Iterable
 
+from .sqlite_util import ensure_columns
 from .types import MemoryAtom, AtomStatus, AtomType, DecayType
+
+# Columns added after the first atoms table shipped (v1.76.5). The CREATE
+# statement above already includes them; an older table gets them appended.
+_ATOM_COLUMNS = (
+    ("ttl_days", "REAL NOT NULL DEFAULT 30.0"),
+    ("event_time", "REAL NOT NULL DEFAULT 0.0"),
+    ("expires_at", "REAL NOT NULL DEFAULT 0.0"),
+)
 
 
 class AtomStore:
@@ -67,13 +76,9 @@ class AtomStore:
                 );
                 """
             )
-            # v1.76.5: add temporal columns to existing atom tables.
-            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(atoms)")}
-            for col, decl in (("ttl_days", "REAL NOT NULL DEFAULT 30.0"),
-                              ("event_time", "REAL NOT NULL DEFAULT 0.0"),
-                              ("expires_at", "REAL NOT NULL DEFAULT 0.0")):
-                if col not in cols:
-                    self._conn.execute("ALTER TABLE atoms ADD COLUMN " + col + " " + decl)
+            # v1.76.5 / v1.79.1: temporal columns on existing atom tables.
+            # The shared helper is the single upgrade path for every store.
+            ensure_columns(self._conn, "atoms", _ATOM_COLUMNS)
             # v1.78.3: indexes come AFTER the column migration. They used to
             # live in the CREATE TABLE script above, which runs before the
             # ALTERs -- so on a legacy atoms table (created before v1.76.5,

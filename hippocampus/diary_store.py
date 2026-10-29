@@ -30,6 +30,7 @@ import threading
 import time
 import uuid
 from hippocampus.observability import note as _obs_note
+from .sqlite_util import ensure_columns
 from .vecmath import VectorIndex
 
 
@@ -169,8 +170,10 @@ class DiaryStore:
             " is_bot INTEGER, group_id TEXT, group_name TEXT,"
             " peer_actor_id TEXT, peer_name TEXT, session_id TEXT, platform TEXT,"
             " persona_id TEXT DEFAULT '', scope_id TEXT DEFAULT '')")
-        self._add_col_if_missing(c, "daily_messages", "persona_id", "TEXT DEFAULT ''")
-        self._add_col_if_missing(c, "daily_messages", "scope_id", "TEXT DEFAULT ''")
+        ensure_columns(c, "daily_messages", (
+            ("persona_id", "TEXT DEFAULT ''"),
+            ("scope_id", "TEXT DEFAULT ''"),
+        ))
         c.execute("CREATE INDEX IF NOT EXISTS idx_daily_ch_ts ON daily_messages(channel_id, ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_daily_ts ON daily_messages(ts)")
         c.execute(
@@ -179,20 +182,14 @@ class DiaryStore:
             " text TEXT, embedding TEXT, embedding_model TEXT,"
             " ts_start REAL, ts_end REAL, created_at REAL,"
             " persona_id TEXT DEFAULT '', scope_id TEXT DEFAULT '')")
-        self._add_col_if_missing(c, "diary_chunks", "persona_id", "TEXT DEFAULT ''")
-        self._add_col_if_missing(c, "diary_chunks", "scope_id", "TEXT DEFAULT ''")
+        ensure_columns(c, "diary_chunks", (
+            ("persona_id", "TEXT DEFAULT ''"),
+            ("scope_id", "TEXT DEFAULT ''"),
+        ))
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_diary ON diary_chunks(diary_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_ch ON diary_chunks(channel_id)")
         c.commit()
 
-    @staticmethod
-    def _add_col_if_missing(conn, table, col, decl):
-        try:
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(" + table + ")").fetchall()}
-            if col not in cols:
-                conn.execute("ALTER TABLE " + table + " ADD COLUMN " + col + " " + decl)
-        except Exception:
-            _obs_note("diary_store", "_add_col_if_missing")
 
     def close(self) -> None:
         # FIX (v1.42) BUG-7: flush any pending buffered lines before close

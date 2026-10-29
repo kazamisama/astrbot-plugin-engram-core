@@ -4,6 +4,66 @@
 
 Nothing yet.
 
+## [1.79.1] - 2026-10-29
+
+把「为旧数据打的补丁」从热路径上撤掉：schema 升级只剩一条 `ensure_columns()` 路径，
+graph 的两份表示改由一个 helper 同写，召回不再为缺图数据做全表扫描。
+
+### 审计证据（为什么这些是补丁，不是兼容）
+- graph route 在反查索引为空时执行 `store.all(limit=10_000)` 全表扫；activation 的同名兜底
+  更极端（`limit=10_000_000`）。两者存在的理由都是「旧数据里 `entity_refs` 有值、
+  `graph_engram_refs` 没有」。线上实测：556 个 engram 中 437 带 `entity_refs`，
+  其中 397 已在反查索引、**40 个缺失（111 对 entity→engram）**。
+- 根因是写路径分裂：`_mirror_relation_to_semantic()` 在 engram 落库之后才往 dataclass
+  追加 `entity_refs`，改动既没持久化也没写反查索引；而 `_post_ingest()` 写索引。
+- `hippocampus/db_migration.py` 的 6 条按版本 ALTER 每次打开库都要 PRAGMA；storage 与
+  graph_store 里还有三处「打开旧库就 DROP 废弃表/列」。这些补丁永久驻留，换来的只是少几个
+  没人读的列。
+
+### Changed
+- `hippocampus/sqlite_util.py::ensure_columns(conn, table, spec)`：PRAGMA 一次，缺列就
+  ALTER，只加不删；表不存在返回 `[]`。成为所有 store 的唯一升级路径。
+- `hippocampus/storage.py`：`_ENGRAM_COLUMNS`（32 列）是唯一 schema 事实源，`CREATE TABLE`
+  与升级都从它生成；索引 / FTS / 触发器移到 `ensure_columns()` 之后执行（它们引用完整列集）。
+- `atom_store` / `diary_store` / `relation_store` / `persona` 改用同一 helper；
+  `diary_store._add_col_if_missing` 删除。
+- graph refs 单写者：`MemoryService._link_engram_refs()` 合并 `entity_refs` 并写反查索引，
+  由 `_post_ingest()` 与 `_mirror_relation_to_semantic()` 调用；`store_summary()` 在关系循环
+  后发现 `entity_refs` 变化就补一次 `store.upsert()`（此前那次修改只停留在内存里）。
+- `_mirror_missing_refs()`：graph store 首次建立时按 `entity_refs` 幂等回填反查索引
+  （线上将是 40 个 engram / 111 对），之后不再需要任何扫描兜底。
+- `handlers/init.py`：`_start_stale_reembed()` 去掉 legacy 参数，由 `_check_embedding_space()`
+  在末尾无条件调用（指纹失配与空向量两条路径共用）；删除 `count_by_embedding_model` 的两处
+  计数分支（v1.77.1 的指纹 + 空向量检查已覆盖）。
+- `hippocampus/activation.py`：`spread_activation()` / `recall_with_activation()` 在
+  `enable_graph_indexing` 时先 `_ensure_atom_layer()`，不再依赖「graph 是 None」的兜底分支。
+
+### Removed
+- `hippocampus/db_migration.py`（`run_migrations` 及其 6 条版本列表）。
+- `HippocampalStore.count_by_embedding_model()`。
+- `GraphStore` 打开时的 `DROP TABLE IF EXISTS graph_adjacency`；`HippocampalStore` 打开时的
+  `rebuild_state` / `cluster_summaries` DROP 与 `similar_to` / `cluster_id` / `profile_fact_id`
+  的 `DROP COLUMN`。废弃结构留在旧库里不读不写。
+- `graph_retriever` 的 4b 全表兜底与 `activation._neighbors_entity` 的 O(N) 兜底。
+
+### Tests
+- 新增 `tests/_smoke_v105.py`（3 检查）：`store_summary()` 带关系时 `entity_refs` 持久化且反查
+  索引同步；只有 `entity_refs` 的旧行在 graph store 建立时被回填且幂等；graph route 未命中时
+  `store.all()` 调用 0 次。
+- `v26` 重写为 `ensure_columns` 契约（旧表就地补齐、幂等、缺表安全）；`v58` / `v100` 改为断言
+  废弃列**仍在**；`v20` / `v99` 的 adjacency 用例改为「忽略但不 DROP」。
+- `v98` 跟随 `_check_embedding_space(probe)` / `_start_stale_reembed()` 新签名；`v64` 改为
+  `test_no_scan_fallback_when_graph_store_is_missing`；`v86` 改用 `store.get()` 断言重嵌。
+- 全量 95 个 smoke（v08~v105）全绿。
+
+### Notes
+- 原则（用户 2026-10-29）：「目光放长远，不一定需要为了旧数据而打补丁」。current code 需要的
+  列保证存在；不再为了少几个废弃列而在启动路径上永久保留迁移补丁。
+- 仍保留的两处兼容都是**接口/宿主契约**，不是数据补丁：`inject.py` 的 `[近期对话]` /
+  `[今日回顾]` 标签（公开 strip 契约，v70-v72 / v87 / v88 钉住）、`handlers/recall.py` 对老版
+  AstrBot provider API 的探测。
+- 重载后首次建图会打印 `backfilled 111 graph reference(s) from stored entity refs`。
+
 ## [1.79.0] - 2026-10-29
 
 按一份通用编码规则清单（8 条）做静态审计后的清理：去掉「配置读取双轨」与幽灵键、删死码、

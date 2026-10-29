@@ -206,8 +206,8 @@ def test_neighbors_entity_uses_batch_index(svc):
     print(f"[OK] batch path took over: {len(nbrs)} neighbors, 0 store.all() calls")
 
 
-def test_legacy_fallback_when_no_graph_store(svc):
-    """When graph_store is None, the legacy O(N) path still works."""
+def test_no_scan_fallback_when_graph_store_is_missing(svc):
+    """Without a graph store there is no O(N) scan fallback any more."""
     sa = SpreadingActivation(svc.semantic, svc.store, svc.cfg, graph_store=None)
     assert sa._graph is None
 
@@ -215,12 +215,24 @@ def test_legacy_fallback_when_no_graph_store(svc):
     ent_map = {e.name: e.id for e in ents}
     alice_id = ent_map.get("alice")
     if not alice_id:
-        print("[SKIP] no alice entity; legacy fallback untested")
+        print("[SKIP] no alice entity")
         return
-    nbrs = sa._neighbors_entity(alice_id)
+    orig_all = svc.store.all
+    calls = {"n": 0}
+
+    def _counting_all(*a, **kw):
+        calls["n"] += 1
+        return orig_all(*a, **kw)
+
+    svc.store.all = _counting_all
+    try:
+        nbrs = sa._neighbors_entity(alice_id)
+    finally:
+        svc.store.all = orig_all
     e_neighs = [n for n in nbrs if n[0].startswith("n:")]
-    assert len(e_neighs) >= 3, e_neighs
-    print(f"[OK] legacy fallback (no graph_store): {len(nbrs)} neighbors via O(N) scan")
+    assert e_neighs == [], e_neighs
+    assert calls["n"] == 0, "no full-table scan without a graph store"
+    print("[OK] no graph store -> entity edges only, 0 store.all() calls")
 
 
 def main():
@@ -233,7 +245,7 @@ def main():
         test_recent_for_actor_and_top_by_importance(svc)
         test_activate_with_context_produces_engram_map(svc)
         test_neighbors_entity_uses_batch_index(svc)
-        test_legacy_fallback_when_no_graph_store(svc)
+        test_no_scan_fallback_when_graph_store_is_missing(svc)
         print("ALL PASS v64-activation")
     finally:
         try:

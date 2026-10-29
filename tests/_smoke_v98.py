@@ -78,7 +78,7 @@ def _init(svc):
     init.service = svc
     init._full_reembed_thread = None
     calls = []
-    init._start_stale_reembed = lambda n: calls.append(("stale", n))
+    init._start_stale_reembed = lambda: calls.append(("stale",))
     init._start_full_reembed = lambda probe: calls.append(("full", len(probe)))
     return init, calls
 
@@ -87,13 +87,15 @@ def test_fingerprint_saved_on_first_activation():
     banner("first activation stores the embedding fingerprint")
     svc = _svc(tempfile.mkdtemp())
     init, calls = _init(svc)
-    init._check_embedding_space([1.0, 0.0, 0.0], legacy=0)
+    init._check_embedding_space([1.0, 0.0, 0.0])
     raw = svc.store.get_meta(PluginInitializer._FP_KEY)
     fp = json.loads(raw)
     assert fp["dim"] == 3, fp
     assert fp["model"] == svc.current_embedding(), fp
     assert len(fp["probe"]) == 3, fp
-    assert calls == [], calls
+    # v1.79.1: the stale pass runs unconditionally; it is a no-op when
+    # the store is already current.
+    assert calls == [("stale",)], calls
     svc.close()
     print("fingerprint: OK")
 
@@ -105,8 +107,8 @@ def test_empty_vector_triggers_repair():
     svc.store.upsert(Engram(id="empty", content="no vector",
                             embedding_model=svc.current_embedding()))
     assert svc.store.count_missing_vectors() == 1
-    init._check_embedding_space([1.0, 0.0, 0.0], legacy=0)
-    assert calls == [("stale", 1)], calls
+    init._check_embedding_space([1.0, 0.0, 0.0])
+    assert calls == [("stale",)], calls
     svc.close()
     print("empty-vector repair: OK")
 
@@ -115,15 +117,16 @@ def test_space_mismatch_triggers_full_reembed():
     banner("dimension / cosine mismatch triggers the full re-embed")
     svc = _svc(tempfile.mkdtemp())
     init, calls = _init(svc)
-    init._check_embedding_space([1.0, 0.0, 0.0], legacy=0)
-    assert calls == [], calls
+    init._check_embedding_space([1.0, 0.0, 0.0])
+    assert calls == [("stale",)], calls
+    calls.clear()
     # provider now answers with a different dimension
-    init._check_embedding_space([1.0, 0.0, 0.0, 0.0], legacy=0)
-    assert calls == [("full", 4)], calls
+    init._check_embedding_space([1.0, 0.0, 0.0, 0.0])
+    assert calls == [("full", 4), ("stale",)], calls
     # same dimension, unrelated direction: a different model, same size
     calls.clear()
-    init._check_embedding_space([0.0, 1.0, 0.0], legacy=0)
-    assert calls == [("full", 3)], calls
+    init._check_embedding_space([0.0, 1.0, 0.0])
+    assert calls == [("full", 3), ("stale",)], calls
     svc.close()
     print("space mismatch: OK")
 

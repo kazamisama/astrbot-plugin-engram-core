@@ -220,16 +220,12 @@ class PluginInitializer:
             emb_ready = bool(
                 emb_provider is not None and getattr(emb_provider, "dim", 0) > 0)
             if emb_ready:
-                old_model = self.service.current_embedding()
                 self.service.set_embedding("astrmock")
-                legacy = self.service.store.count_by_embedding_model(
-                    old_model, include_forgotten=False)
-                if legacy:
-                    print(
-                        "[hippocampus] switched embedding hash -> astrmock; "
-                        + str(legacy) + " older vectors were not rebuilt. "
-                        "FTS recall still covers them; run /mem rebuild to "
-                        "restore vector recall.")
+                # No space check here: this synchronous path only knows the
+                # provider's dimension, not a probe vector. The deferred path
+                # (_activate_embedding_loop) probes the provider and runs
+                # _check_embedding_space(); on a host loop that is the path
+                # production always takes.
                 return
             print(
                 "[hippocampus] astrmock embedding probe returned no "
@@ -440,26 +436,16 @@ class PluginInitializer:
             try:
                 old = svc.current_embedding()
                 svc.set_embedding("astrmock")
-                legacy = svc.store.count_by_embedding_model(
-                    old, include_forgotten=False)
                 print("[hippocampus] astrmock embedding activated on the host "
-                      "loop (" + str(len(vec)) + "-dim, was " + old + ")"
-                      + ("; " + str(legacy) + " older vectors were not "
-                         "rebuilt. FTS recall still covers them; run /mem "
-                         "rebuild to restore vector recall." if legacy else ""))
-                # v1.76.19: actually repair them instead of only telling the
-                # operator to. A row labelled with the previous provider is
-                # invisible to the vector route (it filters by embedding_model)
-                # and every restart leaves one behind: the buffer restored from
-                # disk flushes within a minute or two, while activation can take
-                # 10-180s, so the first new memory lands in the hash placeholder
-                # space. Observed live: the 00:14:27 engram was stored as
-                # hash/64-dim and activation completed at 00:16:55.
-                # v1.77.1: the fingerprint check subsumes the old
-                # 'legacy > 0' trigger -- it also repairs empty vectors and
-                # re-embeds everything when the provider silently changed
-                # model/dimension.
-                self._check_embedding_space(vec, legacy)
+                      "loop (" + str(len(vec)) + "-dim, was " + old + ")")
+                # v1.77.1 / v1.79.1: one check for everything that can make
+                # stored vectors unusable -- a changed dimension or probe
+                # (full rebuild), rows left in the previous space, rows with
+                # no vector at all (stale pass). Observed live: the 00:14:27
+                # engram was stored as hash/64-dim while activation finished
+                # at 00:16:55, and without this it stayed invisible to vector
+                # recall forever.
+                self._check_embedding_space(vec)
             except Exception as e:
                 print(f"[hippocampus] astrmock activation failed: {e!r}")
             finally:
@@ -471,12 +457,14 @@ class PluginInitializer:
               + ". Vector recall will only see vectors in that space "
               "(keyword/FTS recall still covers everything).")
 
-    def _start_stale_reembed(self, expected: int) -> None:
-        """Re-embed rows left on the previous provider, off the event loop.
+    def _start_stale_reembed(self) -> None:
+        """Re-embed rows that cannot be used in the active space.
 
-        A plugin-owned daemon thread, not asyncio.to_thread: the re-embed is
-        a sequence of provider calls that can take minutes for a large
-        mismatch, and it must neither block nor be tied to the loop.
+        Selects by `embedding_model != current` OR an empty vector (see
+        MemoryService.reembed_stale). It runs once per activation and is a
+        cheap no-op when everything is already current. A plugin-owned
+        daemon thread, not asyncio.to_thread: the pass can take minutes for
+        a large mismatch and must neither block nor be tied to the loop.
         """
         svc = self.service
         if svc is None:
@@ -492,10 +480,10 @@ class PluginInitializer:
         def _run() -> None:
             try:
                 n = svc.reembed_stale(limit=1000)
-                print("[hippocampus] re-embedded " + str(n)
-                      + " engram(s) that were still on the previous embedding "
-                      "provider" + (" (of ~" + str(expected) + ")"
-                                    if expected else "") + ".")
+                if n:
+                    print("[hippocampus] re-embedded " + str(n)
+                          + " engram(s) that were not in the active embedding "
+                          "space")
             except Exception as e:
                 print("[hippocampus] stale re-embed failed: " + repr(e))
 
@@ -524,7 +512,7 @@ class PluginInitializer:
         except Exception as e:
             print("[hippocampus] embedding fingerprint save failed: " + repr(e))
 
-    def _check_embedding_space(self, probe, legacy: int) -> None:
+    def _check_embedding_space(self, probe) -> None:
         """Detect a silent embedding-space swap and repair the store.
 
         Stored vectors are only comparable inside the space that produced
@@ -561,27 +549,20 @@ class PluginInitializer:
                         reason = "probe cosine %.4f" % cos
             except Exception:
                 reason = "fingerprint unreadable"
-        try:
-            missing = svc.store.count_missing_vectors()
-        except Exception:
-            missing = 0
         if reason:
             print("[hippocampus] embedding space changed (" + reason
                   + "): stored vectors belong to a different model or"
                   " dimension. Starting a full background re-embed;"
                   " vector recall is unreliable until it finishes.")
             self._start_full_reembed(probe)
-        elif legacy > 0:
-            self._start_stale_reembed(legacy)
-        if missing > 0:
-            # v1.77.1: rows with an empty vector kept their old label, so the
-            # previous 'legacy > 0' trigger never fired for them (60 such
-            # rows on the live store, 51 active and invisible to vectors).
-            print("[hippocampus] repairing " + str(missing)
-                  + " active engram(s) with an empty embedding")
-            self._start_stale_reembed(missing)
-        if not reason:
+        else:
             self._save_fingerprint(probe)
+        # v1.79.1: one unconditional pass replaces the old label/missing
+        # counters. reembed_stale() selects by label OR an empty vector, so
+        # it repairs both classes, and it is a no-op when the store is
+        # already current. After a full rebuild it returns immediately via
+        # the live-thread guard in _start_stale_reembed().
+        self._start_stale_reembed()
 
     def _start_full_reembed(self, probe) -> None:
         """Re-embed engrams + diary chunks after a space change (daemon)."""

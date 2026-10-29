@@ -147,35 +147,11 @@ class GraphRetriever:
                 c.rank = i + 1
             return out
 
-        # 4b) Fallback: the graph_engram_refs table is empty (the legacy
-        #     code path wrote entity_refs onto the Engram dataclass but
-        #     never mirrored it into the graph store). Walk every active
-        #     engram and check `entity_refs` against the matched entities
-        #     directly. This preserves v1.3 behaviour for callers that
-        #     have not yet been wired to the new GraphStore.
-        try:
-            legacy = list(store.all(limit=10_000))  # type: ignore[attr-defined]
-        except Exception:
-            legacy = []
-        anchor_ids = {a.entity.id for a in anchors}
-        for engram in legacy:
-            if not self._passes_filters(engram, cue):
-                continue
-            refs = set(getattr(engram, "entity_refs", []) or [])
-            if not (refs & anchor_ids):
-                continue
-            # Score: anchor.score * 1 / (1 + depth_to_engram) ; depth unknown
-            # so use 0 (best). Cap k later.
-            best_anchor = max(
-                anchors,
-                key=lambda a: a.score * (1.0 if a.entity.id in refs else 0.0),
-            )
-            rc = RankedCandidate(item=engram, raw_score=best_anchor.score, rank=0)
-            setattr(rc, "_matched_entity", best_anchor.entity.name)
-            out.append(rc)
-        out.sort(key=lambda c: c.raw_score, reverse=True)
-        for i, c in enumerate(out):
-            c.rank = i + 1
+        # v1.79.1: no full-table fallback here. The reverse index is written
+        # by the same call that sets entity_refs, and _ensure_atom_layer()
+        # backfills rows written before that invariant existed. A scan of
+        # every engram on a cache miss cost O(store) per query and produced
+        # results the indexed path could not reproduce.
         return out
 
     # -- internals -----------------------------------------------------

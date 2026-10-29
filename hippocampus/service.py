@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import os
 import asyncio
 import threading
@@ -197,6 +198,10 @@ class MemoryService:
                 # v1.42: wire graph_store into SpreadingActivation
                 if self.activation is not None:
                     self.activation._graph = self.graph_store
+                # v1.79.1: rows written before graph refs were mirrored at
+                # write time are repaired once, here, instead of every
+                # recall compensating with a full-table scan.
+                self._mirror_missing_refs()
             except Exception:
                 self.graph_store = None
                 _obs_note("service", "_ensure_atom_layer:graph_store")
@@ -576,6 +581,7 @@ class MemoryService:
         # WebUI see the SAME LLM-derived facts, with entity type taken from
         # the LLM (fixing rule-classified "unknown").
         rels = summary.get("relations") or []
+        refs_before = list(e.entity_refs or [])
         if rels and self.relation_store is not None:
             from .relation_store import Relation
             hyst = float(self.cfg.relation_supersede_hysteresis)
@@ -596,6 +602,13 @@ class MemoryService:
                         self._mirror_relation_to_semantic(rel, e)
                 except Exception as rex:
                     print("[hippocampus] relation persist error: " + repr(rex))
+        # v1.79.1: _mirror_relation_to_semantic() adds entity ids to the
+        # dataclass after the row was stored, so persist them once here.
+        if list(e.entity_refs or []) != refs_before:
+            try:
+                self.store.upsert(e)
+            except Exception:
+                _obs_note("service", "store_summary:entity_refs")
         return e
 
     def recall_relations(self, query: str, *, top_n: int = 3,
@@ -1057,10 +1070,76 @@ class MemoryService:
             # v1.77.1: LLM relations now feed the atom layer as well;
             # see _atom_from_semantic_relation for why it was empty.
             self._atom_from_semantic_relation(sem_rel, engram)
-            refs = list(dict.fromkeys([*engram.entity_refs, subj.id, obj.id]))
-            engram.entity_refs = refs
+            self._link_engram_refs(engram, [subj.id, obj.id])
         except Exception as ex:
             print("[hippocampus] mirror relation error: " + repr(ex))
+
+    def _link_engram_refs(self, engram, refs) -> None:
+        """Merge `refs` into engram.entity_refs and mirror them into the
+        reverse index.
+
+        v1.79.1: this is the ONE place that writes both representations.
+        Before it, _post_ingest wrote the graph index while the summary path
+        only mutated the dataclass (and even that was discarded, because it
+        happened after the row had been persisted) -- so the graph route had
+        to fall back to scanning every engram to see those entities.
+        """
+        merged = list(dict.fromkeys([
+            *(engram.entity_refs or []), *(refs or [])]))
+        engram.entity_refs = merged
+        if not merged or not self.cfg.enable_graph_indexing:
+            return
+        if not self._ensure_atom_layer():
+            return
+        graph = self.graph_store
+        if graph is None:
+            return
+        for ref in merged:
+            try:
+                graph.add_entity_engram_ref(ref, engram.id, weight=1.0)
+            except Exception:
+                _obs_note("service", "_link_engram_refs")
+
+    def _mirror_missing_refs(self) -> int:
+        """Backfill graph_engram_refs from engram.entity_refs (idempotent).
+
+        Rows written before _link_engram_refs existed carry entity ids only
+        on the engram. This runs once, when the graph store is first built,
+        so recall never has to compensate with a full scan. Returns the
+        number of (entity, engram) pairs added.
+        """
+        graph = self.graph_store
+        if graph is None:
+            return 0
+        try:
+            with self.store._lock:
+                rows = self.store._conn.execute(
+                    "SELECT id, entity_refs FROM engrams "
+                    "WHERE LENGTH(TRIM(COALESCE(entity_refs, ''))) > 2").fetchall()
+            have = {r[0] for r in graph._conn.execute(
+                "SELECT DISTINCT engram_id FROM graph_engram_refs")}
+        except Exception:
+            return 0
+        added = 0
+        for row in rows:
+            eid = row["id"]
+            if eid in have:
+                continue
+            try:
+                refs = json.loads(row["entity_refs"] or "[]")
+            except (ValueError, TypeError):
+                # A malformed column is not a runtime failure: skip the row.
+                continue
+            for ref in (refs or []):
+                try:
+                    graph.add_entity_engram_ref(ref, eid, weight=1.0)
+                    added += 1
+                except Exception:
+                    _obs_note("service", "_mirror_missing_refs")
+        if added:
+            print("[hippocampus] backfilled " + str(added)
+                  + " graph reference(s) from stored entity refs")
+        return added
 
     def _atom_from_semantic_relation(self, sem_rel, engram) -> None:
         """v1.77.1: an LLM-extracted relation also produces an atom.
@@ -1195,7 +1274,11 @@ class MemoryService:
                 self.semantic.add_relation(r)
                 ref_ids.append(r.subject_id)
                 ref_ids.append(r.object_id)
-            e.entity_refs = list(dict.fromkeys([*e.entity_refs, *ref_ids]))
+            # v1.79.1: one writer for both representations. entity_refs on the
+            # dataclass and graph_engram_refs in the reverse index used to be
+            # written by different code paths, so the graph route needed a
+            # full-table scan as a fallback.
+            self._link_engram_refs(e, ref_ids)
             self.store.upsert(e)
         # v1.4 B3 atoms, rewired in v1.77.0: derived from the SAME relation
         # extraction
@@ -1225,15 +1308,7 @@ class MemoryService:
                                          graph_facts=graph_facts)
                 except Exception as _gex:
                     print("[hippocampus] graph v2 index failed: " + repr(_gex))
-        # v1.4 B4: mirror entity_refs into the GraphStore fast-path index.
-        if self.cfg.enable_graph_indexing and e.entity_refs:
-            self._ensure_atom_layer()
-            if self.graph_store is not None:
-                try:
-                    for ref in e.entity_refs:
-                        self.graph_store.add_entity_engram_ref(ref, e.id, weight=1.0)
-                except Exception:
-                    _obs_note("service", "_post_ingest")
+
         if self.prospective_scheduler is not None:
             self.prospective_scheduler.create_from_engram(e)
         if op_id is not None:
@@ -2550,6 +2625,10 @@ class MemoryService:
     def spread_activation(self, seeds, *, depth=None, decay=None, floor=None):
         if self.activation is None:
             return {}
+        # v1.79.1: activation walks entity->engram edges through the reverse
+        # index; make sure it exists instead of silently degrading to a scan.
+        if self.cfg.enable_graph_indexing:
+            self._ensure_atom_layer()
         try:
             return self.activation.activate(seeds, depth=depth, decay=decay, floor=floor)
         except Exception:
@@ -2557,6 +2636,8 @@ class MemoryService:
 
     def recall_with_activation(self, cue, *, seeds=None):
         # v1.42: activate_with_context seeds from entities + recency + importance
+        if self.cfg.enable_graph_indexing:
+            self._ensure_atom_layer()
         if self.activation is not None and self.semantic is not None:
             try:
                 matched = []

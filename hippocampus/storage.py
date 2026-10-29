@@ -3,7 +3,7 @@ import json, sqlite3, threading, math
 from typing import Iterable
 from .types import Engram
 from .embeddings import EmbeddingProvider
-from .db_migration import run_migrations
+from .sqlite_util import ensure_columns
 from hippocampus.observability import note as _obs_note
 from .vecmath import VectorIndex
 
@@ -52,6 +52,49 @@ def cjk_split(text: str) -> str:
     return " ".join("".join(out).split())
 
 
+_ENGRAM_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("id", "TEXT PRIMARY KEY"),
+    ("created_at", "REAL"),
+    ("session_id", "TEXT"),
+    ("actor_id", "TEXT"),
+    ("platform", "TEXT"),
+    ("channel_id", "TEXT"),
+    ("persona_id", "TEXT DEFAULT ''"),
+    ("scope_id", "TEXT DEFAULT ''"),
+    ("content", "TEXT"),
+    ("summary", "TEXT"),
+    ("topics", "TEXT"),
+    ("entities", "TEXT"),
+    ("entity_refs", "TEXT"),
+    ("tags", "TEXT"),
+    ("importance", "REAL"),
+    ("strength", "REAL"),
+    ("access_count", "INTEGER"),
+    ("last_accessed", "REAL"),
+    ("reconsolidation_lock_until", "REAL"),
+    ("supersedes", "TEXT"),
+    ("embedding_json", "TEXT"),
+    ("memory_type", "TEXT"),
+    ("promoted_at", "REAL"),
+    ("embedding_model", "TEXT"),
+    ("fts_text", "TEXT"),
+    ("valence", "REAL DEFAULT 0.0"),
+    ("intensity", "REAL DEFAULT 0.0"),
+    ("temporal_bucket", "INTEGER DEFAULT 0"),
+    ("stream", "TEXT DEFAULT ''"),
+    ("forgotten_at", "REAL DEFAULT 0.0"),
+    ("confidence", "REAL DEFAULT 0.5"),
+    ("tier", "TEXT DEFAULT 'hot'"),
+)
+
+# The engrams table is built from _ENGRAM_COLUMNS so the CREATE statement
+# and the upgrade path cannot drift: one list defines the schema and
+# ensure_columns() appends whatever an older database is missing. Columns
+# that are no longer used are deliberately NOT dropped -- an unused column
+# costs nothing, while a DROP COLUMN on open is a permanent migration patch.
+_ENGRAM_DDL = ",\n".join("              " + c + " " + d
+                         for c, d in _ENGRAM_COLUMNS)
+
 class HippocampalStore:
     """Index + content + vectors + FTS5 in one SQLite file. Replace with sqlite-vec/faiss at scale."""
     def __init__(self, db_path: str, embedder: EmbeddingProvider,
@@ -76,25 +119,61 @@ class HippocampalStore:
 
     def _init_schema(self) -> None:
         with self._lock, self._conn:
-            self._conn.executescript("""
+            self._conn.executescript(f"""
             CREATE TABLE IF NOT EXISTS engrams (
-              id TEXT PRIMARY KEY,
-              created_at REAL, session_id TEXT, actor_id TEXT,
-              platform TEXT, channel_id TEXT,
-              persona_id TEXT DEFAULT '',
-              scope_id TEXT DEFAULT '',
-              content TEXT, summary TEXT,
-              topics TEXT, entities TEXT, entity_refs TEXT, tags TEXT,
-              importance REAL, strength REAL,
-              access_count INTEGER, last_accessed REAL,
-              reconsolidation_lock_until REAL,
-              supersedes TEXT, embedding_json TEXT,
-              memory_type TEXT, promoted_at REAL,
-              embedding_model TEXT,
-              fts_text TEXT,
-              confidence REAL DEFAULT 0.5
-              ,tier TEXT DEFAULT 'hot'
+{_ENGRAM_DDL}
             );
+
+            -- v1.1: user self-model (neocortex analog)
+            CREATE TABLE IF NOT EXISTS profile_facts (
+              id TEXT PRIMARY KEY,
+              actor_id TEXT,
+              predicate TEXT,
+              value TEXT,
+              value_type TEXT DEFAULT 'string',
+              confidence REAL,
+              evidence_count INTEGER,
+              source_relation_ids TEXT,
+              source_engram_ids TEXT,
+              created_at REAL,
+              updated_at REAL,
+              last_evidence_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_profile_actor ON profile_facts(actor_id);
+            CREATE INDEX IF NOT EXISTS idx_profile_pred ON profile_facts(actor_id, predicate);
+
+            -- rebuild_state / cluster_summaries belong to removed features
+            -- (v1.77.0 / v1.78.0). They are no longer created, and they are
+            -- no longer dropped either: an unused table in an old database
+            -- costs nothing, while a DROP on every open is a migration patch
+            -- that would have to live here forever.
+
+            -- v1.10: small key/value meta (e.g. active tokenizer mode)
+            CREATE TABLE IF NOT EXISTS hippo_meta (
+              key TEXT PRIMARY KEY,
+              value TEXT
+            );
+
+            -- v1.76.5: retained source transcript for audit + re-summarize
+            CREATE TABLE IF NOT EXISTS memory_sources (
+              memory_id TEXT PRIMARY KEY,
+              source_json TEXT NOT NULL,
+              source_count INTEGER DEFAULT 0,
+              created_at REAL DEFAULT 0.0
+            );
+            """)
+        # v1.79.1: ONE upgrade path. The canonical column list above is the
+        # schema; an older database simply gets the missing columns appended.
+        # This replaced the per-version db_migration list, which had to be
+        # edited for every new column and still scanned PRAGMAs on every open.
+        added = ensure_columns(self._conn, "engrams", _ENGRAM_COLUMNS)
+        if added:
+            print("[hippocampus] engrams schema upgraded (+"
+                  + ", ".join(added) + ")")
+        # Indexes / FTS / triggers reference the full column set, so they are
+        # created only after ensure_columns() has run.
+        with self._lock, self._conn:
+            self._conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_session ON engrams(session_id);
             CREATE INDEX IF NOT EXISTS idx_actor ON engrams(actor_id);
             CREATE INDEX IF NOT EXISTS idx_channel ON engrams(channel_id);
@@ -122,85 +201,7 @@ class HippocampalStore:
               INSERT INTO engrams_fts(rowid, fts_text)
               VALUES (new.rowid, COALESCE(new.fts_text, ''));
             END;
-
-            -- v1.1: user self-model (neocortex analog)
-            CREATE TABLE IF NOT EXISTS profile_facts (
-              id TEXT PRIMARY KEY,
-              actor_id TEXT,
-              predicate TEXT,
-              value TEXT,
-              value_type TEXT DEFAULT 'string',
-              confidence REAL,
-              evidence_count INTEGER,
-              source_relation_ids TEXT,
-              source_engram_ids TEXT,
-              created_at REAL,
-              updated_at REAL,
-              last_evidence_at REAL
-            );
-            CREATE INDEX IF NOT EXISTS idx_profile_actor ON profile_facts(actor_id);
-            CREATE INDEX IF NOT EXISTS idx_profile_pred ON profile_facts(actor_id, predicate);
-
-            -- v1.78.0: cluster_summaries is gone (see the DROP below).
-
-            -- v1.77.0: rebuild_state is gone. The embedding-rebuild
-            -- checkpoint was never written (the reindex command that would
-            -- have used it never existed), so the table and its three
-            -- helpers were pure residue. A DROP below also clears it from
-            -- installs created before this version.
-
-            -- v1.10: small key/value meta (e.g. active tokenizer mode)
-            CREATE TABLE IF NOT EXISTS hippo_meta (
-              key TEXT PRIMARY KEY,
-              value TEXT
-            );
-
-            -- v1.76.5: retained source transcript for audit + re-summarize
-            CREATE TABLE IF NOT EXISTS memory_sources (
-              memory_id TEXT PRIMARY KEY,
-              source_json TEXT NOT NULL,
-              source_count INTEGER DEFAULT 0,
-              created_at REAL DEFAULT 0.0
-            );
             """)
-        # B10: column-append migrations extracted to hippocampus.db_migration
-        ran = run_migrations(self._conn, self._lock)
-        for v in ran:
-            print("[hippocampus] applied compat migration: " + v)
-        # v1.77.0: drop the dead rebuild_state table left by older installs
-        # (see the note where its CREATE used to be).
-        try:
-            with self._lock, self._conn:
-                self._conn.execute("DROP TABLE IF EXISTS rebuild_state")
-        except Exception as _rb:
-            print("[hippocampus] rebuild_state drop skipped: " + repr(_rb))
-        # v1.78.0: the similar-to cluster chain is gone. Drop its table and the
-        # three columns it wrote on engrams. ALTER TABLE ... DROP COLUMN needs
-        # SQLite >= 3.35; on an older build the columns stay behind (harmless:
-        # Engram.from_row ignores unknown keys) and the warning names them.
-        try:
-            with self._lock, self._conn:
-                self._conn.execute("DROP TABLE IF EXISTS cluster_summaries")
-        except Exception as _cs:
-            print("[hippocampus] cluster_summaries drop skipped: " + repr(_cs))
-        try:
-            with self._lock:
-                _have = {r[1] for r in self._conn.execute(
-                    "PRAGMA table_info(engrams)")}
-        except Exception:
-            _have = set()
-        for _col in ("similar_to", "cluster_id", "profile_fact_id"):
-            if _col not in _have:
-                continue
-            try:
-                with self._lock, self._conn:
-                    self._conn.execute(
-                        "ALTER TABLE engrams DROP COLUMN " + _col)
-            except sqlite3.OperationalError:
-                pass  # SQLite < 3.35 cannot drop columns; they stay unread
-            except Exception as _dc:
-                print("[hippocampus] engram column drop skipped: "
-                      + _col + ": " + repr(_dc))
         # v1.36: index on persona_id, created after the column-append
         # migration guarantees the column exists (old DBs included).
         try:
@@ -1183,16 +1184,6 @@ class HippocampalStore:
                 (int(limit),)).fetchall()
         return [(r["content"] or "", r["sid"], r["pid"], r["id"]) for r in rows]
 
-    def count_by_embedding_model(self, model: str, *,
-                                 include_forgotten: bool = False) -> int:
-        """Count engrams carrying `model` (empty model normalised to '')."""
-        sql = ("SELECT COUNT(*) AS c FROM engrams "
-               "WHERE COALESCE(embedding_model, '') = ?")
-        if not include_forgotten:
-            sql += " AND COALESCE(forgotten_at, 0) = 0"
-        with self._lock, self._conn:
-            cur = self._conn.execute(sql, (model or "",))
-            return int(cur.fetchone()["c"])
 
     def save_memory_source(self, memory_id: str, lines: list[dict]) -> None:
         """Persist the source transcript for one memory (audit/re-summarize)."""
