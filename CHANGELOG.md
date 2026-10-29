@@ -4,6 +4,56 @@
 
 Nothing yet.
 
+## [1.79.0] - 2026-10-29
+
+按一份通用编码规则清单（8 条）做静态审计后的清理：去掉「配置读取双轨」与幽灵键、删死码、
+规整文档口径、把两个超长方法拆开。行为不变；唯一的功能变化是 5 个此前只在代码里被读取、
+没有任何声明位置的键成为真实配置项。
+
+### 审计证据（生产 100 文件 / 1005 函数）
+- 68 处 `getattr(self.cfg, ...)` 自带默认值：38 处与 `MemoryConfig` 默认值逐字相同（重复兜底），
+  19 处与默认值不一致（同一配置有两个不同的有效值），另有 5 个名字在 `MemoryConfig` 里根本不存在
+  （search_cache_enabled / search_cache_ttl_seconds / search_cache_max_entries /
+  diary_consume_cache_on_write / bot_actor_id），共 11 处读取恒落默认值。
+- 33 处 `getattr(self, "attr", None)` 落在 `__init__` 必然赋值的属性上。
+- 25 个函数 ≥ 80 行（最长 `_handle_inject_sync` 209 行、`_install_bridges` 202 行）。
+- 死代码：`VectorIndex.vector()` 生产零调用、`HAVE_NUMPY` 仅测试打印、
+  `_build_default_registry` 是单行转调。
+- 文档口径：README 称「唯一可选依赖 jieba」，而 vecmath 会机会性使用 numpy。
+- 测试：`tests/_smoke_v86.py` 复制了生产公式常量。
+
+### Changed
+- 68 处 cfg 读取改为直接属性访问，并删掉与默认值重复的 `or` 兜底；19 处「两个默认值」
+  统一到 `MemoryConfig`（dataclass 是唯一事实源）。涉及 conversation_buffer / diary_writer /
+  service / session_buffer / summarizer / dual_route / graph_retriever / observe。
+  保留 `getattr(self.cfg, "_prompt_namespace", None)`（运行时注入的私有属性，不是配置字段）。
+- 5 个幽灵键成为真实字段并进入配置 UI（schema 159 -> 164 项）：
+  `search_cache_enabled=True`、`search_cache_ttl_seconds=60.0`（0=禁用）、
+  `search_cache_max_entries=128`（0=禁用）、`diary_consume_cache_on_write=True`、`bot_actor_id=""`。
+  `ConfigManager._FIELDS` 与 `_conf_schema.json` 同步；`tests/_smoke_v94.py` 的
+  字段/默认值/类型全覆盖断言自动纳入。
+- 33 处 `getattr(self, ...)` 改为 `self.x`。
+- `tests/_smoke_v86.py`：期望值改为固定常量 `0.958854`（tau_eff = 7d*(1+4.0*0.6)），不再复制公式。
+- README 与 requirements.txt：说明 numpy 是可选的加速路径（有则向量化，无则纯 Python），不是依赖。
+
+### Removed
+- `hippocampus/vecmath.py` 的 `VectorIndex.vector()`（0 调用点）与 `HAVE_NUMPY` 常量。
+- `MemoryService._build_default_registry`（仅 `return default_registry()`）。
+
+### Refactored
+- `handlers/init.py` 的 `_install_bridges` 由 202 行拆为流程 + 7 个方法：
+  `_register_llm_bridge` / `_register_embedding_bridge` / `_activate_providers` /
+  `_maybe_activate_embedding` / `_prov_desc` / `_llm_bridge_coro` / `_llm_bridge` /
+  `_emb_bridge_sync`；超时与 host-loop 优先的注释随代码保留。
+- `handlers/event/inject.py` 的 `_handle_inject_sync` 由 209 行拆为流程 + 5 个方法：
+  `_inject_persona_block` / `_inject_memory_block` / `_inject_relation_block` /
+  `_inject_diary_block` / `_apply_inject_blocks`。格式错误的 cap 仍降级到默认值，而不是放弃注入。
+
+### Tests
+- 新增 `tests/_smoke_v104.py`（12 检查）：5 个新字段经 ConfigManager roundtrip 且不进 extra；
+  `search_cache_ttl_seconds=0` 时不使用召回缓存；AST 守卫禁止生产代码再出现
+  `getattr(<任意>.cfg, "<public>")`；死码确已删除。
+- 全量 94 个 smoke（v08~v104）全绿。
 ## [1.78.3] - 2026-10-29
 
 修复 `atoms` 表在升级库上永远为空：`AtomStore` 在旧库上构造失败，而

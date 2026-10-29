@@ -117,17 +117,17 @@ class ConversationSummarizer:
         self._llm = llm
 
     def _ratio(self) -> float:
-        return float(getattr(self.cfg, "summary_compress_ratio", 0.15) or 0.0)
+        return float(self.cfg.summary_compress_ratio or 0.0)
 
     def _cap(self, chat_type: str = "") -> int:
         if chat_type == "group":
-            g = int(getattr(self.cfg, "summary_compress_cap_group", 0) or 0)
+            g = int(self.cfg.summary_compress_cap_group)
             if g > 0:
                 return g
-        return int(getattr(self.cfg, "summary_compress_cap", 1200) or 0)
+        return int(self.cfg.summary_compress_cap or 0)
 
     def _floor(self) -> int:
-        return int(getattr(self.cfg, "summary_compress_floor", 0) or 0)
+        return int(self.cfg.summary_compress_floor)
 
     def _system_prompt(self, rec) -> str:
         _pn = getattr(self.cfg, "_prompt_namespace", None)
@@ -150,7 +150,7 @@ class ConversationSummarizer:
                                floor=self._floor(), cap=self._cap(chat_type))
         result = self._llm_summarize(rec, target)
         if result is None:
-            if bool(getattr(self.cfg, "summary_fallback_enabled", False)):
+            if bool(self.cfg.summary_fallback_enabled):
                 result = self._fallback(rec, target)
             else:
                 # 不回退：返回空摘要，下游 store_summary 会因 text 为空跳过写入

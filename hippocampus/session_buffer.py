@@ -70,7 +70,7 @@ class SessionAggregator:
     # ---- quality gate ----
     def _accept(self, content: str, buf: "_Buffer | None") -> bool:
         text = (content or "").strip()
-        min_chars = int(getattr(self.cfg, "session_aggregate_min_chars", 2) or 0)
+        min_chars = int(self.cfg.session_aggregate_min_chars or 0)
         if len(text) < max(1, min_chars):
             return False
         # Drop an exact repeat of the immediately preceding buffered line.
@@ -107,7 +107,7 @@ class SessionAggregator:
         buf.lines.append(content.strip())
         buf.last_ts = now
 
-        cap = int(getattr(self.cfg, "session_aggregate_max_messages", 5) or 1)
+        cap = int(self.cfg.session_aggregate_max_messages or 1)
         if len(buf.lines) >= max(1, cap):
             self._flush_key(k)
 
@@ -118,7 +118,7 @@ class SessionAggregator:
 
     # ---- internals ----
     def _idle_seconds(self) -> float:
-        return float(getattr(self.cfg, "session_aggregate_idle_seconds", 120.0) or 0.0)
+        return float(self.cfg.session_aggregate_idle_seconds or 0.0)
 
     def _is_idle(self, buf: _Buffer, now: float) -> bool:
         idle = self._idle_seconds()

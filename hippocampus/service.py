@@ -55,7 +55,7 @@ class MemoryService:
                  llm: LLMProvider | None = None,
                  on_trigger_fire: Callable | None = None) -> None:
         self.cfg = cfg or MemoryConfig()
-        self.registry: ProviderRegistry = registry or self._build_default_registry()
+        self.registry: ProviderRegistry = registry or default_registry()
         if embedder is not None:
             self.registry.register_embedding(self.cfg.embedding_name, embedder)
         if llm is not None:
@@ -68,7 +68,7 @@ class MemoryService:
         self._current_llm_name = self.cfg.llm_name
         self.store = HippocampalStore(
             self.cfg.sqlite_path, self.embedder,
-            tokenizer_mode=getattr(self.cfg, "tokenizer_mode", "char"))
+            tokenizer_mode=self.cfg.tokenizer_mode)
         # v1.76.6: restore persisted prompt overrides before any LLM caller
         # (encoder / summarizer / consolidator) reads the registry. Overrides
         # are namespaced per store instance so two MemoryService objects with
@@ -122,7 +122,7 @@ class MemoryService:
         self._prospective_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.profile = ProfileStore(self.cfg.sqlite_path) if self.cfg.enable_profile else None
-        self.persona_store = PersonaStore(self.cfg.sqlite_path) if getattr(self.cfg, "enable_persona", False) else None
+        self.persona_store = PersonaStore(self.cfg.sqlite_path) if self.cfg.enable_persona else None
         self.activation = SpreadingActivation(self.semantic, self.store, self.cfg) if (self.semantic is not None) else None
         self.consolidator._semantic = self.semantic
         self.consolidator._profile = self.profile
@@ -154,9 +154,9 @@ class MemoryService:
         # run on the event loop or the injection worker, so all cache
         # mutations share this lock.
         self._recall_cache_lock = threading.RLock()
-        self._recall_cache_enabled = bool(getattr(self.cfg, "search_cache_enabled", True))
-        self._recall_cache_ttl = float(getattr(self.cfg, "search_cache_ttl_seconds", 60.0) or 60.0)
-        self._recall_cache_max = int(getattr(self.cfg, "search_cache_max_entries", 128) or 128)
+        self._recall_cache_enabled = bool(self.cfg.search_cache_enabled)
+        self._recall_cache_ttl = float(self.cfg.search_cache_ttl_seconds)
+        self._recall_cache_max = int(self.cfg.search_cache_max_entries)
         # P1 (2026-08-11): replay any post-ingest write ops left incomplete
         # by a crash. Idempotent by design (see _repair_incomplete_write_ops).
         try:
@@ -209,9 +209,6 @@ class MemoryService:
                 _obs_note("service", "_ensure_atom_layer:lifecycle")
         return (self.atom_store is not None) or (self.graph_store is not None)
 
-    def _build_default_registry(self) -> ProviderRegistry:
-        return default_registry()
-
     # ---------- model switch ----------
     def set_embedding(self, name: str) -> str:
         if not self.registry.has_embedding(name):
@@ -239,12 +236,12 @@ class MemoryService:
             self.encoder.set_llm(self.llm)
         except Exception:
             _obs_note("service", "set_llm")
-        if getattr(self, "extractor", None) is not None:
+        if self.extractor is not None:
             try:
                 self.extractor.set_llm(self.llm)
             except Exception:
                 _obs_note("service", "set_llm")
-        if getattr(self, "consolidator", None) is not None:
+        if self.consolidator is not None:
             try:
                 self.consolidator._llm = self.llm
             except Exception:
@@ -353,7 +350,7 @@ class MemoryService:
         chunk-level diary recall quietly scores 0 for every old chunk.
         Returns the number of chunks rewritten.
         """
-        ds = getattr(self, "diary_store", None)
+        ds = self.diary_store
         if ds is None:
             return 0
         try:
@@ -391,7 +388,7 @@ class MemoryService:
         doing it lazily would stall the first request, so it runs on a
         daemon thread right after the service starts.
         """
-        t = getattr(self, "_vector_warmup", None)
+        t = self._vector_warmup
         if t is not None and t.is_alive():
             return
 
@@ -456,7 +453,7 @@ class MemoryService:
             platform=platform, channel_id=channel_id, content=content,
             persona_id=persona_id, scope_id=scope_id)
         e.embedding_model = self._current_embedding_name
-        if getattr(self.cfg, "dedup_enabled", False):
+        if self.cfg.dedup_enabled:
             dup = self._find_text_duplicate(e)
             if dup is not None:
                 dup.strength = min(1.0, dup.strength + 0.05)
@@ -566,7 +563,7 @@ class MemoryService:
         # v1.76.5: retain the raw transcript for important memories so the
         # WebUI can audit the source and trigger an LLM re-summarization.
         source_lines = identity.get("source_lines") or []
-        source_floor = float(getattr(self.cfg, "source_retention_min_importance", 0.7) or 0.0)
+        source_floor = float(self.cfg.source_retention_min_importance or 0.0)
         if source_lines and e.importance >= source_floor:
             try:
                 self.store.save_memory_source(e.id, source_lines)
@@ -579,9 +576,9 @@ class MemoryService:
         # WebUI see the SAME LLM-derived facts, with entity type taken from
         # the LLM (fixing rule-classified "unknown").
         rels = summary.get("relations") or []
-        if rels and getattr(self, "relation_store", None) is not None:
+        if rels and self.relation_store is not None:
             from .relation_store import Relation
-            hyst = float(getattr(self.cfg, "relation_supersede_hysteresis", 0.0) or 0.0)
+            hyst = float(self.cfg.relation_supersede_hysteresis)
             for r in rels:
                 try:
                     rel = Relation(
@@ -609,7 +606,7 @@ class MemoryService:
         no weighting): relevance (subject/object/predicate appears in query)
         -> confidence threshold -> top-N. When persona_id is set, only
         relations sourced from that persona partition are returned."""
-        rs = getattr(self, "relation_store", None)
+        rs = self.relation_store
         if rs is None:
             return []
         try:
@@ -642,10 +639,10 @@ class MemoryService:
     def cache_daily_line(self, meta: dict) -> None:
         """Append one raw line (user OR bot) to the daily cache. Best-effort;
         never raises out of the event hook."""
-        ds = getattr(self, "diary_store", None)
+        ds = self.diary_store
         if ds is None:
             return
-        if not bool(getattr(self.cfg, "diary_enabled", False)):
+        if not bool(self.cfg.diary_enabled):
             return
         content = (meta.get("content", "") or "").strip()
         if not content:
@@ -723,14 +720,14 @@ class MemoryService:
             print("[hippocampus] store_diary persist error: " + repr(ex))
             return None
         # chunk-level embeddings for chunk recall
-        ds = getattr(self, "diary_store", None)
+        ds = self.diary_store
         if ds is not None:
             try:
                 from .diary_writer import split_chunks
                 from .diary_store import DiaryChunk
                 first_ts = float(diary.get("_first_ts", 0.0) or 0.0)
                 last_ts = float(diary.get("_last_ts", 0.0) or 0.0)
-                cmax = int(getattr(self.cfg, "diary_chunk_max_chars", 400) or 400)
+                cmax = int(self.cfg.diary_chunk_max_chars)
                 pieces = split_chunks(text, first_ts, last_ts, max_chars=cmax)
                 chunks = []
                 for seq, ptext, ts0, ts1 in pieces:
@@ -766,7 +763,7 @@ class MemoryService:
         recall coverage. The fallback embeds each slice with the current
         embedder on demand; no write back.
         """
-        ds = getattr(self, "diary_store", None)
+        ds = self.diary_store
         if ds is None or top_n <= 0:
             return []
         try:
@@ -856,8 +853,8 @@ class MemoryService:
                     failure instead of silently swallowing it.
         """
         import time as _t
-        ds = getattr(self, "diary_store", None)
-        if ds is None or not bool(getattr(self.cfg, "diary_enabled", False)):
+        ds = self.diary_store
+        if ds is None or not bool(self.cfg.diary_enabled):
             return (0, [])
         now = now if now is not None else _t.time()
         from .diary_writer import (DiaryWriter, day_bounds, resolve_cut)
@@ -870,9 +867,9 @@ class MemoryService:
                 writer.set_llm(self.llm)
             except Exception:
                 _obs_note("service", "run_daily_diary")
-        night_h = float(getattr(self.cfg, "diary_night_window_hours", 6.0) or 6.0)
-        gap = float(getattr(self.cfg, "diary_night_gap_seconds", 1800.0) or 1800.0)
-        consume = bool(getattr(self.cfg, "diary_consume_cache_on_write", True))
+        night_h = float(self.cfg.diary_night_window_hours)
+        gap = float(self.cfg.diary_night_gap_seconds)
+        consume = bool(self.cfg.diary_consume_cache_on_write)
         # target = the day that ended at the most recent midnight (yesterday)
         today_start, _ = day_bounds(now)
         target_day = today_start - 86400.0
@@ -947,7 +944,7 @@ class MemoryService:
                 failed.append({"channel_id": ch, "persona_id": pid, "error": repr(ex)})
         # TTL purge
         try:
-            ttl_days = int(getattr(self.cfg, "diary_message_ttl_days", 7) or 7)
+            ttl_days = int(self.cfg.diary_message_ttl_days)
             ds.purge_older_than(now - ttl_days * 86400.0)
         except Exception as ex:
             print("[hippocampus] run_daily_diary purge error: " + repr(ex))
@@ -1005,9 +1002,9 @@ class MemoryService:
             return None
         try:
             from .dedup import best_duplicate
-            k = int(getattr(self.cfg, "dedup_candidate_k", 10) or 10)
-            thr = float(getattr(self.cfg, "dedup_threshold", 0.9) or 0.9)
-            mode = getattr(self.cfg, "tokenizer_mode", "char")
+            k = int(self.cfg.dedup_candidate_k)
+            thr = float(self.cfg.dedup_threshold)
+            mode = self.cfg.tokenizer_mode
             hits = self.store.fts_search(
                 text, k=k, actor_id=(e.actor_id or None))
             cands = [h for (h, _s) in hits if h.id != e.id]
@@ -1076,7 +1073,7 @@ class MemoryService:
         reuses the same preference classification, so this costs one
         name lookup per relation.
         """
-        if not getattr(self.cfg, "enable_atom_extraction", False):
+        if not self.cfg.enable_atom_extraction:
             return
         if self.semantic is None:
             return
@@ -1094,31 +1091,31 @@ class MemoryService:
     def _delete_derived_indexes(self, engram_id: str) -> None:
         """Cascade a hard delete through relation / semantic / graph / atom."""
         try:
-            rs = getattr(self, "relation_store", None)
+            rs = self.relation_store
             if rs is not None:
                 rs.delete_by_source_engram(engram_id)
         except Exception as exc:
             print("[hippocampus] relation cascade error: " + repr(exc))
         try:
-            sem = getattr(self, "semantic", None)
+            sem = self.semantic
             if sem is not None:
                 sem.delete_relations_by_source(engram_id)
                 deleted_entities = sem.remove_engram_from_entities(engram_id)
-                graph = getattr(self, "graph_store", None)
+                graph = self.graph_store
                 if graph is not None:
                     for eid in deleted_entities:
                         graph.remove_entity(eid)
         except Exception as exc:
             print("[hippocampus] semantic cascade error: " + repr(exc))
         try:
-            graph = getattr(self, "graph_store", None)
+            graph = self.graph_store
             if graph is not None:
                 graph.remove_engram_refs(engram_id)
                 graph.delete_graph_memory_v2(engram_id)
         except Exception as exc:
             print("[hippocampus] graph cascade error: " + repr(exc))
         try:
-            atom_store = getattr(self, "atom_store", None)
+            atom_store = self.atom_store
             if atom_store is not None:
                 atom_store.delete_by_source_engram(engram_id)
         except Exception as exc:
@@ -1128,9 +1125,9 @@ class MemoryService:
                         graph_facts=None) -> None:
         from .graph_extractor import GraphExtractorV2
         extracted = GraphExtractorV2(
-            max_topics=int(getattr(self.cfg, "graph_max_topics", 4) or 4),
-            max_persons=int(getattr(self.cfg, "graph_max_persons", 6) or 6),
-            max_facts=int(getattr(self.cfg, "graph_max_facts", 6) or 6),
+            max_topics=int(self.cfg.graph_max_topics),
+            max_persons=int(self.cfg.graph_max_persons),
+            max_facts=int(self.cfg.graph_max_facts),
         ).extract(e, name_map=name_map or {}, facts=graph_facts)
         if not extracted.entries:
             return
@@ -1735,7 +1732,7 @@ class MemoryService:
 
     def upsert_entity(self, persona_id: str, entity: dict) -> str:
         """Cross-plugin entity upsert (v1.76 public API)."""
-        g = getattr(self, "life_graph", None)
+        g = self.life_graph
         if g is None:
             return ""
         return g.upsert_entity(persona_id, entity)
@@ -1744,23 +1741,23 @@ class MemoryService:
                       relation: str, dst_entity_id: str,
                       weight: float = 1.0) -> bool:
         """Cross-plugin typed edge write (v1.76 public API)."""
-        g = getattr(self, "life_graph", None)
+        g = self.life_graph
         if g is None:
             return False
         return g.link_entities(persona_id, src_entity_id, relation,
                                dst_entity_id, weight=weight)
 
     def list_entities(self, persona_id: str, limit: int = 500) -> list[dict]:
-        g = getattr(self, "life_graph", None)
+        g = self.life_graph
         return g.list_entities(persona_id, limit=limit) if g else []
 
     def list_links(self, persona_id: str, limit: int = 1000) -> list[dict]:
-        g = getattr(self, "life_graph", None)
+        g = self.life_graph
         return g.list_links(persona_id, limit=limit) if g else []
 
     def claim_task(self, persona_id: str, task_kind: str,
                    holder: str = "", ttl_seconds: int = 300) -> bool:
-        ls = getattr(self, "lease_store", None)
+        ls = self.lease_store
         if ls is None:
             return False
         return ls.claim(persona_id, task_kind,
@@ -1769,7 +1766,7 @@ class MemoryService:
 
     def renew_task(self, persona_id: str, task_kind: str,
                    holder: str = "", ttl_seconds: int = 300) -> bool:
-        ls = getattr(self, "lease_store", None)
+        ls = self.lease_store
         if ls is None:
             return False
         return ls.renew(persona_id, task_kind,
@@ -1778,14 +1775,14 @@ class MemoryService:
 
     def release_task(self, persona_id: str, task_kind: str,
                      holder: str = "") -> bool:
-        ls = getattr(self, "lease_store", None)
+        ls = self.lease_store
         if ls is None:
             return False
         return ls.release(persona_id, task_kind,
                           holder or "engram:" + str(persona_id))
 
     def task_lease_owner(self, persona_id: str, task_kind: str) -> str:
-        ls = getattr(self, "lease_store", None)
+        ls = self.lease_store
         if ls is None:
             return ""
         return ls.owner(persona_id, task_kind)
@@ -1793,7 +1790,7 @@ class MemoryService:
     def list_prompts(self) -> list[dict]:
         """Built-in prompt templates + persisted override status."""
         from .prompts import BUILTIN_PROMPTS, list_overrides
-        overrides = list_overrides(getattr(self, "_prompt_namespace", None))
+        overrides = list_overrides(self._prompt_namespace)
         out = []
         for name in sorted(BUILTIN_PROMPTS):
             out.append({
@@ -1812,7 +1809,7 @@ class MemoryService:
             # Empty prompt is indistinguishable from a broken LLM call; treat
             # it as "remove customisation" instead of persisting an empty string.
             content = None
-        set_override(name, content, getattr(self, "_prompt_namespace", None))
+        set_override(name, content, self._prompt_namespace)
         self.store.set_prompt_override(name, content)
         return True
 
@@ -1820,7 +1817,7 @@ class MemoryService:
         from .prompts import BUILTIN_PROMPTS, set_override
         if name not in BUILTIN_PROMPTS:
             return False
-        set_override(name, None, getattr(self, "_prompt_namespace", None))
+        set_override(name, None, self._prompt_namespace)
         self.store.set_prompt_override(name, None)
         return True
 
@@ -1847,8 +1844,8 @@ class MemoryService:
             # semantic / atom derived indexes were built. Rebuild missing
             # indexes (idempotent upserts; _post_ingest skips diary/summary).
             if not (getattr(e, "entity_refs", None) or []) and (
-                    bool(getattr(self.cfg, "enable_semantic", False))
-                    or bool(getattr(self.cfg, "enable_atom_extraction", False))):
+                    bool(self.cfg.enable_semantic)
+                    or bool(self.cfg.enable_atom_extraction)):
                 try:
                     self._post_ingest(e)
                 except Exception as pex:
@@ -1945,7 +1942,7 @@ class MemoryService:
             # entries belonging to other engrams are untouched -- the callee
             # keys everything by source_memory_id / edge ownership.
             try:
-                graph = getattr(self, "graph_store", None)
+                graph = self.graph_store
                 if graph is not None:
                     graph.remove_engram_refs(eid)
                     graph.delete_graph_memory_v2(eid)
@@ -2101,7 +2098,7 @@ class MemoryService:
         self._start_vector_warmup()
         # v1.13: one-shot tier reclassification at startup (cheap, no loop).
         # Refreshes hot/warm/cold for memories that aged while offline.
-        if getattr(self.cfg, "tiering_enabled", False):
+        if self.cfg.tiering_enabled:
             try:
                 self.reclassify_tiers()
             except Exception as ex:
@@ -2174,13 +2171,13 @@ class MemoryService:
 
     def _self_threaded_stop(self) -> None:
         import asyncio as _asyncio
-        worker_loop = getattr(self, "_atom_loop", None)
+        worker_loop = self._atom_loop
         if worker_loop is not None and not worker_loop.is_closed():
             try:
                 worker_loop.call_soon_threadsafe(worker_loop.stop)
             except Exception:
                 _obs_note("service", "_self_threaded_stop")
-        thread = getattr(self, "_atom_thread", None)
+        thread = self._atom_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
         self._atom_task = None
@@ -2226,32 +2223,31 @@ class MemoryService:
         strength only drops, tiers only move). Returns a small report dict."""
         out = {"decayed_below_floor": 0, "reclassified": False}
         try:
-            tau = float(getattr(self.cfg, "decay_tau_base", 60 * 60 * 24 * 7.0))
-            floor = float(getattr(self.cfg, "decay_floor", 0.05))
+            tau = float(self.cfg.decay_tau_base)
+            floor = float(self.cfg.decay_floor)
             out["decayed_below_floor"] = self.store.decay_pass(tau, floor)
         except Exception as ex:
             print("[hippocampus] engram decay_pass error: " + repr(ex))
         try:
-            if getattr(self.cfg, "tiering_enabled", False):
+            if self.cfg.tiering_enabled:
                 self.reclassify_tiers()
                 out["reclassified"] = True
         except Exception as ex:
             print("[hippocampus] decay-loop reclassify error: " + repr(ex))
         try:
-            if (bool(getattr(self.cfg, "relation_decay_enabled", True))
-                    and getattr(self, "relation_store", None) is not None
+            if (bool(self.cfg.relation_decay_enabled)
+                    and self.relation_store is not None
                     and self.relation_store.is_open()):
-                tau = float(getattr(self.cfg, "relation_decay_tau_seconds",
-                                    60 * 60 * 24 * 30.0))
-                rfloor = float(getattr(self.cfg, "relation_decay_floor", 0.1))
+                tau = float(self.cfg.relation_decay_tau_seconds)
+                rfloor = float(self.cfg.relation_decay_floor)
                 out["relations"] = self.relation_store.decay_pass(tau, rfloor)
         except Exception as ex:
             print("[hippocampus] relation decay error: " + repr(ex))
         # v1.34: hard-delete relations soft-forgotten longer than the retention.
         try:
-            ret_days = float(getattr(self.cfg, "relation_forget_retention_days", 14.0))
+            ret_days = float(self.cfg.relation_forget_retention_days)
             if (ret_days > 0
-                    and getattr(self, "relation_store", None) is not None
+                    and self.relation_store is not None
                     and self.relation_store.is_open()):
                 out["relations_purged"] = self.relation_store.purge_forgotten(
                     ret_days * 86400.0)
@@ -2259,8 +2255,8 @@ class MemoryService:
             print("[hippocampus] relation purge error: " + repr(ex))
         # v1.35: fade profile-fact confidence for stale (long-unrefreshed) facts.
         try:
-            if (bool(getattr(self.cfg, "profile_decay_enabled", True))
-                    and getattr(self, "profile", None) is not None):
+            if (bool(self.cfg.profile_decay_enabled)
+                    and self.profile is not None):
                 out["profile_facts"] = self.decay_profile()
         except Exception as ex:
             print("[hippocampus] profile decay error: " + repr(ex))
@@ -2275,7 +2271,7 @@ class MemoryService:
             print("[hippocampus] consolidation sweep error: " + repr(ex))
         # v1.76.5: LLM consolidation stays opt-in and keeps its own cooldown.
         try:
-            if bool(getattr(self.cfg, "memory_consolidation_enabled", False)):
+            if bool(self.cfg.memory_consolidation_enabled):
                 out["llm_consolidation"] = self.run_memory_consolidation()
         except Exception as ex:
             print("[hippocampus] memory consolidation sweep error: " + repr(ex))
@@ -2286,13 +2282,13 @@ class MemoryService:
         except Exception as ex:
             print("[hippocampus] working-memory eviction error: " + repr(ex))
         try:
-            src_days = float(getattr(self.cfg, "source_retention_days", 90.0) or 0.0)
+            src_days = float(self.cfg.source_retention_days or 0.0)
             out["memory_sources_purged"] = self.store.purge_memory_sources(
                 src_days * 86400.0)
         except Exception as ex:
             print("[hippocampus] memory source purge error: " + repr(ex))
         try:
-            op_days = float(getattr(self.cfg, "write_op_retention_days", 7.0) or 0.0)
+            op_days = float(self.cfg.write_op_retention_days or 0.0)
             out["write_ops_purged"] = self.store.purge_completed_write_ops(
                 op_days * 86400.0)
         except Exception as ex:
@@ -2309,7 +2305,7 @@ class MemoryService:
         """Start the v0.2 prospective-trigger poller (was previously dead)."""
         if self.prospective_scheduler is None or self.prospective_store is None:
             return
-        interval = float(getattr(self.cfg, "prospective_check_interval", 5.0) or 0.0)
+        interval = float(self.cfg.prospective_check_interval or 0.0)
         if interval <= 0:
             return
         if self._prospective_task is not None and not self._prospective_task.done():
@@ -2350,9 +2346,9 @@ class MemoryService:
         """Run run_memory_decay() on a fixed interval in a daemon thread.
         Default-on; disabled when memory_decay_enabled is False or the
         interval is <= 0."""
-        if not bool(getattr(self.cfg, "memory_decay_enabled", True)):
+        if not bool(self.cfg.memory_decay_enabled):
             return
-        interval = float(getattr(self.cfg, "memory_decay_interval_seconds", 1800.0) or 0.0)
+        interval = float(self.cfg.memory_decay_interval_seconds or 0.0)
         if interval <= 0:
             return
         if self._decay_thread is not None and self._decay_thread.is_alive():
@@ -2375,13 +2371,13 @@ class MemoryService:
         self._decay_thread.start()
 
     def _stop_decay_loop(self) -> None:
-        stop = getattr(self, "_decay_stop", None)
+        stop = self._decay_stop
         if stop is not None:
             try:
                 stop.set()
             except Exception:
                 _obs_note("service", "_stop_decay_loop")
-        thread = getattr(self, "_decay_thread", None)
+        thread = self._decay_thread
         if thread is not None and thread.is_alive():
             try:
                 thread.join(timeout=2.0)
@@ -2394,7 +2390,7 @@ class MemoryService:
         """v1.13: recompute + persist hot/warm/cold for every engram.
         Non-destructive (no deletes). Returns a count dict, or {} when
         tiering is disabled."""
-        if not getattr(self.cfg, "tiering_enabled", False):
+        if not self.cfg.tiering_enabled:
             return {}
         from .tiering import TieringEngine
         try:
@@ -2408,7 +2404,7 @@ class MemoryService:
         and evict them from the live DB. Explicit / destructive to live rows
         (data moves to the archive). Returns the archiver result dict, or {}
         when tiering is disabled."""
-        if not getattr(self.cfg, "tiering_enabled", False):
+        if not self.cfg.tiering_enabled:
             return {}
         from .cold_archive import ColdArchiver
         try:
@@ -2437,7 +2433,7 @@ class MemoryService:
         LLM is the rule fallback (which returns "")."""
         if self.persona_store is None or not actor_id:
             return None
-        cap = int(getattr(self.cfg, "persona_max_source", 20) or 20)
+        cap = int(self.cfg.persona_max_source)
         rows = self.store.list_active(limit=max(1, cap), actor_id=actor_id)
         if not rows:
             return None
@@ -2471,7 +2467,7 @@ class MemoryService:
             # is configured.
             full_system = system
             try:
-                bot_pid = (getattr(self.cfg, "bot_actor_id", "") or "assistant")
+                bot_pid = (self.cfg.bot_actor_id or "assistant")
                 if bot_pid and hasattr(self, "get_persona"):
                     bot_p = self.get_persona(bot_pid)
                     bp = (getattr(bot_p, "summary", "") or "").strip()
@@ -2600,7 +2596,7 @@ class MemoryService:
         except Exception as exc:
             print("[hippocampus] replay consolidation failed: " + repr(exc))
             out["replay_error"] = repr(exc)
-        if bool(getattr(self.cfg, "memory_consolidation_enabled", False)):
+        if bool(self.cfg.memory_consolidation_enabled):
             try:
                 out["llm"] = self.run_memory_consolidation(force=True)
             except Exception as exc:
@@ -2648,7 +2644,7 @@ class MemoryService:
                 obj.close()
             except Exception:
                 _obs_note("service", "close")
-        t = getattr(self, "_atom_task", None)
+        t = self._atom_task
         if t is not None and not t.done():
             try:
                 t.cancel()

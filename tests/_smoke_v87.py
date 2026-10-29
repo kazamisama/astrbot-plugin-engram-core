@@ -63,7 +63,8 @@ def check(cond, msg):
 
 
 def _cfg(**over):
-    cfg = type("Cfg", (), {})()
+    from hippocampus import MemoryConfig
+    cfg = MemoryConfig()
     for k, v in dict(
         auto_inject_enabled=True,
         auto_inject_top_k=3,

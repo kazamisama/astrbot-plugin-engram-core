@@ -151,163 +151,58 @@ class PluginInitializer:
     def _install_bridges(self) -> None:
         if self.service is None:
             return
-
-        cfg = self.service.cfg
-        emb_pid = getattr(cfg, "embedding_provider_id", "") or ""
-        llm_pid = getattr(cfg, "llm_provider_id", "") or ""
-
-        def _prov_desc(p) -> str:
-            """Identify the provider for diagnostics (best effort)."""
-            try:
-                if p is None:
-                    return "provider=None"
-                pc = getattr(p, "provider_config", None)
-                if isinstance(pc, dict):
-                    return ("provider=" + str(pc.get("id") or "?")
-                            + " model=" + str(pc.get("model") or "?"))
-                return "provider=" + type(p).__name__
-            except Exception:
-                return "provider=?"
-
-        async def _llm_bridge_coro(system: str, user: str, **kw) -> str:
-            provider = None
-            try:
-                if llm_pid:
-                    getter = getattr(self.context, "get_provider_by_id", None)
-                    if getter is not None:
-                        provider = getter(llm_pid)
-                if provider is None:
-                    provider = self.context.get_using_provider()
-                # v1.76.17: bound AstrBot's own retry chain. Its OpenAI source
-                # retries each request REQUEST_RETRY_ATTEMPTS (5) times with
-                # exponential backoff inside a 10-iteration outer loop in
-                # text_chat, and the HTTP timeout is 120s per attempt -- so one
-                # plugin summarization could spin for many minutes. The plugin
-                # treats any failure as "skip / use the fallback", so retrying
-                # is wasted work; 1 attempt surfaces the real error instead.
-                kw.setdefault("request_max_retries", 1)
-                # v1.76.14: hard-bounded INSIDE the bridge. AstrBot's
-                # provider.text_chat may carry no timeout of its own; a
-                # run_sync caller-side cap alone releases the caller but
-                # can leave this coroutine wedged on the shared worker
-                # loop. 45s (LLM bridge cap is 60s) keeps the worker
-                # healthy while still allowing slow completions.
-                _t0 = time.monotonic()
-                resp = await asyncio.wait_for(
-                    provider.text_chat(system_prompt=system, prompt=user, **kw),
-                    timeout=45.0)
-                _spent = time.monotonic() - _t0
-                if _spent >= 15.0:
-                    # The summarizer is off the reply path, so slowness here is
-                    # invisible without this line. Prompt size is the first
-                    # thing to check when a call takes tens of seconds.
-                    print("[hippocampus] LLM bridge slow: "
-                          + ("%.1fs " % _spent) + _prov_desc(provider)
-                          + " sys_chars=" + str(len(system or ""))
-                          + " usr_chars=" + str(len(user or "")))
-                if hasattr(resp, "text"):
-                    return resp.text or ""
-                if hasattr(resp, "completion_text"):
-                    return resp.completion_text or ""
-                return str(resp)
-            except asyncio.TimeoutError:
-                print("[hippocampus] LLM bridge timed out after 45.0s ("
-                      + _prov_desc(provider)
-                      + ", sys_chars=" + str(len(system or ""))
-                      + ", usr_chars=" + str(len(user or ""))
-                      + ", request_max_retries="
-                      + str(kw.get("request_max_retries")) + ")")
-                return ""
-            except Exception as e:
-                print(f"[hippocampus] LLM bridge error: {e!r}")
-                return ""
-
-        def _llm_bridge(system: str, user: str, **kw) -> str:
-            """Sync LLM bridge; host loop first, worker loop as fallback.
-
-            v1.76.16: same root cause as the embedding bridge below. AstrBot's
-            chat provider also talks over an aiohttp session bound to AstrBot's
-            loop, so driving it from the private worker loop hung until the cap
-            -- the 12x "LLM bridge timed out after 45.0s" that made the
-            summarizer give up and (with summary_fallback_enabled off) discard
-            whole conversations instead of storing them.
-            """
-            from hippocampus._async_bridge import (DEFAULT_LLM_SYNC_TIMEOUT,
-                                                   call_on_host_loop,
-                                                   host_loop_usable, run_sync)
-            # Keep this below ProxyLLMProvider's own DEFAULT_LLM_SYNC_TIMEOUT
-            # caller cap so the provider's 45s inner bound surfaces first
-            # instead of racing the outer wait.
-            cap = max(5.0, DEFAULT_LLM_SYNC_TIMEOUT - 10.0)
-            if host_loop_usable():
-                return call_on_host_loop(
-                    _llm_bridge_coro(system=system, user=user, **kw),
-                    timeout=cap)
-            return run_sync(
-                _llm_bridge_coro(system=system, user=user, **kw),
-                timeout=cap)
-
-        def _emb_bridge_sync(text: str) -> list[float]:
-            """Sync embedding bridge (v1.76.16).
-
-            Prefer AstrBot's OWN loop. AstrBot's embedding provider wraps an
-            aiohttp ClientSession, and its connection objects belong to the
-            loop they were created on: awaiting them from our private worker
-            loop does not fail fast, it hangs until the caller's cap. That is
-            what made this bridge time out (10s at boot, 59x at runtime) and
-            left the plugin pinned to its 64-dim `hash` placeholder while the
-            store held 4096-dim vectors.
-
-            The worker-loop path is kept only for the cases where the host
-            loop genuinely cannot be used: the sync init path (no host loop),
-            or a call already ON the host loop, where blocking on the result
-            would deadlock the loop that has to run the coroutine.
-            """
-            from hippocampus._async_bridge import (call_on_host_loop,
-                                                   host_loop_usable, run_sync)
-            if host_loop_usable():
-                return call_on_host_loop(
-                    emb_bridge_for_context(self.context, text,
-                                           provider_id=emb_pid),
-                    timeout=EMB_BRIDGE_TIMEOUT)
-            return run_sync(
-                emb_bridge_for_context(self.context, text, provider_id=emb_pid),
-                timeout=EMB_BRIDGE_TIMEOUT)
-
-        try:
-            self.service.register_llm(
-                "astrmock", ProxyLLMProvider("astrmock", _llm_bridge))
-        except Exception as e:
-            print(f"[hippocampus] register astrmock llm failed: {e!r}")
-
         # v1.76.16: skip the one-shot dim probe when a host loop exists. The
         # probe would run inside the plugin's synchronous __init__, i.e. with
         # the host loop BLOCKED inside it, so it could only ever time out.
         # Activation is decided after __init__ returns, on the host loop.
         from hippocampus._async_bridge import get_host_loop
         defer_activation = get_host_loop() is not None
+        self._register_llm_bridge()
+        emb_provider = self._register_embedding_bridge(defer_activation)
+        self._activate_providers(emb_provider, defer_activation)
 
-        emb_provider = None
+    def _register_llm_bridge(self) -> None:
+        try:
+            self.service.register_llm(
+                "astrmock", ProxyLLMProvider("astrmock", self._llm_bridge))
+        except Exception as e:
+            print(f"[hippocampus] register astrmock llm failed: {e!r}")
+
+    def _register_embedding_bridge(self, defer_activation: bool):
         try:
             emb_provider = ProxyEmbeddingProvider(
-                "astrmock", _emb_bridge_sync, probe=not defer_activation)
+                "astrmock", self._emb_bridge_sync, probe=not defer_activation)
             self.service.register_embedding("astrmock", emb_provider)
+            return emb_provider
         except Exception as e:
             print(f"[hippocampus] register astrmock embedding failed: {e!r}")
+            return None
 
+    def _activate_providers(self, emb_provider, defer_activation: bool) -> None:
         # Activate the AstrBot-backed providers by default so LLM and
         # embedding actually flow through the host. Users that explicitly
         # set embedding_name / llm_name to something else (hash / openai /
         # rule) in the config keep that choice. auto_rebuild_on_switch is
         # disabled here so a fresh install does not re-embed on boot.
-        #
+        prev_rebuild = self.service.cfg.auto_rebuild_on_switch
+        self.service.cfg.auto_rebuild_on_switch = False
+        try:
+            self._maybe_activate_embedding(emb_provider, defer_activation)
+        finally:
+            self.service.cfg.auto_rebuild_on_switch = prev_rebuild
+        try:
+            if (self.service.cfg.llm_name == "rule"
+                    and self.service.registry.has_llm("astrmock")):
+                self.service.set_llm("astrmock")
+        except Exception as e:
+            print(f"[hippocampus] activate astrmock llm failed: {e!r}")
+
+    def _maybe_activate_embedding(self, emb_provider, defer_activation: bool) -> None:
         # v1.76.4: do NOT auto-switch embedding when the astrmock probe
         # failed (dim==0). Switching to a non-working provider used to make
         # every subsequent engram embed as [] AND, because recall filtered
         # FTS by embedding_model, it hid all previously stored hash-vector
         # memories from keyword search as well.
-        prev_rebuild = self.service.cfg.auto_rebuild_on_switch
-        self.service.cfg.auto_rebuild_on_switch = False
         try:
             want_astrmock = (
                 self.service.cfg.embedding_name == "hash"
@@ -319,37 +214,150 @@ class PluginInitializer:
                 # probe here cannot succeed. Hand the decision to a task that
                 # runs once __init__ has returned.
                 self._pending_emb_activation = True
-            elif want_astrmock:
-                emb_ready = bool(
-                    emb_provider is not None and getattr(emb_provider, "dim", 0) > 0)
-                if emb_ready:
-                    old_model = self.service.current_embedding()
-                    self.service.set_embedding("astrmock")
-                    legacy = self.service.store.count_by_embedding_model(
-                        old_model, include_forgotten=False)
-                    if legacy:
-                        print(
-                            "[hippocampus] switched embedding hash -> astrmock; "
-                            + str(legacy) + " older vectors were not rebuilt. "
-                            "FTS recall still covers them; run /mem rebuild to "
-                            "restore vector recall.")
-                else:
+                return
+            if not want_astrmock:
+                return
+            emb_ready = bool(
+                emb_provider is not None and getattr(emb_provider, "dim", 0) > 0)
+            if emb_ready:
+                old_model = self.service.current_embedding()
+                self.service.set_embedding("astrmock")
+                legacy = self.service.store.count_by_embedding_model(
+                    old_model, include_forgotten=False)
+                if legacy:
                     print(
-                        "[hippocampus] astrmock embedding probe returned no "
-                        "usable vector; keeping configured embedding "
-                        + self.service.current_embedding()
-                        + ". Configure an AstrBot embedding provider or use "
-                        "/mem model use embedding astrmock later.")
+                        "[hippocampus] switched embedding hash -> astrmock; "
+                        + str(legacy) + " older vectors were not rebuilt. "
+                        "FTS recall still covers them; run /mem rebuild to "
+                        "restore vector recall.")
+                return
+            print(
+                "[hippocampus] astrmock embedding probe returned no "
+                "usable vector; keeping configured embedding "
+                + self.service.current_embedding()
+                + ". Configure an AstrBot embedding provider or use "
+                "/mem model use embedding astrmock later.")
         except Exception as e:
             print(f"[hippocampus] activate astrmock embedding failed: {e!r}")
+
+    @staticmethod
+    def _prov_desc(p) -> str:
+        """Identify the provider for diagnostics (best effort)."""
         try:
-            if (self.service.cfg.llm_name == "rule"
-                    and self.service.registry.has_llm("astrmock")):
-                self.service.set_llm("astrmock")
+            if p is None:
+                return "provider=None"
+            pc = getattr(p, "provider_config", None)
+            if isinstance(pc, dict):
+                return ("provider=" + str(pc.get("id") or "?")
+                        + " model=" + str(pc.get("model") or "?"))
+            return "provider=" + type(p).__name__
+        except Exception:
+            return "provider=?"
+
+    async def _llm_bridge_coro(self, system: str, user: str, **kw) -> str:
+        provider = None
+        try:
+            llm_pid = self.service.cfg.llm_provider_id
+            if llm_pid:
+                getter = getattr(self.context, "get_provider_by_id", None)
+                if getter is not None:
+                    provider = getter(llm_pid)
+            if provider is None:
+                provider = self.context.get_using_provider()
+            # v1.76.17: bound AstrBot's own retry chain. Its OpenAI source
+            # retries each request REQUEST_RETRY_ATTEMPTS (5) times with
+            # exponential backoff inside a 10-iteration outer loop in
+            # text_chat, and the HTTP timeout is 120s per attempt -- so one
+            # plugin summarization could spin for many minutes. The plugin
+            # treats any failure as "skip / use the fallback", so retrying
+            # is wasted work; 1 attempt surfaces the real error instead.
+            kw.setdefault("request_max_retries", 1)
+            # v1.76.14: hard-bounded INSIDE the bridge. AstrBot's
+            # provider.text_chat may carry no timeout of its own; a
+            # run_sync caller-side cap alone releases the caller but
+            # can leave this coroutine wedged on the shared worker
+            # loop. 45s (LLM bridge cap is 60s) keeps the worker
+            # healthy while still allowing slow completions.
+            _t0 = time.monotonic()
+            resp = await asyncio.wait_for(
+                provider.text_chat(system_prompt=system, prompt=user, **kw),
+                timeout=45.0)
+            _spent = time.monotonic() - _t0
+            if _spent >= 15.0:
+                # The summarizer is off the reply path, so slowness here is
+                # invisible without this line. Prompt size is the first
+                # thing to check when a call takes tens of seconds.
+                print("[hippocampus] LLM bridge slow: "
+                      + ("%.1fs " % _spent) + self._prov_desc(provider)
+                      + " sys_chars=" + str(len(system or ""))
+                      + " usr_chars=" + str(len(user or "")))
+            if hasattr(resp, "text"):
+                return resp.text or ""
+            if hasattr(resp, "completion_text"):
+                return resp.completion_text or ""
+            return str(resp)
+        except asyncio.TimeoutError:
+            print("[hippocampus] LLM bridge timed out after 45.0s ("
+                  + self._prov_desc(provider)
+                  + ", sys_chars=" + str(len(system or ""))
+                  + ", usr_chars=" + str(len(user or ""))
+                  + ", request_max_retries="
+                  + str(kw.get("request_max_retries")) + ")")
+            return ""
         except Exception as e:
-            print(f"[hippocampus] activate astrmock llm failed: {e!r}")
-        finally:
-            self.service.cfg.auto_rebuild_on_switch = prev_rebuild
+            print(f"[hippocampus] LLM bridge error: {e!r}")
+            return ""
+
+    def _llm_bridge(self, system: str, user: str, **kw) -> str:
+        """Sync LLM bridge; host loop first, worker loop as fallback.
+
+        v1.76.16: same root cause as the embedding bridge below. AstrBot's
+        chat provider also talks over an aiohttp session bound to AstrBot's
+        loop, so driving it from the private worker loop hung until the cap
+        -- the 12x "LLM bridge timed out after 45.0s" that made the
+        summarizer give up and (with summary_fallback_enabled off) discard
+        whole conversations instead of storing them.
+        """
+        from hippocampus._async_bridge import (DEFAULT_LLM_SYNC_TIMEOUT,
+                                               call_on_host_loop,
+                                               host_loop_usable, run_sync)
+        # Keep this below ProxyLLMProvider's own DEFAULT_LLM_SYNC_TIMEOUT
+        # caller cap so the provider's 45s inner bound surfaces first
+        # instead of racing the outer wait.
+        cap = max(5.0, DEFAULT_LLM_SYNC_TIMEOUT - 10.0)
+        if host_loop_usable():
+            return call_on_host_loop(
+                self._llm_bridge_coro(system=system, user=user, **kw),
+                timeout=cap)
+        return run_sync(
+            self._llm_bridge_coro(system=system, user=user, **kw), timeout=cap)
+
+    def _emb_bridge_sync(self, text: str) -> list[float]:
+        """Sync embedding bridge (v1.76.16).
+
+        Prefer AstrBot's OWN loop. AstrBot's embedding provider wraps an
+        aiohttp ClientSession, and its connection objects belong to the
+        loop they were created on: awaiting them from our private worker
+        loop does not fail fast, it hangs until the caller's cap. That is
+        what made this bridge time out (10s at boot, 59x at runtime) and
+        left the plugin pinned to its 64-dim `hash` placeholder while the
+        store held 4096-dim vectors.
+
+        The worker-loop path is kept only for the cases where the host
+        loop genuinely cannot be used: the sync init path (no host loop),
+        or a call already ON the host loop, where blocking on the result
+        would deadlock the loop that has to run the coroutine.
+        """
+        from hippocampus._async_bridge import (call_on_host_loop,
+                                               host_loop_usable, run_sync)
+        emb_pid = self.service.cfg.embedding_provider_id
+        if host_loop_usable():
+            return call_on_host_loop(
+                emb_bridge_for_context(self.context, text, provider_id=emb_pid),
+                timeout=EMB_BRIDGE_TIMEOUT)
+        return run_sync(
+            emb_bridge_for_context(self.context, text, provider_id=emb_pid),
+            timeout=EMB_BRIDGE_TIMEOUT)
 
     def _start_background(self) -> None:
         if self.service is None:

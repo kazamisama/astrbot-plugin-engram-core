@@ -124,7 +124,8 @@ class _Req:
 
 
 def _cfg(**over):
-    cfg = type("Cfg", (), {})()
+    from hippocampus import MemoryConfig
+    cfg = MemoryConfig()
     for k, v in dict(
         auto_inject_enabled=True, auto_inject_top_k=3,
         auto_inject_position="before", auto_inject_relative_time=True,

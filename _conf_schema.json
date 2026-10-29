@@ -888,6 +888,36 @@
         "default": 0.0,
         "description": "日记注入最低分",
         "hint": "日记块召回分数低于该值就不注入。默认 0 = 不过滤。"
+      },
+      "search_cache_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用召回结果缓存",
+        "hint": "同一查询在缓存有效期内直接复用上次的召回结果，减少向量检索与打分开销。记忆写入或配置变化时会自动失效。"
+      },
+      "search_cache_ttl_seconds": {
+        "type": "float",
+        "default": 60.0,
+        "description": "召回缓存有效期（秒）",
+        "hint": "缓存最长保留多久；0 表示禁用缓存。默认 60 秒。"
+      },
+      "search_cache_max_entries": {
+        "type": "int",
+        "default": 128,
+        "description": "召回缓存条目上限",
+        "hint": "最多缓存多少条查询结果，超出后按最久未使用淘汰；0 表示禁用缓存。默认 128。"
+      },
+      "diary_consume_cache_on_write": {
+        "type": "bool",
+        "default": true,
+        "description": "写日记后清理消息缓存",
+        "hint": "生成日记成功后，删除该日并入日记的消息缓存，避免手动重跑 /mem diary 时重复生成。"
+      },
+      "bot_actor_id": {
+        "type": "string",
+        "default": "",
+        "description": "机器人人格的 actor id",
+        "hint": "生成用户画像时，用这个 actor id 找到机器人自己的人格设定并注入提示词。留空使用 \"assistant\"。"
       }
     }
   },

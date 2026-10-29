@@ -429,7 +429,7 @@ class DualRouteRetriever:
         """v1.76.5: atom-level keyword route. Maps active, temporally
         fresh atoms back to their parent engrams."""
         svc = self._service
-        if not getattr(svc.cfg, "enable_atom_extraction", False):
+        if not svc.cfg.enable_atom_extraction:
             return []
         try:
             svc._ensure_atom_layer()

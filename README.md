@@ -3,8 +3,10 @@
 > 类海马体长期记忆框架 — 4 层分桶 + DG 模式分离 + FTS5 hybrid + 用户可切换模型
 
 把整个 `hippocampus/` 核心包打包进来,**自包含**,仅依赖 AstrBot 本体(`astrbot.api`)。
-唯一的外部依赖是**可选**的中文分词库 `jieba`(`requirements.txt`):未安装时自动降级为
-bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
+唯一需要安装的依赖是**可选**的中文分词库 `jieba`(`requirements.txt`):未安装时自动降级为
+bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。另外,若运行环境自带 `numpy`
+(如 AstrBot 的 Python 环境),向量检索会走 numpy 加速;没有 numpy 时自动退回纯 Python,
+不需要额外安装。
 
 > v1.43+: 仓库更名为 `astrbot-plugin-engram-core`。
 > v1.77.0: 一次审计驱动的收敛 —— 召回统一到 dual-route(删除并行的 PatternCompleter)、
@@ -23,6 +25,9 @@ bigram 分词,功能不中断,只是 FTS/BM25 的中文切词质量略降。
 > 重载后横幅应显示 loaded: v1.78.2。
 > v1.78.3: 修复升级库上 atom 层静默失效(索引先于加列,AtomStore 构造失败被吞);
 > atoms 现在会随 LLM 关系真正写入。
+> v1.79.0: 按通用编码规则清理 —— 68 处配置读取去掉与 dataclass 重复的兜底、5 个幽灵键
+> 成为真实配置项、33 处 `getattr(self, ...)` 改为直接属性访问、两个 200 行方法拆分、
+> 删除死码；numpy 在文档里明确为可选加速而非依赖。
 
 > v1.48+: 插件 ID 也从 `astrbot_plugin_engram` 改为 `astrbot_plugin_engram_core` —— 旧名跟另一个 AstrBot 插件撞了，会污染注册表、阻断更新。**这次改名是 breaking**：Web 路由前缀从 `/astrbot_plugin_engram/page` 变成 `/astrbot_plugin_engram_core/page`；从 v1.47 之前升级需要在 AstrBot 卸载旧条目再装一次（详见下方部署一节）。import 路径、API、SQLite schema 不变。
 
@@ -50,7 +55,7 @@ astrbot-plugin-engram-core/     # 仓库根即插件目录(扁平布局)
   main.py                       # 插件入口
   engram_core_helpers.py        # 多插件注入协调公开工具(v1.73+)
   hippocampus/                  # 核心包(已嵌入,自包含)
-  tests/                        # 烟测(_smoke_v08~v103,独立运行,不随插件加载)
+  tests/                        # 烟测(_smoke_v08~v104,独立运行,不随插件加载)
   README.md                     # 本文件
 ```
 

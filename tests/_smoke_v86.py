@@ -22,7 +22,6 @@ the config block that was being ignored:
       as a nested object, and while it was missing from _GROUP_KEYS every field
       in it silently fell back to the MemoryConfig default.
 """
-import math
 import os
 import sys
 import tempfile
@@ -101,7 +100,6 @@ sys.modules.setdefault("astrbot.api.event", _event)
 sys.modules.setdefault("astrbot.api.star", _star)
 
 SWEEP = 1800.0          # memory_decay_interval_seconds default
-IMPORTANCE_MOD = 4.0    # decay_pass default modulator
 
 
 def _service(tmp_db):
@@ -148,8 +146,11 @@ def test_sweeps_do_not_compound():
         for _ in range(sweeps):
             svc.store.decay_pass(cfg.decay_tau_base, 0.05, elapsed_seconds=SWEEP)
 
-        tau_eff = cfg.decay_tau_base * (1.0 + IMPORTANCE_MOD * 0.6)
-        expected = math.exp(-86400.0 / tau_eff)     # exactly one day of decay
+        # One day of decay from strength 1.0 at the shipped defaults:
+        # tau_eff = 7d * (1 + 4.0 * importance(0.6)) = 20.4d,
+        # exp(-1d / 20.4d) = 0.958854. A fixed number (not the formula)
+        # so a drifting decay curve fails this test instead of moving with it.
+        expected = 0.958854
         for name in ages:
             got = svc.store.get(ids[name]).strength
             assert abs(got - expected) < 0.02, (

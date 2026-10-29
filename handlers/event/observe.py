@@ -150,7 +150,7 @@ class ObserveHandler:
     def _conv_buffer_path(self) -> str:
         """Snapshot lives beside the DB (same convention as backups/)."""
         try:
-            db = getattr(self.service.cfg, "sqlite_path", "") or ""
+            db = self.service.cfg.sqlite_path or ""
         except Exception:
             db = ""
         return os.path.join(os.path.dirname(db) or ".", "conv_buffer.json")

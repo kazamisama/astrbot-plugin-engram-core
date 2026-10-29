@@ -281,15 +281,15 @@ class InjectHandler:
         svc = self.service
         if svc is None or req is None:
             return
-        cfg = getattr(svc, "cfg", None)
-        if cfg is None or not getattr(cfg, "auto_inject_enabled", False):
+        cfg = svc.cfg
+        if not cfg.auto_inject_enabled:
             return
         try:
             from hippocampus import Cue
         except Exception:
             return
         try:
-            top_k = int(getattr(cfg, "auto_inject_top_k", 3) or 0)
+            top_k = int(cfg.auto_inject_top_k)
             if top_k <= 0:
                 return
             meta = _extract(event)
@@ -297,26 +297,11 @@ class InjectHandler:
             if not query:
                 return
             actor_id = meta.get("actor_id")
-            iso_on = bool(getattr(cfg, "persona_isolation_enabled", True))
+            iso_on = bool(cfg.persona_isolation_enabled)
             persona_scope = (meta.get("persona_id") or "") if iso_on else None
             scope_scope = (meta.get("scope_id") or "") if iso_on else None
 
-            # Optional stable-background persona (v1.8). Independent of recall
-            # hits: if enabled and present, it is injected as background even
-            # when no episodic memory matches.
-            persona_block = ""
-            if getattr(cfg, "persona_inject_enabled", False):
-                try:
-                    persona = svc.get_persona(actor_id) if hasattr(svc, "get_persona") else None
-                    summary = (getattr(persona, "summary", "") or "").strip() if persona else ""
-                    if summary:
-                        persona_block = "[用户画像]\n" + summary
-                        ptags = getattr(persona, "tags", None) if persona else None
-                        if ptags:
-                            persona_block += "\n标签：" + " / ".join(ptags)
-                except Exception as pex:
-                    print("[hippocampus] persona fetch skipped: " + repr(pex))
-
+            persona_block = self._inject_persona_block(actor_id)
             # v1.20 B-3: layered recall - conversation summaries only
             # (episodic/semantic), diary is recalled separately below with
             # its own quota so the two layers do not crowd each other out.
@@ -329,159 +314,190 @@ class InjectHandler:
                 memory_types=["episodic", "semantic", "prospective"],
                 k=top_k))
             engrams = getattr(result, "engrams", None) or []
-            show_time = bool(getattr(cfg, "auto_inject_relative_time", True))
-            use_content = bool(getattr(cfg, "auto_inject_use_content", True))
-            # Never let a malformed cap raise: this whole body sits in a
-            # try/except that would abandon injection entirely, so an
-            # unusable value must degrade to the default, not to nothing.
-            try:
-                body_cap = int(getattr(cfg, "auto_inject_content_max_chars", 800))
-            except (TypeError, ValueError):
-                body_cap = 800
-            if body_cap < 0:
-                body_cap = 0  # negative reads as "no cap", not as "cap at 0"
-            lines = []
-            for e in engrams[:top_k]:
-                body = _engram_body(e, use_content=use_content, max_chars=body_cap)
-                if not body:
-                    continue
-                label = relative_label(getattr(e, "created_at", 0.0)) if show_time else ""
-                # v1.76.21: body may span several lines (summary + key-fact
-                # bullets). Indent the continuation lines so a bullet cannot
-                # be misread as a separate memory entry, since only the
-                # first line carries the "[3个月前]" style time marker.
-                rendered = body.replace("\n", "\n  ")
-                if label:
-                    lines.append("- [" + label + "] " + rendered)
-                else:
-                    lines.append("- " + rendered)
-            memory_block = ((_MEMORY_BLOCK_LABEL + "\n" + "\n".join(lines)) if lines else "")
-
-            # v1.19 B-2: relation injection (option-4 pipeline filter).
-            relation_block = ""
-            if hasattr(svc, "recall_relations"):
-                try:
-                    rtop = int(getattr(cfg, "relation_inject_top_n", 3) or 0)
-                    if rtop > 0:
-                        rmin = float(getattr(cfg, "relation_inject_min_confidence", 0.0) or 0.0)
-                        rels = svc.recall_relations(query, top_n=rtop, min_confidence=rmin,
-                                                   persona_id=persona_scope,
-                                                   scope_id=scope_scope)
-                        rlines = []
-                        for r in rels:
-                            subj = (getattr(r, "subject", "") or "").strip()
-                            pred = (getattr(r, "predicate", "") or "").strip()
-                            obj = (getattr(r, "object", "") or "").strip()
-                            if subj and pred:
-                                rlines.append("- " + subj + " " + pred + (" " + obj if obj else ""))
-                        if rlines:
-                            relation_block = "[人物关系]\n" + "\n".join(rlines)
-                except Exception as rex:
-                    print("[hippocampus] relation inject skipped: " + repr(rex))
-
-            # v1.20 B-3: diary recall with its own quota + source label.
-            diary_block = ""
-            if hasattr(svc, "recall_diary_chunks"):
-                try:
-                    dtop = int(getattr(cfg, "diary_inject_top_n", 1) or 0)
-                    if dtop > 0:
-                        dmin = float(getattr(cfg, "diary_inject_min_score", 0.0) or 0.0)
-                        hits = svc.recall_diary_chunks(query, top_n=dtop, min_score=dmin,
-                                                      persona_id=persona_scope, scope_id=scope_scope)
-                        # v1.72 (issue 2026-07-29 #3): skip chunks whose text
-                        # we already injected recently (LRU via
-                        # self._seen_diary). Diary recall has no time filter
-                        # (deeper root of #3), so the same chunk can
-                        # resurface every on_llm_request firing.
-                        # Label also renamed (jinri huigu -> zuijin riji)
-                        # since the diary generator runs at noon for the
-                        # PREVIOUS day (diary_trigger_hour=12); the old
-                        # label was structurally a misnomer.
-                        seen = self._seen_diary
-                        fresh = [(t, sc) for t, sc in hits
-                                 if (t or "").strip() and t not in seen]
-                        # Update LRU (deque(maxlen=64) auto-evicts oldest).
-                        for t, _sc in fresh:
-                            seen.append(t)
-                        dlines = [t if t.startswith("- ") else "- " + t for t, _sc in fresh]
-                        if dlines:
-                            diary_block = (_DIARY_BLOCK_LABEL + "\n"
-                                           + "\n".join(dlines))
-                except Exception as dex:
-                    print("[hippocampus] diary inject skipped: " + repr(dex))
-
-            # Persona (background) -> relations -> recent conversation -> diary.
-            # v1.67.1 (issue #8): each block is wrapped in
-            # <engram-context>...</engram-context> so the LLM can
-            # pattern-match injected background separately from the
-            # real user message; the inner [xxx] label is preserved
-            # for backward compatibility with anyone pattern-matching
-            # on it.
-            blocks: list[tuple[str, str]] = []
-            if persona_block:
-                blocks.append(("persona", persona_block))
-            if relation_block:
-                blocks.append(("relation", relation_block))
-            if memory_block:
-                blocks.append(("memory", memory_block))
-            if diary_block:
-                blocks.append(("diary", diary_block))
-            if not blocks:
-                return
-            # v1.76.22: attach the self-recall note to the first block of this
-            # request only — one note per request, not one per block. Block
-            # order is preserved, and _strip_prior_engram_blocks still matches
-            # every block because the note sits after the opening tag and
-            # before the inner [xxx] label.
-            blocks = [
-                (kind, self._wrap_engram(body, preamble=(idx == 0)))
-                for idx, (kind, body) in enumerate(blocks)
-            ]
-            # v1.66: use structured TextPart instead of raw prompt concatenation.
-            # Each block becomes its own TextPart (marked temp so it never
-            # enters conversation history). This follows the social_context /
-            # ESM v0.9.x pattern: static rules in prompt=, dynamic data in
-            # extra_user_content_parts as independent TextPart blocks.
-            #
-            # v1.67.1 (issue #8): the previous loop used
-            # `parts_list.insert(0, part)` in the "before" branch,
-            # which is LIFO and reversed the declared order
-            # persona->relation->memory->diary. Build the new parts
-            # first, then splice them in one shot so the order is
-            # preserved.
-            # v1.77.0: the wrapper may have timed out while this thread was
-            # still recalling (lock wait, slow SQLite, slow embed). Once it
-            # has, the LLM request is already released and the provider may
-            # be reading req -- mutating it now would race that read.
+            memory_block = self._inject_memory_block(engrams[:top_k])
+            relation_block = self._inject_relation_block(
+                query, persona_scope, scope_scope)
+            diary_block = self._inject_diary_block(
+                query, persona_scope, scope_scope)
             if stop is not None and stop.is_set():
                 return
-            if TextPart is not None and hasattr(req, "extra_user_content_parts"):
-                position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
-                parts_list = getattr(req, "extra_user_content_parts", None)
-                if parts_list is not None:
-                    # v1.67.2 (re-injection defense): strip any of our
-                    # own engram blocks that were left over from a
-                    # prior on_llm_request firing (retries, multi-turn
-                    # sessions where parts_list is not reset). Without
-                    # this, the list grows by 4 per turn and eventually
-                    # dominates the LLM context window.
-                    self._strip_prior_engram_blocks(parts_list)
-                    new_parts = [TextPart(text=text, type="text").mark_as_temp()
-                                 for _kind, text in blocks]
-                    if position == "after":
-                        parts_list.extend(new_parts)
-                    else:
-                        parts_list[0:0] = new_parts
-                    return
-            # Fallback: pre-v4 AstrBot without TextPart support — raw concat.
-            # Each block is already wrapped by _wrap_engram above, so the
-            # joined string carries the <engram-context> tags directly.
-            block = "\n\n".join(b for _, b in blocks)
-            position = (getattr(cfg, "auto_inject_position", "before") or "before").lower()
-            prompt = getattr(req, "prompt", "") or ""
-            if position == "after":
-                req.prompt = (prompt + "\n\n" + block) if prompt else block
-            else:
-                req.prompt = (block + "\n\n" + prompt) if prompt else block
+            self._apply_inject_blocks(req, persona_block, relation_block,
+                                      memory_block, diary_block)
         except Exception as ex:
             print("[hippocampus] auto inject skipped: " + repr(ex))
+
+    def _inject_persona_block(self, actor_id) -> str:
+        # Optional stable-background persona (v1.8). Independent of recall
+        # hits: if enabled and present, it is injected as background even
+        # when no episodic memory matches.
+        cfg = self.service.cfg
+        if not cfg.persona_inject_enabled:
+            return ""
+        try:
+            persona = self.service.get_persona(actor_id) \
+                if hasattr(self.service, "get_persona") else None
+            summary = (getattr(persona, "summary", "") or "").strip() if persona else ""
+            if not summary:
+                return ""
+            block = "[用户画像]\n" + summary
+            ptags = getattr(persona, "tags", None) if persona else None
+            if ptags:
+                block += "\n标签：" + " / ".join(ptags)
+            return block
+        except Exception as pex:
+            print("[hippocampus] persona fetch skipped: " + repr(pex))
+            return ""
+
+    def _inject_memory_block(self, engrams) -> str:
+        cfg = self.service.cfg
+        show_time = bool(cfg.auto_inject_relative_time)
+        use_content = bool(cfg.auto_inject_use_content)
+        # Never let a malformed cap raise: this body sits in a try/except
+        # that would abandon injection entirely, so an unusable value must
+        # degrade to the default, not to nothing. A negative cap reads as
+        # "no cap".
+        try:
+            body_cap = int(cfg.auto_inject_content_max_chars)
+        except (TypeError, ValueError):
+            body_cap = 800
+        if body_cap < 0:
+            body_cap = 0
+        lines = []
+        for e in engrams:
+            body = _engram_body(e, use_content=use_content, max_chars=body_cap)
+            if not body:
+                continue
+            label = relative_label(getattr(e, "created_at", 0.0)) if show_time else ""
+            # v1.76.21: body may span several lines (summary + key-fact
+            # bullets). Indent the continuation lines so a bullet cannot
+            # be misread as a separate memory entry, since only the
+            # first line carries the "[3个月前]" style time marker.
+            rendered = body.replace("\n", "\n  ")
+            if label:
+                lines.append("- [" + label + "] " + rendered)
+            else:
+                lines.append("- " + rendered)
+        return (_MEMORY_BLOCK_LABEL + "\n" + "\n".join(lines)) if lines else ""
+
+    def _inject_relation_block(self, query, persona_id, scope_id) -> str:
+        # v1.19 B-2: relation injection (option-4 pipeline filter).
+        svc = self.service
+        if not hasattr(svc, "recall_relations"):
+            return ""
+        try:
+            top_n = int(svc.cfg.relation_inject_top_n)
+            if top_n <= 0:
+                return ""
+            min_conf = float(svc.cfg.relation_inject_min_confidence)
+            rels = svc.recall_relations(query, top_n=top_n,
+                                        min_confidence=min_conf,
+                                        persona_id=persona_id,
+                                        scope_id=scope_id)
+            lines = []
+            for r in rels:
+                subj = (getattr(r, "subject", "") or "").strip()
+                pred = (getattr(r, "predicate", "") or "").strip()
+                obj = (getattr(r, "object", "") or "").strip()
+                if subj and pred:
+                    lines.append("- " + subj + " " + pred
+                                 + (" " + obj if obj else ""))
+            return ("[人物关系]\n" + "\n".join(lines)) if lines else ""
+        except Exception as rex:
+            print("[hippocampus] relation inject skipped: " + repr(rex))
+            return ""
+
+    def _inject_diary_block(self, query, persona_id, scope_id) -> str:
+        # v1.20 B-3: diary recall with its own quota + source label.
+        svc = self.service
+        if not hasattr(svc, "recall_diary_chunks"):
+            return ""
+        try:
+            top_n = int(svc.cfg.diary_inject_top_n)
+            if top_n <= 0:
+                return ""
+            min_score = float(svc.cfg.diary_inject_min_score)
+            hits = svc.recall_diary_chunks(query, top_n=top_n,
+                                           min_score=min_score,
+                                           persona_id=persona_id,
+                                           scope_id=scope_id)
+            # v1.72 (issue 2026-07-29 #3): skip chunks whose text we already
+            # injected recently (LRU via self._seen_diary). Diary recall has
+            # no time filter (deeper root of #3), so the same chunk can
+            # resurface every on_llm_request firing.
+            seen = self._seen_diary
+            fresh = [(t, sc) for t, sc in hits
+                     if (t or "").strip() and t not in seen]
+            for t, _sc in fresh:
+                seen.append(t)
+            lines = [t if t.startswith("- ") else "- " + t for t, _sc in fresh]
+            if not lines:
+                return ""
+            return _DIARY_BLOCK_LABEL + "\n" + "\n".join(lines)
+        except Exception as dex:
+            print("[hippocampus] diary inject skipped: " + repr(dex))
+            return ""
+
+    def _apply_inject_blocks(self, req, persona_block: str, relation_block: str,
+                             memory_block: str, diary_block: str) -> None:
+        # Persona (background) -> relations -> recent conversation -> diary.
+        # v1.67.1 (issue #8): each block is wrapped in
+        # <engram-context>...</engram-context> so the LLM can
+        # pattern-match injected background separately from the
+        # real user message; the inner [xxx] label is preserved
+        # for backward compatibility with anyone pattern-matching
+        # on it.
+        blocks: list[tuple[str, str]] = []
+        if persona_block:
+            blocks.append(("persona", persona_block))
+        if relation_block:
+            blocks.append(("relation", relation_block))
+        if memory_block:
+            blocks.append(("memory", memory_block))
+        if diary_block:
+            blocks.append(("diary", diary_block))
+        if not blocks:
+            return
+        # v1.76.22: attach the self-recall note to the first block of this
+        # request only - one note per request, not one per block. Block
+        # order is preserved, and _strip_prior_engram_blocks still matches
+        # every block because the note sits after the opening tag and
+        # before the inner [xxx] label.
+        blocks = [
+            (kind, self._wrap_engram(body, preamble=(idx == 0)))
+            for idx, (kind, body) in enumerate(blocks)
+        ]
+        cfg = self.service.cfg
+        # v1.66: use structured TextPart instead of raw prompt concatenation.
+        # Each block becomes its own TextPart (marked temp so it never
+        # enters conversation history). This follows the social_context /
+        # ESM v0.9.x pattern: static rules in prompt=, dynamic data in
+        # extra_user_content_parts as independent TextPart blocks.
+        # v1.67.1 (issue #8): build the new parts first, then splice them in
+        # one shot; inserting one by one reversed the declared order.
+        if TextPart is not None and hasattr(req, "extra_user_content_parts"):
+            position = (cfg.auto_inject_position or "before").lower()
+            parts_list = getattr(req, "extra_user_content_parts", None)
+            if parts_list is not None:
+                # v1.67.2 (re-injection defense): strip any of our own engram
+                # blocks left over from a prior on_llm_request firing
+                # (retries, multi-turn sessions where parts_list is not
+                # reset). Without this the list grows by 4 per turn and
+                # eventually dominates the LLM context window.
+                self._strip_prior_engram_blocks(parts_list)
+                new_parts = [TextPart(text=text, type="text").mark_as_temp()
+                             for _kind, text in blocks]
+                if position == "after":
+                    parts_list.extend(new_parts)
+                else:
+                    parts_list[0:0] = new_parts
+                return
+        # Fallback: pre-v4 AstrBot without TextPart support - raw concat.
+        # Each block is already wrapped by _wrap_engram above, so the
+        # joined string carries the <engram-context> tags directly.
+        block = "\n\n".join(b for _, b in blocks)
+        position = (cfg.auto_inject_position or "before").lower()
+        prompt = getattr(req, "prompt", "") or ""
+        if position == "after":
+            req.prompt = (prompt + "\n\n" + block) if prompt else block
+        else:
+            req.prompt = (block + "\n\n" + prompt) if prompt else block

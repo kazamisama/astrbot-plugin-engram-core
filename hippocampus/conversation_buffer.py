@@ -149,8 +149,8 @@ class ConversationBuffer:
     # ---- chat-type aware idle ----
     def _idle_seconds(self, chat_type: str) -> float:
         if chat_type == "private":
-            return float(getattr(self.cfg, "summary_idle_seconds_private", 1800.0) or 0.0)
-        return float(getattr(self.cfg, "summary_idle_seconds_group", 600.0) or 0.0)
+            return float(self.cfg.summary_idle_seconds_private or 0.0)
+        return float(self.cfg.summary_idle_seconds_group or 0.0)
 
     def _is_idle(self, buf: _ChannelBuf, now: float) -> bool:
         idle = self._idle_seconds(buf.meta.get("chat_type", ""))
@@ -159,13 +159,13 @@ class ConversationBuffer:
         return (now - buf.last_ts) >= idle
 
     def _min_messages(self) -> int:
-        return int(getattr(self.cfg, "summary_min_messages", 0) or 0)
+        return int(self.cfg.summary_min_messages)
 
     def _below_min_grace_seconds(self) -> float:
-        return float(getattr(self.cfg, "summary_min_messages_grace_seconds", 21600.0) or 0.0)
+        return float(self.cfg.summary_min_messages_grace_seconds or 0.0)
 
     def _max_channels(self) -> int:
-        return int(getattr(self.cfg, "summary_max_channels", 512) or 512)
+        return int(self.cfg.summary_max_channels)
 
     def _below_min(self, buf: _ChannelBuf) -> bool:
         min_n = self._min_messages()
@@ -207,7 +207,7 @@ class ConversationBuffer:
         text = (content or "").strip()
         if not text:
             return False
-        min_chars = int(getattr(self.cfg, "summary_min_chars", 0) or 0)
+        min_chars = int(self.cfg.summary_min_chars)
         return len(text) >= max(0, min_chars)
 
     # ---- public API ----
@@ -252,7 +252,7 @@ class ConversationBuffer:
             if not buf.meta.get(k) and meta.get(k):
                 buf.meta[k] = meta[k]
 
-        cap = int(getattr(self.cfg, "summary_max_messages", 0) or 0)
+        cap = int(self.cfg.summary_max_messages)
         if cap > 0 and len(buf.lines) >= cap:
             self._flush_key(ch)
         self._evict_excess(now)

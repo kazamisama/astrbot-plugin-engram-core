@@ -20,9 +20,6 @@ try:  # numpy rides along with the AstrBot runtime but is never required
 except Exception:  # pragma: no cover - exercised only without numpy
     _np = None
 
-HAVE_NUMPY = _np is not None
-
-
 def normalize(vec):
     """Return a unit-length copy of ``vec`` (zero vectors stay zero)."""
     if _np is not None:
@@ -101,9 +98,6 @@ class VectorIndex:
 
     def meta(self, key: str):
         return self._meta.get(key)
-
-    def vector(self, key: str):
-        return self._vecs.get(key)
 
     def search(self, query, k: int, predicate=None, min_score=None,
                with_meta: bool = False) -> list:

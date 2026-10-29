@@ -29,7 +29,7 @@ sys.path.insert(0, ROOT)
 
 from hippocampus.storage import HippocampalStore, _cos
 from hippocampus.types import Engram
-from hippocampus.vecmath import VectorIndex, HAVE_NUMPY, normalize
+from hippocampus.vecmath import VectorIndex, normalize
 
 
 class _Embedder:
@@ -178,4 +178,4 @@ if __name__ == "__main__":
     test_store_filters_match_reference()
     test_mutations_visible_without_rebuild()
     test_cached_query_does_not_reread_embeddings()
-    print(chr(10) + "ALL OK (numpy=%s)" % HAVE_NUMPY)
+    print(chr(10) + "ALL OK")

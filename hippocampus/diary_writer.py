@@ -204,18 +204,18 @@ class DiaryWriter:
         self._llm = llm
 
     def _ratio(self) -> float:
-        return float(getattr(self.cfg, "diary_compress_ratio", 0.025) or 0.0)
+        return float(self.cfg.diary_compress_ratio or 0.0)
 
     def _floor(self) -> int:
-        return int(getattr(self.cfg, "diary_compress_floor", 50) or 0)
+        return int(self.cfg.diary_compress_floor or 0)
 
     def _cap(self) -> int:
-        return int(getattr(self.cfg, "diary_compress_cap", 2500) or 0)
+        return int(self.cfg.diary_compress_cap or 0)
 
     def _system_prompt(self, lines) -> str:
         # v1.72: operator can override the system prompt via cfg.
         # Empty override (default) -> built-in _SYS_BASE.
-        override = (getattr(self.cfg, "diary_system_prompt_override", "") or "").strip()
+        override = (self.cfg.diary_system_prompt_override).strip()
         if not override:
             from .prompts import get_prompt, has_override
             _pn = getattr(self.cfg, "_prompt_namespace", None)
@@ -268,7 +268,7 @@ class DiaryWriter:
             # v1.72: pass operator's user-prompt head override through.
             user = _build_prompt(
                 lines, target, day_label,
-                head_override=getattr(self.cfg, "diary_user_prompt_head_override", ""),
+                head_override=self.cfg.diary_user_prompt_head_override,
                 namespace=getattr(self.cfg, "_prompt_namespace", None))
             raw = self._llm.chat(sys, user, temperature=0.4,
                                  max_tokens=max(512, min(4096, target * 3)))

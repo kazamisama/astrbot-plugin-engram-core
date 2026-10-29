@@ -542,3 +542,48 @@ R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事
 - R8 的 `atoms` 一行现在可以真正观察了：重载到 1.78.3 后，等下一次带 relations 的摘要写入，
   确认 `atoms` 从 0 开始增长（而不是再次停在 0）。
 - `life_*` / `task_leases` / `triggers` 仍是 §11 的状态。
+
+## 14. v1.79.0（2026-10-29）：按通用编码规则清理
+
+### 触发
+
+用户给了一份 8 条的通用编码规则（不要重复兜底 / 去掉死代码 / 函数不过长 / 测试打真代码 /
+文档与实现一致等），要求按它审计整个插件。审计范围：生产 100 文件 / 1005 函数。
+
+### 审计证据
+
+| 规则 | 结论 | 证据 |
+| --- | --- | --- |
+| 2 不要重复兜底 | 偏离 | 68 处 `getattr(self.cfg, ...)` 自带默认值：38 处与 dataclass 默认值逐字相同，19 处不一致，5 个名字不是 `MemoryConfig` 字段（11 处读取恒落默认值） |
+| 2 同类 | 偏离 | 33 处 `getattr(self, "attr", None)` 落在 `__init__` 必然赋值的属性上 |
+| 3 不要为一次性代码造抽象 | 偏离 | `VectorIndex.vector()` 0 调用点；`_build_default_registry` 只有 `return default_registry()` |
+| 4 函数不过长 | 偏离 | 25 个函数 ≥ 80 行；最长 `_handle_inject_sync` 209 行、`_install_bridges` 202 行 |
+| 8 文档与实现一致 | 偏离 | README 称唯一可选依赖是 jieba，实际 vecmath 会机会性 import numpy |
+| 7 测试打真代码 | 部分 | 无 mock、192 处 import 生产代码；但 v86 复制了衰减公式常量 |
+| 1/5/6 | 合格 | — |
+
+### 已 ship
+
+| 项 | 做法 | 影响面 |
+| --- | --- | --- |
+| 配置读取单一事实源 | 68 处改直接属性访问，删 `or 默认值`；19 处两个默认值统一到 `MemoryConfig` | conversation_buffer / diary_writer / service / session_buffer / summarizer / dual_route / graph_retriever / observe |
+| 幽灵键转正 | 5 个键成为字段 + `_FIELDS` + schema（159 -> 164 项） | `search_cache_enabled` / `search_cache_ttl_seconds` / `search_cache_max_entries` / `diary_consume_cache_on_write` / `bot_actor_id` |
+| self getattr | 33 处改 `self.x`（17 个属性均在 `__init__` 无条件赋值） | service.py |
+| 死码 | 删 `VectorIndex.vector()` / `HAVE_NUMPY` / `_build_default_registry` | vecmath.py / service.py |
+| 长函数 | `_install_bridges` 拆 7 个方法；`_handle_inject_sync` 拆 5 个方法 | handlers/init.py、handlers/event/inject.py |
+| 文档 | README / requirements.txt 说明 numpy 是可选的加速路径 | — |
+| 测试 | v86 期望值改常量 `0.958854`；新增 v104（12 检查） | tests |
+
+### 不变量（v104 钉住）
+
+- 生产代码里不得再出现 `getattr(<任意>.cfg, "<public field>")`（`_` 前缀豁免，因为
+  `_prompt_namespace` 是运行时注入的私有属性）。
+- 5 个新键经 `ConfigManager` roundtrip 落到字段、不进 `extra`，且 schema 全覆盖。
+- `search_cache_ttl_seconds=0` 时 `_recall_cache_ttl == 0.0` 且 `_recall_cache_get()` 返回 `None`。
+- 三个死码符号在仓库里彻底消失。
+
+### 仍然 open
+
+- 宽泛 except 仍有 228+ 处（v1.77.0 已把 92 处纯 `pass` 改为 `_obs_note`）；进一步收敛
+  需要按模块逐个判断哪些异常是契约的一部分，不是静态规则能回答的。
+- `format.py` 拆分后的 5 个模块仍可再按需细化（当前最大函数已 ≤ 80 行，见 §10）。

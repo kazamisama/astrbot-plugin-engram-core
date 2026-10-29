@@ -11,6 +11,11 @@ class MemoryConfig:
     pattern_separation_threshold: float = 0.92
     pattern_similar_threshold: float = 0.75
     recall_candidate_k: int = 50
+    # --- v1.79.0: recall-result cache knobs (were read through getattr()
+    # with no backing field, so they could never be configured) ---
+    search_cache_enabled: bool = True
+    search_cache_ttl_seconds: float = 60.0   # 0 = disabled
+    search_cache_max_entries: int = 128      # 0 = disabled
     # --- v1.76.5: dual-route final score = retrieval + importance + recency ---
     score_alpha: float = 0.5
     score_beta: float = 0.25
@@ -178,6 +183,7 @@ class MemoryConfig:
     memory_scope_mode: str = "legacy"  # legacy | session | user | global
     isolated_sessions: list[str] = field(default_factory=list)
     identity_aliases: str = ""          # one "platform:id=Canonical" per line
+    bot_actor_id: str = ""               # actor id of the bot persona; empty = "assistant"
     # --- v1.6: per-speaker conversation aggregation (optional) ---
     session_aggregate_enabled: bool = True
     session_aggregate_max_messages: int = 5
@@ -223,6 +229,7 @@ class MemoryConfig:
     # are real, validated fields now.
     diary_message_batch_size: int = 50            # in-memory diary write buffer size
     diary_message_flush_interval_seconds: float = 30.0  # max age of a buffered diary line
+    diary_consume_cache_on_write: bool = True    # drop the flushed day from the diary cache
     diary_compress_ratio: float = 0.025           # target = total * (ratio / participants)
     diary_compress_floor: int = 50                # min diary chars
     diary_compress_cap: int = 2500                # max diary chars

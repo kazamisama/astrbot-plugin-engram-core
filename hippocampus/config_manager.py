@@ -40,6 +40,9 @@ _FIELDS: dict[str, _FieldSpec] = {
     "pattern_separation_threshold": _FieldSpec(float, (0.0, 1.0), label_zh="模式分离阈值", label_en="Pattern separation threshold"),
     "pattern_similar_threshold": _FieldSpec(float, (0.0, 1.0), label_zh="相似判定阈值", label_en="Pattern similar threshold"),
     "recall_candidate_k": _FieldSpec(int, (1, 10000), label_zh="召回候选数", label_en="Recall candidate k"),
+    "search_cache_enabled": _FieldSpec(bool, label_zh="启用召回结果缓存", label_en="Enable recall result cache"),
+    "search_cache_ttl_seconds": _FieldSpec(float, (0.0, 86400.0), label_zh="召回缓存有效期(秒)", label_en="Recall cache TTL (s)"),
+    "search_cache_max_entries": _FieldSpec(int, (0, 100000), label_zh="召回缓存条目上限", label_en="Recall cache max entries"),
     "score_alpha": _FieldSpec(float, (0.0, 1.0), label_zh="检索相关性权重", label_en="Recall score alpha"),
     "score_beta": _FieldSpec(float, (0.0, 1.0), label_zh="重要性权重", label_en="Recall score beta"),
     "score_gamma": _FieldSpec(float, (0.0, 1.0), label_zh="时间新鲜度权重", label_en="Recall score gamma"),
@@ -204,6 +207,7 @@ _FIELDS: dict[str, _FieldSpec] = {
     "diary_inject_min_score": _FieldSpec(float, (0.0, 1.0), label_zh="日记注入最低得分", label_en="Diary inject min score"),
     "diary_message_batch_size": _FieldSpec(int, (1, 10000), label_zh="日记写入缓冲批大小", label_en="Diary message batch size"),
     "diary_message_flush_interval_seconds": _FieldSpec(float, (0.0, 3600.0), label_zh="日记缓冲最长滞留秒数", label_en="Diary message flush interval seconds"),
+    "diary_consume_cache_on_write": _FieldSpec(bool, label_zh="写日记后清理消息缓存", label_en="Consume diary message cache on write"),
     # v1.72 diary prompt overrides
     "diary_system_prompt_override": _FieldSpec(str, label_zh="日记系统提示词覆盖", label_en="Diary system prompt override"),
     "diary_user_prompt_head_override": _FieldSpec(str, label_zh="日记用户提示词头部覆盖", label_en="Diary user prompt head override"),
@@ -211,6 +215,7 @@ _FIELDS: dict[str, _FieldSpec] = {
     "enable_persona": _FieldSpec(bool, label_zh="启用用户画像", label_en="Enable persona"),
     "persona_inject_enabled": _FieldSpec(bool, label_zh="启用画像注入", label_en="Persona inject enabled"),
     "persona_max_source": _FieldSpec(int, (1, 1000), label_zh="画像取样条数", label_en="Persona max source"),
+    "bot_actor_id": _FieldSpec(str, label_zh="机器人人格的 actor id", label_en="Bot persona actor id"),
 }
 
 # Public i18n label dict: field name -> {zh, en}. Stable API for B8
