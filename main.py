@@ -20,6 +20,56 @@ from typing import Any
 from astrbot.api.star import Star, Context
 from astrbot.api.event import filter, AstrMessageEvent
 
+_PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# Bundles imported as TOP-LEVEL packages (this plugin puts its own directory
+# on sys.path). AstrBot's reload purges only "data.plugins.<dir>.*" modules,
+# so without this eviction a reload re-executes main.py while every
+# "hippocampus.*" / "handlers.*" module stays cached from the previous load --
+# the plugin keeps running the old code and reports the old version (observed
+# live 2026-10-29: metadata 1.78.1, banner still v1.77.0).
+_BUNDLE_ROOTS = (
+    "hippocampus",
+    "handlers",
+    "page_api",
+    "page_api_modules",
+    "engram_command_registry",
+    "engram_core_helpers",
+)
+
+
+def _evict_stale_bundles() -> list[str]:
+    """Drop cached copies of this plugin's bundles before importing them.
+
+    Only modules whose file lives under this plugin directory are removed, so
+    a same-named package owned by another plugin is left alone. A no-op on a
+    process's first load; in the smoke tests this is not called at import
+    time, because they import this file as top-level "main" and may have
+    imported the bundles on purpose before importing main.
+    """
+    prefix = _PLUGIN_ROOT + os.sep
+    stale: list[str] = []
+    for name, mod in list(sys.modules.items()):
+        if name.split(".")[0] not in _BUNDLE_ROOTS:
+            continue
+        path = getattr(mod, "__file__", None)
+        if not path:
+            continue
+        try:
+            if os.path.abspath(path).startswith(prefix):
+                stale.append(name)
+        except Exception:
+            continue
+    for name in stale:
+        sys.modules.pop(name, None)
+    return stale
+
+
+# AstrBot imports plugins as "data.plugins.<dir>.main"; tests import "main".
+# Only the host path needs the eviction.
+_EVICT_ON_IMPORT = "." in __name__
+EVICTED_ON_IMPORT = _evict_stale_bundles() if _EVICT_ON_IMPORT else []
+
 # AstrBot loads this plugin as a package; the plugin dir is not on
 # sys.path. Inject it so the bundled hippocampus / handlers packages
 # resolve via their existing absolute imports.

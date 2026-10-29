@@ -4,6 +4,42 @@
 
 Nothing yet.
 
+## [1.78.2] - 2026-10-29
+
+修复「WebUI 里点重载，插件仍在跑旧代码」——这是线上重载后版本横幅还停在
+v1.77.0 的根因，意味着 v1.77.1 之后的所有修复（向量缓存、嵌入指纹、空向量
+自愈、format 拆分）在实际运行中都没有生效。
+
+### 根因
+- AstrBot 的 `reload()` 只从 `sys.modules` 里清 `data.plugins.<目录名>.*`
+  （`core/star/star_manager.py:_cleanup_plugin_state`）。
+- 本插件在 `main.py` 里把自身目录插入 `sys.path`，并以**顶层**名称导入
+  `hippocampus` / `handlers` / `page_api` 等包。这些名字不匹配上面的前缀，
+  重载时不会被清理，于是新的 `main.py` 执行时 `from hippocampus import ...`
+  命中的还是上一次加载的模块对象。
+- 线上证据（2026-10-29 12:16 重载）：`metadata.yaml` 已是 1.78.1，日志横幅
+  仍是 `[hippocampus] loaded: v1.77.0`；`Removed module` 只有
+  `data.plugins.astrbot_plugin_engram_core` 与 `.main` 两行；`hippo_meta`
+  里没有 `embedding:fingerprint`，51 条空向量未被修复。
+
+### Fixed
+- `main.py` 新增 `_evict_stale_bundles()`：在导入自身 bundle 之前，从
+  `sys.modules` 删除**文件位于本插件目录下**的 `hippocampus*` / `handlers*` /
+  `page_api*` / `engram_command_registry` / `engram_core_helpers` 模块（含子模块）。
+  同名的、属于其它目录的模块不会被误删。
+- 该清理只在宿主以点号模块名加载时执行（`_EVICT_ON_IMPORT = "." in __name__`）：
+  AstrBot 用 `data.plugins.<dir>.main`，smoke 测试用顶层 `main`，测试进程里
+  有意先导入的模块不会被清掉。
+- 新增 `tests/_smoke_v101.py`：清理逻辑单测 + 子进程端到端复现（先缓存
+  `hippocampus` 并打标记，再以 `data.plugins...main` 点号名加载 main.py，
+  断言包对象被换新、标记消失、`EVICTED_ON_IMPORT` 含 `hippocampus`）。
+
+### Notes
+- 重载一次即生效；无需重启 AstrBot。重载后横幅应显示 `loaded: v1.78.2`，
+  日志会出现空向量修复与 `vector caches ready`，`hippo_meta` 写入
+  `embedding:fingerprint`。
+- 91 个 smoke 全绿。
+
 ## [1.78.1] - 2026-10-29
 
 纯重组，无行为变化：把 860 行的 `handlers/format.py` 按职责拆成五个模块，

@@ -435,3 +435,26 @@ R9（同库多连接 + 表示层）要先定「谁拥有 DB / 哪个表示是事
 
 1. **R9**：同库 6–9 条连接 + 五套表示（entities/relations、llm_relations、graph_v2、profile_facts、life_*）。需要先定事实源与事务边界。
 2. **R8 空表**：`atoms`（v1.77.0 接通后观察增长）、`profile_facts`（现有 `remember_fact` 与 `build_from_relations` 两个写入方，线上仍 0 行）、`life_*` / `task_leases`（跨插件修复后待重载验证）、`triggers`（依赖 LLM 产出 topics）。删表需要产品决定。
+
+## 11. v1.78.2（2026-10-29）：修复热重载不重新加载 bundle
+
+### 已 ship
+
+| 项 | 内容 |
+| --- | --- |
+| 现象 | WebUI 重载后插件仍跑旧代码：metadata 1.78.1、日志横幅 `loaded: v1.77.0`，v1.77.1+ 的修复全部未生效 |
+| 根因 | AstrBot 的 `reload()` 只清 `data.plugins.<dir>.*`；本插件把自身目录加入 `sys.path`，以顶层名导入 `hippocampus` / `handlers` 等包，重载时这些模块不匹配前缀、留在 `sys.modules` |
+| 修复 | `main.py` 在导入 bundle 前调用 `_evict_stale_bundles()`，只删除**文件位于本插件目录下**的 `hippocampus*` / `handlers*` / `page_api*` / `engram_command_registry` / `engram_core_helpers`（含子模块）；同名的外部模块不动 |
+| 时机 | 仅当宿主以点号模块名加载时执行（`_EVICT_ON_IMPORT = "." in __name__`）；smoke 测试以顶层 `main` 导入，不会误清 |
+| 验证 | 新增 `tests/_smoke_v101.py`：清理单测 + 子进程以 `data.plugins...main` 点号名加载，断言缓存包被换新、旧标记消失 |
+| 线上确认方式 | 重载后日志横幅应为 `loaded: v1.78.2`，随后出现空向量修复 / `vector caches ready`，`hippo_meta` 出现 `embedding:fingerprint` |
+
+### 为什么之前没发现
+
+日志里 `Removed module` 只列 `data.plugins.astrbot_plugin_engram_core(.main)` 两行，看起来重载成功了；
+只有比对「metadata 版本 vs 横幅版本」才能发现代码没换。此后每次改核心包都必须看横幅。
+
+### 仍然 open
+
+1. **R9**：同库多连接（实测 WAL + busy_timeout 10s + 0 次锁冲突，不建议合并）与五套表示（各有读写方，合并需先定事实源）。见 §10。
+2. **R8 空表**：`atoms` / `life_*` / `task_leases` 为 0 是旧代码仍在跑的直接后果；重载到 1.78.2 后观察一轮再决定去留。`triggers` 依赖 LLM 产出 topics，可能长期空。
